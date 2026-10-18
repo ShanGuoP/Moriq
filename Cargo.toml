@@ -1,0 +1,70 @@
+[workspace]
+resolver = "3"
+members = ["apps/desktop", "crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+
+[workspace.dependencies]
+moriq-domain = { path = "crates/moriq-domain" }
+moriq-render = { path = "crates/moriq-render" }
+moriq-library = { path = "crates/moriq-library" }
+moriq-app = { path = "crates/moriq-app" }
+moriq-ui = { path = "crates/moriq-ui" }
+moriq-synco = { path = "crates/moriq-synco" }
+reqwest = {version="0.12",default-features=false,features=["json","rustls-tls"]}
+serde_json = "1"
+futures = "0.3"
+fast_image_resize = {version="=6.1.0",features=["image"]}
+iced = { version = "=0.14.0", default-features = false, features = ["wgpu", "tokio", "image-without-codecs", "svg", "advanced", "x11", "wayland"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+toml = "0.8"
+sha2 = "0.10"
+fs2 = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+rfd = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = {version="0.4",default-features=false,features=["clock"]}
+kamadak-exif = "0.6.1"
+resvg = { version = "=0.45.1", default-features = false }
+embed-resource = "=3.0.12"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Keep decoder, resizer and checksum kernels optimized in desktop development builds.
+[profile.dev.package.moriq-library]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.moxcms]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

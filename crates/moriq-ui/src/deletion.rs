@@ -1,0 +1,389 @@
+//! One in-app confirmation owns the frozen target throughout both confirmation steps.
+use super::*;
+use crate::{components::*, manage::Panel, theme::*};
+use iced::widget::{button, column, row, text};
+#[derive(Clone)]
+enum Target {
+    Project(ProjectDeletionPlan),
+    Assets(Vec<AssetId>),
+}
+#[derive(Default)]
+pub(super) struct Deletion {
+    request: u64,
+    library: Option<LibraryId>,
+    target: Option<Target>,
+    project: Option<ProjectId>,
+    previous: Option<Panel>,
+    loading: bool,
+    running: bool,
+    pub final_step: bool,
+    error: Option<String>,
+}
+impl Deletion {
+    pub fn reset(&mut self) {
+        *self = Self {
+            request: self.request + 1,
+            ..Default::default()
+        };
+    }
+}
+#[derive(Debug, Clone)]
+pub enum DeletionMessage {
+    Project(ProjectId),
+    Assets(Vec<AssetId>),
+    Planned(LibraryId, u64, Result<ProjectDeletionPlan, String>),
+    Next,
+    Previous,
+    Confirm,
+    Cancel,
+    Finished(LibraryId, u64, Result<PurgeReport, String>),
+}
+impl App {
+    pub(super) fn deletion_message(&mut self, event: DeletionMessage) -> Task<Message> {
+        use DeletionMessage::*;
+        match event {
+            Project(project) => {
+                if self.manager.busy
+                    || self.switching
+                    || self.import.is_some()
+                    || self.launch.design_preview
+                {
+                    return Task::none();
+                }
+                let Some(library) = self.library.as_ref().map(|l| l.info.id) else {
+                    return Task::none();
+                };
+                let previous = if self.manager.panel == Some(Panel::Delete) {
+                    self.deletion.previous
+                } else {
+                    self.manager.panel
+                };
+                self.deletion.reset();
+                self.deletion.library = Some(library);
+                self.deletion.project = Some(project);
+                self.deletion.previous = previous;
+                self.deletion.loading = true;
+                self.manager.panel = Some(Panel::Delete);
+                let request = self.deletion.request;
+                let service = self.service.clone();
+                return Task::perform(
+                    async move { service.project_deletion_plan(library, project).await },
+                    move |r| Message::Deletion(Planned(library, request, r)),
+                );
+            }
+            Assets(ids) => {
+                if self.manager.busy
+                    || self.switching
+                    || !self.query.trash
+                    || self.launch.design_preview
+                {
+                    return Task::none();
+                }
+                let Some(library) = self.library.as_ref().map(|l| l.info.id) else {
+                    return Task::none();
+                };
+                if ids.is_empty() {
+                    self.error = Some("请先选择回收站内的素材".into());
+                    return Task::none();
+                }
+                self.deletion.reset();
+                self.deletion.library = Some(library);
+                self.deletion.previous = self.manager.panel;
+                self.deletion.target = Some(Target::Assets(ids));
+                self.manager.panel = Some(Panel::Delete);
+            }
+            Planned(library, request, result) => {
+                if !self.deletion_matches(library, request) || !self.deletion.loading {
+                    return Task::none();
+                }
+                self.deletion.loading = false;
+                match result {
+                    Ok(plan) if Some(plan.root) == self.deletion.project => {
+                        self.deletion.target = Some(Target::Project(plan))
+                    }
+                    Ok(_) => {
+                        self.deletion.error = Some("项目目标已变化，请重新打开删除确认。".into())
+                    }
+                    Err(e) => self.deletion.error = Some(e),
+                }
+            }
+            Next => {
+                if self.deletion_ready() {
+                    self.deletion.final_step = true;
+                }
+            }
+            Previous => {
+                if self.deletion.running {
+                    return Task::none();
+                }
+                if self.deletion.final_step {
+                    self.deletion.final_step = false;
+                } else {
+                    return self.deletion_message(Cancel);
+                }
+            }
+            Confirm => {
+                if !self.deletion_ready() || !self.deletion.final_step {
+                    return Task::none();
+                }
+                let Some(target) = self.deletion.target.clone() else {
+                    return Task::none();
+                };
+                let Some(library) = self.deletion.library else {
+                    return Task::none();
+                };
+                let request = self.deletion.request;
+                let service = self.service.clone();
+                self.deletion.running = true;
+                self.manager.busy = true;
+                return Task::perform(
+                    async move {
+                        match target {
+                            Target::Project(plan) => {
+                                service.delete_project_contents(library, plan).await
+                            }
+                            Target::Assets(ids) => service.purge(library, ids).await,
+                        }
+                    },
+                    move |r| Message::Deletion(Finished(library, request, r)),
+                );
+            }
+            Finished(library, request, result) => {
+                if !self.deletion_matches(library, request) || !self.deletion.running {
+                    return Task::none();
+                }
+                self.deletion.running = false;
+                self.manager.busy = false;
+                match result {
+                    Ok(report) => {
+                        let target = self.deletion.target.take();
+                        self.deletion.reset();
+                        return match target {
+                            Some(Target::Project(plan)) => self.manage_message(
+                                ManageMessage::ProjectDeleted(library, plan.projects, Ok(report)),
+                            ),
+                            Some(Target::Assets(_)) => {
+                                self.manage_message(ManageMessage::Purged(library, Ok(report)))
+                            }
+                            _ => Task::none(),
+                        };
+                    }
+                    Err(e) => {
+                        self.deletion.error = Some(e);
+                        self.deletion.final_step = false;
+                    }
+                }
+            }
+            Cancel => {
+                if self.manager.panel != Some(Panel::Delete) || self.deletion.running {
+                    return Task::none();
+                }
+                let previous = self.deletion.previous;
+                self.deletion.reset();
+                self.manager.panel = previous;
+            }
+        }
+        Task::none()
+    }
+    fn deletion_matches(&self, library: LibraryId, request: u64) -> bool {
+        self.manager.panel == Some(Panel::Delete)
+            && self.deletion.library == Some(library)
+            && self.deletion.request == request
+            && self.library.as_ref().is_some_and(|l| l.info.id == library)
+    }
+    fn deletion_ready(&self) -> bool {
+        self.deletion
+            .library
+            .is_some_and(|id| self.deletion_matches(id, self.deletion.request))
+            && self.deletion.target.is_some()
+            && !self.deletion.loading
+            && !self.deletion.running
+            && self.deletion.error.is_none()
+            && !self.switching
+    }
+    pub(super) fn deletion_panel(&self) -> Element<'_, Message> {
+        let mut content = column![].spacing(14);
+        if self.deletion.loading {
+            content = content.push(muted("正在检查删除范围…"));
+        }
+        if let Some(target) = &self.deletion.target {
+            match target {
+                Target::Project(plan) => {
+                    content = content.push(heading(format!("删除项目「{}」", plan.name), 18));
+                    if plan.projects.len() > 1 {
+                        content = content.push(muted(format!(
+                            "同时删除 {} 个子项目。",
+                            plan.projects.len() - 1
+                        )));
+                    }
+                    if plan.assets.is_empty() {
+                        content = content.push(
+                            text("没有需要删除的独占图片，将移除项目及其归属关系。").size(14),
+                        );
+                    } else {
+                        content=content.push(text(format!("将永久删除 {} 张独占图片及其全部 {} 个版本，清除库内文件与数据库记录。",plan.assets.len(),plan.versions.len())).size(14));
+                    }
+                    if !plan.shared.is_empty() {
+                        content = content.push(muted(format!(
+                            "{} 张图片也属于其他项目，将保留这些图片和其他项目的关系。",
+                            plan.shared.len()
+                        )));
+                    }
+                    if plan.referenced > 0 {
+                        content = content
+                            .push(muted(format!("{} 个外部引用原文件保留。", plan.referenced)));
+                    }
+                }
+                Target::Assets(ids) => {
+                    content = content
+                        .push(heading(format!("永久删除 {} 张图片", ids.len()), 18))
+                        .push(muted(
+                            "将删除所选图片的托管原片、全部版本和库内副本；外部引用原文件保留。",
+                        ));
+                }
+            }
+            if self.deletion.final_step {
+                content = content.push(
+                    text(
+                        if matches!(target,Target::Project(plan) if plan.assets.is_empty()) {
+                            "请再次确认。删除后无法恢复此项目。"
+                        } else {
+                            "请再次确认。删除后无法从回收站恢复，图片需要重新导入。"
+                        },
+                    )
+                    .size(14)
+                    .color(iced::Color::from_rgb8(190, 38, 38)),
+                );
+            } else {
+                content = content.push(muted("请核对范围，下一步将再次确认。"));
+            }
+        }
+        if let Some(error) = &self.deletion.error {
+            content = content.push(
+                text(error)
+                    .size(14)
+                    .color(iced::Color::from_rgb8(190, 38, 38)),
+            );
+            if let Some(project) = self.deletion.project {
+                content = content.push(action(
+                    "重试",
+                    Message::Deletion(DeletionMessage::Project(project)),
+                ));
+            }
+        }
+        if self.deletion.running {
+            content = content.push(muted("正在删除，请稍候…"));
+        }
+        content
+            .push(
+                row![
+                    button("取消")
+                        .padding([9, 16])
+                        .style(secondary)
+                        .on_press_maybe(
+                            (!self.deletion.running)
+                                .then_some(Message::Deletion(DeletionMessage::Cancel))
+                        ),
+                    button(if self.deletion.final_step {
+                        "永久删除"
+                    } else {
+                        "继续确认"
+                    })
+                    .padding([9, 16])
+                    .style(destructive)
+                    .on_press_maybe(self.deletion_ready().then_some(Message::Deletion(
+                        if self.deletion.final_step {
+                            DeletionMessage::Confirm
+                        } else {
+                            DeletionMessage::Next
+                        }
+                    )))
+                ]
+                .spacing(12),
+            )
+            .into()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    fn plan(root: ProjectId) -> ProjectDeletionPlan {
+        ProjectDeletionPlan {
+            root,
+            name: "空项目".into(),
+            projects: vec![root],
+            assets: vec![],
+            shared: vec![],
+            versions: vec![],
+            aliases: vec![],
+            referenced: 0,
+        }
+    }
+    #[test]
+    fn both_confirmation_steps_freeze_target_cancel_and_reject_stale_receipts() {
+        let mut app = crate::tests::app();
+        let library = app.library.as_ref().unwrap().info.id;
+        let project = ProjectId::default();
+        let selected = AssetId::default();
+        app.manager.selection.insert(selected);
+        app.manager.panel = Some(Panel::Project);
+        drop(app.deletion_message(DeletionMessage::Project(project)));
+        let request = app.deletion.request;
+        drop(app.deletion_message(DeletionMessage::Planned(
+            library,
+            request - 1,
+            Ok(plan(project)),
+        )));
+        drop(app.deletion_message(DeletionMessage::Planned(
+            LibraryId::default(),
+            request,
+            Ok(plan(project)),
+        )));
+        assert!(app.deletion.loading);
+        drop(app.deletion_message(DeletionMessage::Planned(
+            library,
+            request,
+            Ok(plan(project)),
+        )));
+        assert!(app.deletion_ready());
+        drop(app.deletion_message(DeletionMessage::Confirm));
+        assert!(!app.deletion.running);
+        drop(app.deletion_message(DeletionMessage::Next));
+        assert!(app.deletion.final_step);
+        app.manager.project_target = Some(ProjectId::default());
+        assert!(matches!(&app.deletion.target,Some(Target::Project(p)) if p.root==project));
+        drop(app.deletion_message(DeletionMessage::Cancel));
+        assert_eq!(app.manager.panel, Some(Panel::Project));
+        assert!(app.manager.selection.contains(&selected));
+        assert!(app.deletion.target.is_none());
+        drop(app.deletion_message(DeletionMessage::Planned(
+            library,
+            request,
+            Ok(plan(project)),
+        )));
+        assert!(app.deletion.target.is_none());
+        drop(app.deletion_message(DeletionMessage::Project(project)));
+        let request = app.deletion.request;
+        drop(app.deletion_message(DeletionMessage::Planned(
+            library,
+            request,
+            Ok(plan(project)),
+        )));
+        drop(app.deletion_message(DeletionMessage::Next));
+        drop(app.deletion_message(DeletionMessage::Confirm));
+        assert!(app.deletion.running);
+        drop(app.deletion_message(DeletionMessage::Cancel));
+        assert_eq!(app.manager.panel, Some(Panel::Delete));
+        drop(app.deletion_message(DeletionMessage::Finished(
+            library,
+            request,
+            Err("范围已改变".into()),
+        )));
+        assert!(!app.manager.busy);
+        assert!(!app.deletion.final_step);
+        assert_eq!(app.deletion.error.as_deref(), Some("范围已改变"));
+        assert!(!app.deletion_ready());
+    }
+}

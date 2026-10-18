@@ -1,0 +1,17 @@
+[package]
+name = "moriq-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+moriq-ui.workspace = true
+iced.workspace = true
+tracing-subscriber.workspace = true
+rfd.workspace = true
+image.workspace = true
+[build-dependencies]
+resvg.workspace = true
+embed-resource.workspace = true
+image = { workspace = true, features = ["ico"] }
+[lints]
+workspace = true

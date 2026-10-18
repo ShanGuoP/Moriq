@@ -1,0 +1,19 @@
+[package]
+name = "moriq-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+moriq-domain.workspace = true
+moriq-library.workspace = true
+moriq-render.workspace = true
+moriq-synco.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+[dev-dependencies]
+tempfile.workspace = true
+image.workspace = true
+[lints]
+workspace = true
