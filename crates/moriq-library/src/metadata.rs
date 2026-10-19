@@ -91,7 +91,9 @@ pub fn read(file: File) -> Result<serde_json::Value> {
     Ok(output.into())
 }
 pub(crate) fn store(db: &Connection, version: &str, data: &serde_json::Value) -> Result<()> {
-    db.execute("INSERT INTO version_exif VALUES(?1,?2) ON CONFLICT(version_id) DO UPDATE SET data=excluded.data",params![version,serde_json::to_string(data).map_err(|e|Error::Invalid(e.to_string()))?])?;
+    // The version may have been permanently deleted while analysis ran off the writer.
+    // Keep the existence check in the same transaction as the result/checkpoint commit.
+    db.execute("INSERT INTO version_exif(version_id,data) SELECT id,?2 FROM asset_versions WHERE id=?1 ON CONFLICT(version_id) DO UPDATE SET data=excluded.data",params![version,serde_json::to_string(data).map_err(|e|Error::Invalid(e.to_string()))?])?;
     Ok(())
 }
 pub(crate) fn compile(

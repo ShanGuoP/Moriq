@@ -385,6 +385,17 @@ impl App {
             );
         }
         content = content.push(heading("自动分类", 18));
+        for _ in self
+            .manager
+            .organizer
+            .errors
+            .iter()
+            .filter(|(section, _)| *section == OrganizerSection::Categories)
+        {
+            content = content.push(muted(
+                "分类暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。",
+            ));
+        }
         for (category, count) in &self.manager.organizer.ai_categories {
             content = content.push(action(
                 &format!("{category} · {count}"),
@@ -497,20 +508,19 @@ impl App {
         ]
         .spacing(8);
         let mut found = false;
-        if let Some((version, items)) = &self.ai.recommendations {
-            if self
+        if let Some((version, items)) = &self.ai.recommendations
+            && self
                 .selected
                 .as_ref()
                 .is_some_and(|a| a.version_id == *version)
-                && !items.is_empty()
-            {
-                found = true;
-                for (id, name) in items {
-                    view = view.push(action(
-                        name,
-                        Message::Journal(journal::JournalMessage::OpenAsset(*id)),
-                    ));
-                }
+            && !items.is_empty()
+        {
+            found = true;
+            for (id, name) in items {
+                view = view.push(action(
+                    name,
+                    Message::Journal(journal::JournalMessage::OpenAsset(*id)),
+                ));
             }
         }
 

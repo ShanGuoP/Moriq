@@ -99,18 +99,132 @@ impl Library {
     }
     pub fn organizer(&self) -> Result<Organizer> {
         let mut result = Organizer::default();
-        (result.quarantined_files, result.quarantined_bytes) = self.db.query_row(
-            "SELECT count(*),coalesce(sum(bytes),0) FROM orphan_quarantine",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        result.folders = self.virtual_folders()?;
-        result.jobs = self.background_jobs()?;
-        result.people = self.people()?;
-        result.ai_categories=self.db.prepare("SELECT c.category,count(*) FROM asset_classification c JOIN assets a ON a.id=c.asset_id WHERE a.deleted_at IS NULL GROUP BY c.category ORDER BY c.category")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        result.video_count=self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at IS NULL AND v.format IN({})",crate::video::sql_formats()),[],|r|r.get(0))?;
-        result.tags=self.db.prepare("SELECT t.name,count(*) FROM tags t JOIN asset_tags at ON at.tag_id=t.id JOIN assets a ON a.id=at.asset_id WHERE a.deleted_at IS NULL GROUP BY t.id ORDER BY t.name LIMIT 2000")?
-            .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
+        // Each projection owns its error. A broken panel must not suppress the
+        // remaining projections or become a prerequisite for background execution.
+        let mut errors = Vec::new();
+        fn section<T: Default>(
+            errors: &mut Vec<(OrganizerSection, String)>,
+            section: OrganizerSection,
+            value: Result<T>,
+        ) -> T {
+            value.unwrap_or_else(|error| {
+                tracing::warn!(?section, %error, "organizer projection could not be loaded");
+                errors.push((section, error.to_string()));
+                T::default()
+            })
+        }
+        use OrganizerSection::*;
+        (result.quarantined_files, result.quarantined_bytes) = section(
+            &mut errors,
+            Statistics,
+            (|| {
+                Ok(self.db.query_row(
+                    "SELECT count(*),coalesce(sum(bytes),0) FROM orphan_quarantine",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })(),
+        );
+        result.folders = section(&mut errors, Folders, self.virtual_folders());
+        result.jobs = section(&mut errors, Jobs, self.background_jobs());
+        result.people = section(&mut errors, People, self.people());
+        result.ai_categories = section(
+            &mut errors,
+            Categories,
+            (|| {
+                Ok(self.db.prepare("SELECT c.category,count(*) FROM asset_classification c JOIN assets a ON a.id=c.asset_id WHERE a.deleted_at IS NULL GROUP BY c.category ORDER BY c.category")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?)
+            })(),
+        );
+        result.video_count = section(
+            &mut errors,
+            Statistics,
+            (|| {
+                Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at IS NULL AND v.format IN({})",crate::video::sql_formats()),[],|r|r.get(0))?)
+            })(),
+        );
+        result.tags = section(
+            &mut errors,
+            Tags,
+            (|| {
+                Ok(self.db.prepare("SELECT t.name,count(*) FROM tags t JOIN asset_tags at ON at.tag_id=t.id JOIN assets a ON a.id=at.asset_id WHERE a.deleted_at IS NULL GROUP BY t.id ORDER BY t.name LIMIT 2000")?
+            .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?)
+            })(),
+        );
+        result.collections = section(&mut errors, Collections, self.smart_collections());
+        let week = now_ms()?.saturating_sub(7 * 86400000);
+        result.trash_count = section(
+            &mut errors,
+            Statistics,
+            (|| {
+                Ok(self.db.query_row(
+                    "SELECT count(*) FROM assets WHERE deleted_at IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })(),
+        );
+        (
+            result.recent_count,
+            result.untagged_count,
+            result.unassigned_count,
+            result.high_rating_count,
+        ) = section(
+            &mut errors,
+            Statistics,
+            (|| {
+                Ok(self.db.query_row("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM asset_tags WHERE asset_id=a.id)),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=a.id)),0),coalesce(sum(rating>=4),0) FROM assets a WHERE deleted_at IS NULL",[week],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?)
+            })(),
+        );
+        result.interrupted = section(
+            &mut errors,
+            Statistics,
+            (|| {
+                Ok(self.db.query_row(
+                    "SELECT count(*) FROM operation_journal WHERE phase='interrupted'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })(),
+        );
+        result.edited_count = section(
+            &mut errors,
+            Statistics,
+            (|| {
+                Ok(self.db.query_row(
+                    "SELECT count(*) FROM assets WHERE deleted_at IS NULL AND edited_at>=?1",
+                    [week],
+                    |r| r.get(0),
+                )?)
+            })(),
+        );
+        result.raw_count = section(
+            &mut errors,
+            Statistics,
+            (|| {
+                Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at IS NULL AND v.format IN({})",native::raw_sql()),[],|r|r.get(0))?)
+            })(),
+        );
+        result.synco = section(&mut errors, Synco, self.synco_tasks());
+        result.description = section(
+            &mut errors,
+            Profile,
+            (|| {
+                Ok(self
+                    .db
+                    .query_row(
+                        "SELECT value FROM library_preferences WHERE key='description'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or_default())
+            })(),
+        );
+        result.errors = errors;
+        Ok(result)
+    }
+    pub fn smart_collections(&self) -> Result<Vec<Collection>> {
+        let mut collections = Vec::new();
         let mut stmt = self
             .db
             .prepare("SELECT id,name,query FROM smart_collections ORDER BY name")?;
@@ -122,42 +236,14 @@ impl Library {
             ))
         })? {
             let (id, name, query) = row?;
-            result.collections.push(Collection {
+            collections.push(Collection {
                 id,
                 name,
                 query: toml::from_str(&query)
                     .map_err(|e| Error::Invalid(format!("集合规则损坏：{e}")))?,
             });
         }
-        let week = now_ms()?.saturating_sub(7 * 86400000);
-        result.trash_count = self.db.query_row(
-            "SELECT count(*) FROM assets WHERE deleted_at IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )?;
-        (result.recent_count,result.untagged_count,result.unassigned_count,result.high_rating_count)=self.db.query_row("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM asset_tags WHERE asset_id=a.id)),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=a.id)),0),coalesce(sum(rating>=4),0) FROM assets a WHERE deleted_at IS NULL",[week],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-        result.interrupted = self.db.query_row(
-            "SELECT count(*) FROM operation_journal WHERE phase='interrupted'",
-            [],
-            |r| r.get(0),
-        )?;
-        result.edited_count = self.db.query_row(
-            "SELECT count(*) FROM assets WHERE deleted_at IS NULL AND edited_at>=?1",
-            [week],
-            |r| r.get(0),
-        )?;
-        result.raw_count=self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at IS NULL AND v.format IN({})",native::raw_sql()),[],|r|r.get(0))?;
-        result.synco = self.synco_tasks()?;
-        result.description = self
-            .db
-            .query_row(
-                "SELECT value FROM library_preferences WHERE key='description'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or_default();
-        Ok(result)
+        Ok(collections)
     }
     pub fn details(&self, id: AssetId) -> Result<AssetDetails> {
         Ok(self.details_plan(id)?.read())

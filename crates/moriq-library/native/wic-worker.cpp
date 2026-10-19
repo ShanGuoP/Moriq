@@ -66,7 +66,7 @@ int wmain(int argc,wchar_t** argv) {
     ComPtr<IWICColorContext> source_context,destination_context;
     ComPtr<IWICColorTransform> color_transform;
     UINT contexts=0;
-    if(region&&SUCCEEDED(frame->GetColorContexts(0,nullptr,&contexts))&&contexts>0){
+    if(SUCCEEDED(frame->GetColorContexts(0,nullptr,&contexts))&&contexts>0){
         if(FAILED(factory->CreateColorContext(&source_context))||FAILED(factory->CreateColorContext(&destination_context)))return 5;
         IWICColorContext* contexts_array[]={source_context.Get()};UINT actual=0;
         if(FAILED(frame->GetColorContexts(1,contexts_array,&actual))||FAILED(destination_context->InitializeFromExifColorSpace(1))||FAILED(factory->CreateColorTransformer(&color_transform))||FAILED(color_transform->Initialize(frame.Get(),source_context.Get(),destination_context.Get(),GUID_WICPixelFormat32bppRGBA))||FAILED(color_transform.As(&color_source)))return 5;

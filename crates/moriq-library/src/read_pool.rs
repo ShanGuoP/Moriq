@@ -69,10 +69,10 @@ impl Drop for ReadLease {
                 return;
             }
         }
-        if let Ok(mut idle) = self.pool.idle.lock() {
-            if idle.len() < 4 {
-                idle.push(db)
-            }
+        if let Ok(mut idle) = self.pool.idle.lock()
+            && idle.len() < 4
+        {
+            idle.push(db)
         }
     }
 }

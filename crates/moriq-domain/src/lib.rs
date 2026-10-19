@@ -200,6 +200,7 @@ pub struct Collection {
 }
 #[derive(Debug, Clone, Default)]
 pub struct Organizer {
+    pub errors: Vec<(OrganizerSection, String)>,
     pub quarantined_files: u64,
     pub quarantined_bytes: u64,
     pub folders: Vec<VirtualFolder>,
@@ -219,6 +220,18 @@ pub struct Organizer {
     pub interrupted: u64,
     pub description: String,
     pub synco: Vec<SyncoTask>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrganizerSection {
+    Folders,
+    Jobs,
+    People,
+    Categories,
+    Tags,
+    Collections,
+    Statistics,
+    Synco,
+    Profile,
 }
 #[derive(Debug, Clone)]
 pub struct BackgroundJob {
@@ -387,7 +400,7 @@ pub struct BatchPatch {
 #[derive(Debug, Clone)]
 pub enum BatchScope {
     Assets(Vec<AssetId>),
-    Query(Query),
+    Query(Box<Query>),
 }
 #[derive(Debug, Clone, Default)]
 pub struct PurgeReport {

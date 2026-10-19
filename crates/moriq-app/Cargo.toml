@@ -14,6 +14,7 @@ futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile.workspace = true
 image.workspace = true
 [lints]

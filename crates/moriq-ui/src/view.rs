@@ -75,6 +75,15 @@ impl App {
             self.status.clone()
         };
         let mut footer = row![muted(status), Space::new().width(Length::Fill)];
+        if !self.manager.organizer.errors.is_empty() {
+            footer = footer.push(
+                action(
+                    "部分信息读取失败 · 查看详情",
+                    Message::Manage(ManageMessage::Menu),
+                )
+                .padding([4, 10]),
+            );
+        }
         if self.import.is_some() {
             footer = footer.push(action("停止导入", Message::CancelImport).padding([4, 10]));
         }

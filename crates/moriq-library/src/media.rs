@@ -353,7 +353,15 @@ fn read_exif(file: File) -> (Vec<(String, String)>, Option<AssetLocation>) {
 }
 
 /// Decode to a requested edge; large/RAW system codecs scale before pixel transfer.
-pub fn raster(mut file: File, hint: &Path, edge: u32) -> Result<crate::native::Decoded> {
+pub fn raster(file: File, hint: &Path, edge: u32) -> Result<crate::native::Decoded> {
+    raster_with_filter(file, hint, edge, Resampling::Area)
+}
+pub(crate) fn raster_with_filter(
+    mut file: File,
+    hint: &Path,
+    edge: u32,
+    filter: Resampling,
+) -> Result<crate::native::Decoded> {
     if hint
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
@@ -392,7 +400,7 @@ pub fn raster(mut file: File, hint: &Path, edge: u32) -> Result<crate::native::D
             image.apply_orientation(orientation);
             let (width, height) = image.dimensions();
             let image = if edge > 0 {
-                resize::fit(&image, edge)?
+                resize::fit_with(&image, edge, filter)?
             } else {
                 image
             };

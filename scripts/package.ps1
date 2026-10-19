@@ -30,6 +30,7 @@ try {
             Copy-Item -LiteralPath (Join-Path $targetRoot "ai-runtime/$name") -Destination $ai -Recurse
         }
         Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $stagingRoot
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'NOTICE') -Destination $stagingRoot
         Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $stagingRoot
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         if(Test-Path -LiteralPath $pending){Remove-Item -LiteralPath $pending -Force}

@@ -145,18 +145,20 @@ pub fn run(items: Vec<Item>, parent: &Path, options: ExportOptions) -> Result<Pa
             fs::rename(&frozen, &destination)?;
             continue;
         }
-        let mut decoded = media::raster(File::open(&frozen)?, &item.source, 0)?
-            .image
-            .ok_or_else(|| Error::Invalid("导出解码无像素".into()))?;
+        let mut decoded = media::raster_with_filter(
+            File::open(&frozen)?,
+            &item.source,
+            options.max_edge,
+            options.resampling,
+        )?
+        .image
+        .ok_or_else(|| Error::Invalid("导出解码无像素".into()))?;
         decoded = match options.rotate {
             90 => decoded.rotate90(),
             180 => decoded.rotate180(),
             270 => decoded.rotate270(),
             _ => decoded,
         };
-        if options.max_edge > 0 {
-            decoded = resize::fit_with(&decoded, options.max_edge, options.resampling)?;
-        }
         let exif = if options.preserve_exif {
             export_metadata::normalized_exif(&frozen, decoded.width(), decoded.height())?
         } else {
@@ -248,4 +250,123 @@ pub fn run(items: Vec<Item>, parent: &Path, options: ExportOptions) -> Result<Pa
     let destination = parent.join(format!("MORIQ-导出-{}", Uuid::new_v4()));
     fs::rename(stage.path(), &destination)?;
     Ok(destination)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bounded_export_scales_before_decoding_and_rotates_without_upscaling() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("large.svg");
+        let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="16000" height="10000"><rect width="16000" height="10000" fill="red"/></svg>"#;
+        fs::write(&source, bytes).unwrap();
+        let mut lib = Library::create(dir.path(), "导出").unwrap();
+        lib.import(&source, None).unwrap();
+        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets[0].id;
+        for (rotate, expected) in [
+            (0, (500, 313)),
+            (90, (313, 500)),
+            (180, (500, 313)),
+            (270, (313, 500)),
+        ] {
+            let out = run(
+                lib.export_plan(&[asset]).unwrap(),
+                dir.path(),
+                ExportOptions {
+                    format: ExportFormat::Png,
+                    max_edge: 500,
+                    rotate,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                image::open(out.join("large.png")).unwrap().dimensions(),
+                expected
+            );
+        }
+        assert!(
+            run(
+                lib.export_plan(&[asset]).unwrap(),
+                dir.path(),
+                ExportOptions {
+                    format: ExportFormat::Png,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        let original = run(
+            lib.export_plan(&[asset]).unwrap(),
+            dir.path(),
+            ExportOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(fs::read(original.join("large.svg")).unwrap(), bytes);
+        assert_eq!(fs::read(source).unwrap(), bytes);
+        let source = dir.path().join("small.png");
+        image::RgbaImage::from_fn(4, 2, |x, _| {
+            if x % 2 == 0 {
+                image::Rgba([255, 0, 0, 128])
+            } else {
+                image::Rgba([0, 0, 255, 128])
+            }
+        })
+        .save(&source)
+        .unwrap();
+        lib.import(&source, None).unwrap();
+        let small = lib
+            .page(
+                &Query {
+                    text: "small.png".into(),
+                    ..Default::default()
+                },
+                0,
+                1,
+            )
+            .unwrap()
+            .assets[0]
+            .id;
+        let out = run(
+            lib.export_plan(&[small]).unwrap(),
+            dir.path(),
+            ExportOptions {
+                format: ExportFormat::Png,
+                max_edge: 500,
+                rotate: 90,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            image::open(out.join("small.png")).unwrap().dimensions(),
+            (2, 4)
+        );
+        for resampling in [Resampling::Nearest, Resampling::Area] {
+            let out = run(
+                lib.export_plan(&[small]).unwrap(),
+                dir.path(),
+                ExportOptions {
+                    format: ExportFormat::Png,
+                    max_edge: 1,
+                    resampling,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let pixel = image::open(out.join("small.png"))
+                .unwrap()
+                .to_rgba8()
+                .get_pixel(0, 0)
+                .0;
+            assert_eq!(pixel[3], 128);
+            if matches!(resampling, Resampling::Nearest) {
+                assert!(pixel[0].max(pixel[2]) > 240 && pixel[0].min(pixel[2]) < 10);
+            } else {
+                assert!((120..=135).contains(&pixel[0]) && (120..=135).contains(&pixel[2]));
+            }
+        }
+    }
 }

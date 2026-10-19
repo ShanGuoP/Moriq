@@ -213,14 +213,14 @@ impl Library {
         let Some((job, kind, generation, checkpoint)) = next else {
             return Ok(None);
         };
-        if let Some(model) = kind.strip_prefix("analysis:") {
-            if let Err(error) = moriq_ai::installed_path(model) {
-                self.db.execute(
-                    "UPDATE background_jobs SET state='paused',error=?2 WHERE id=?1",
-                    params![job, error],
-                )?;
-                return Ok(None);
-            }
+        if let Some(model) = kind.strip_prefix("analysis:")
+            && let Err(error) = moriq_ai::installed_path(model)
+        {
+            self.db.execute(
+                "UPDATE background_jobs SET state='paused',error=?2 WHERE id=?1",
+                params![job, error],
+            )?;
+            return Ok(None);
         }
         let item:Option<(i64,String)>=self.db.query_row("SELECT seq,version_id FROM background_job_items WHERE job_id=?1 AND seq>?2 ORDER BY seq LIMIT 1",params![job,checkpoint],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         let Some((seq, version)) = item else {
@@ -364,6 +364,59 @@ impl Library {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_completion_after_purge_advances_without_recreating_the_version() {
+        use image::ImageEncoder;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("exif.png");
+        let mut output = File::create(&source).unwrap();
+        let mut encoder = image::codecs::png::PngEncoder::new(&mut output);
+        let mut exif =
+            b"II\x2a\0\x08\0\0\0\x01\0\x0f\x01\x02\0\x06\0\0\0\x1a\0\0\0\0\0\0\0".to_vec();
+        exif.extend_from_slice(b"AUDIT\0");
+        encoder.set_exif_metadata(exif).unwrap();
+        encoder
+            .write_image(&[230, 80, 30], 1, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        drop(output);
+        let mut lib = Library::create(dir.path(), "元数据删除竞态").unwrap();
+        lib.import(&source, None).unwrap();
+        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
+        let job = lib.enqueue_media_job("metadata", 0).unwrap();
+        let outcome = lib.claim_job_step().unwrap().unwrap().run();
+        assert_eq!(
+            outcome.analysis.as_ref().unwrap().as_ref().unwrap()["make"],
+            "AUDIT"
+        );
+        lib.edit(&[asset.id], &Edit::Trash(true)).unwrap();
+        lib.purge(&[asset.id]).unwrap();
+        lib.finish_job_step(outcome).unwrap();
+        assert!(lib.claim_job_step().unwrap().is_none());
+        let completed = lib
+            .background_jobs()
+            .unwrap()
+            .into_iter()
+            .find(|j| j.id == job)
+            .unwrap();
+        assert_eq!(
+            (
+                completed.state.as_str(),
+                completed.completed,
+                completed.failed
+            ),
+            ("completed", 1, 0)
+        );
+        let count: u64 = lib
+            .db
+            .query_row(
+                "SELECT count(*) FROM version_exif WHERE version_id=?1",
+                [asset.version_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        assert!(source.exists());
+    }
     fn library(dir: &Path) -> Library {
         let mut lib = Library::create(dir, "任务").unwrap();
         for n in 0..3 {

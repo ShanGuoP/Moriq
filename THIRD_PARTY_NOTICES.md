@@ -1,6 +1,6 @@
 # MORIQ third-party components
 
-MORIQ source is distributed under the MIT license in LICENSE. Individual third-party components retain their own licenses. This file records the added media and AI components; a complete dependency and corresponding-source audit remains required before a signed public release.
+MORIQ source is distributed under the Apache License, Version 2.0, in LICENSE. Project attribution is retained in NOTICE. Individual third-party components retain their own licenses. This file records the added media and AI components; a complete dependency and corresponding-source audit remains required before a signed public release.
 
 - LibRaw 0.22.2: https://www.libraw.org/ . The bundled dynamic library uses the LGPL license option; its copyright and license are included in codecs/licenses. The pinned upstream Windows archive contains the library source and build files: https://www.libraw.org/data/LibRaw-0.22.2-Win64.zip . No LibRaw source modifications are made by MORIQ.
 - FFmpeg n8.1.3-18-g46d899d7a0: https://ffmpeg.org/ . BtbN's LGPL shared build enables version3 and is LGPLv3. License is included in codecs/licenses. Exact binary provenance is in codecs/provenance.json. Upstream revision: https://github.com/FFmpeg/FFmpeg/tree/46d899d7a0 . Build recipes: https://github.com/BtbN/FFmpeg-Builds . A reproducible corresponding-source bundle including enabled dependencies must be archived before public release.

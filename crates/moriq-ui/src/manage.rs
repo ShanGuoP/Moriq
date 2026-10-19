@@ -1452,6 +1452,24 @@ impl App {
             return self.popup(base);
         }
         let mut content = Column::new().spacing(14);
+        for (section, _) in &self.manager.organizer.errors {
+            let (panel, label) = match section {
+                OrganizerSection::Folders => (Panel::Collections, "分组"),
+                OrganizerSection::Jobs => (Panel::Tasks, "后台任务"),
+                OrganizerSection::People => (Panel::People, "人物"),
+                OrganizerSection::Categories => (Panel::Menu, "分类"),
+                OrganizerSection::Tags => (Panel::Tags, "标签"),
+                OrganizerSection::Collections => (Panel::Collections, "智能集合"),
+                OrganizerSection::Statistics => (Panel::Maintenance, "统计"),
+                OrganizerSection::Synco => (Panel::Synco, "Synco 交接"),
+                OrganizerSection::Profile => (Panel::Maintenance, "资源库信息"),
+            };
+            if self.manager.panel == Some(panel) || self.manager.panel == Some(Panel::Menu) {
+                content = content.push(muted(format!(
+                    "{label}暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。"
+                )));
+            }
+        }
         let title = match self.manager.panel {
             Some(Panel::Activity) => "活动记录",
             Some(Panel::Notifications) => "通知中心",

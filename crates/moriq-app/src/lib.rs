@@ -2,6 +2,7 @@
 use futures::{Stream, StreamExt, stream};
 mod cache;
 mod scan;
+mod scheduler;
 use moriq_domain::*;
 use moriq_library::Library;
 pub use moriq_library::Pixels;
@@ -55,6 +56,7 @@ pub struct Service {
     import_memory: Arc<Semaphore>,
     maintenance_slot: Arc<Semaphore>,
     read_slots: Arc<Semaphore>,
+    job_slot: Arc<Semaphore>,
 }
 #[derive(Debug, Clone)]
 pub struct Opened {
@@ -578,6 +580,12 @@ impl Service {
         let service = self.clone();
         // A dropped UI future must not strand an in-flight checkpoint in an open library.
         tokio::spawn(async move {
+            let _slot = service
+                .job_slot
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| e.to_string())?;
             let started = std::time::Instant::now();
             for _ in 0..64 {
                 let work = service
@@ -1357,14 +1365,25 @@ impl Service {
                     job(&mut active);
                 }
             })?;
-        Ok(Self {
+        let service = Self {
             queue,
             import_slots: Arc::new(Semaphore::new(32)),
             import_memory: Arc::new(Semaphore::new(4096)),
             maintenance_slot: Arc::new(Semaphore::new(1)),
             read_slots: Arc::new(Semaphore::new(4)),
             media_cache: Arc::new(Default::default()),
+            job_slot: Arc::new(Semaphore::new(1)),
+        };
+        scheduler::start(&service)?;
+        Ok(service)
+    }
+    pub async fn background_jobs(&self, id: LibraryId) -> Result<Vec<BackgroundJob>> {
+        self.call(move |active| {
+            check(active, id)?
+                .background_jobs()
+                .map_err(|e| e.to_string())
         })
+        .await
     }
     async fn call<T: Send + 'static>(
         &self,

@@ -172,10 +172,12 @@ impl App {
         };
         self.regions.visible.clear();
         let physical_scale = viewport.scale * self.dpi_scale;
-        if physical_scale <= 1600.0 / session.width.max(session.height) as f32 {
+        if !physical_scale.is_finite()
+            || physical_scale <= 1600.0 / session.width.max(session.height) as f32
+        {
             return Task::none();
         }
-        let ratio = (0.5 / physical_scale).max(1.0).min(64.0) as u32;
+        let ratio = (0.5 / physical_scale).clamp(1.0, 64.0) as u32;
         let level = 1u32 << ratio.ilog2();
         let span = 512 * level;
         let right = (u64::from(viewport.x) + u64::from(viewport.width))

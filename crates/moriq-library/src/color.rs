@@ -51,6 +51,69 @@ pub(super) fn to_srgb(
 mod tests {
     use super::*;
     use image::ImageEncoder;
+    #[cfg(windows)]
+    #[test]
+    fn wic_preview_and_region_convert_adobe_rgb_to_srgb() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("AdobeRGB.png");
+        let mut output = File::create(&source).unwrap();
+        let mut encoder = image::codecs::png::PngEncoder::new(&mut output);
+        encoder
+            .set_icc_profile(ColorProfile::new_adobe_rgb().encode().unwrap())
+            .unwrap();
+        encoder
+            .write_image(
+                &[230, 80, 30, 255].repeat(16),
+                4,
+                4,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        drop(output);
+        let original = fs::read(&source).unwrap();
+        let normal = media::raster(File::open(&source).unwrap(), &source, 256)
+            .unwrap()
+            .image
+            .unwrap()
+            .to_rgba8();
+        let native = native::decode(&source, 256)
+            .unwrap()
+            .image
+            .unwrap()
+            .to_rgba8();
+        assert!(normal.get_pixel(0, 0)[0] > 245);
+        assert!(
+            normal
+                .get_pixel(0, 0)
+                .0
+                .iter()
+                .zip(native.get_pixel(0, 0).0)
+                .all(|(a, b)| a.abs_diff(b) <= 4),
+            "Rust {:?}, WIC {:?}",
+            normal.get_pixel(0, 0),
+            native.get_pixel(0, 0)
+        );
+        let region_output = dir.path().join("region.bin");
+        region::run(
+            native::worker().unwrap(),
+            &source,
+            &region_output,
+            256,
+            Some(ImageRegion {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+                level: 0,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            &fs::read(region_output).unwrap()[24..28],
+            native.get_pixel(0, 0).0
+        );
+        assert_eq!(fs::read(source).unwrap(), original);
+    }
     #[test]
     fn icc_preview_full_resolution_and_converted_export_share_srgb_without_touching_original() {
         let dir = tempfile::tempdir().unwrap();

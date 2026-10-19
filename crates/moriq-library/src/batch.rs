@@ -33,7 +33,7 @@ impl Library {
         let table = match &scope {
             BatchScope::Query(query) => {
                 self.page(query, 0, 0)?;
-                if *query == Query::default() {
+                if **query == Query::default() {
                     "asset_order"
                 } else {
                     "query_snapshot"

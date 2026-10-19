@@ -2051,6 +2051,7 @@ dependencies = [
  "moriq-library",
  "moriq-render",
  "moriq-synco",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "tokio",

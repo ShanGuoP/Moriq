@@ -7,46 +7,6 @@ pub struct Signature {
     pub aspect: f64,
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    #[test]
-    fn detects_resized_and_recompressed_images_without_merging_or_modifying_sources() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut image = image::RgbImage::new(512, 256);
-        for (x, y, p) in image.enumerate_pixels_mut() {
-            *p = image::Rgb([
-                (x / 2) as u8,
-                (y / 2) as u8,
-                ((x / 32 + y / 16) % 2 * 160) as u8,
-            ]);
-        }
-        let first = dir.path().join("original.png");
-        image.save(&first).unwrap();
-        let second = dir.path().join("compressed.jpg");
-        image::DynamicImage::ImageRgb8(image)
-            .resize_exact(256, 128, image::imageops::FilterType::Triangle)
-            .save(&second)
-            .unwrap();
-        let unrelated = dir.path().join("other.png");
-        image::RgbImage::from_pixel(512, 256, image::Rgb([0, 0, 255]))
-            .save(&unrelated)
-            .unwrap();
-        let before = organize::hash_file(&first).unwrap();
-        let mut lib = Library::create(dir.path(), "近似").unwrap();
-        for file in [&first, &second, &unrelated] {
-            lib.import(file, None).unwrap();
-        }
-        let assets = lib.page(&Query::default(), 0, 5).unwrap().assets;
-        let reference = assets.iter().find(|a| a.name == "original.png").unwrap();
-        let matches = lib.similar_assets(reference.id).unwrap();
-        assert!(matches.iter().any(|a| a.name == "compressed.jpg"));
-        assert!(!matches.iter().any(|a| a.name == "other.png"));
-        assert_eq!(lib.info().unwrap().count, 3);
-        assert_eq!(organize::hash_file(&first).unwrap(), before);
-    }
-}
 pub fn signature(image: &image::DynamicImage) -> Signature {
     let scaled = image
         .resize_exact(32, 32, image::imageops::FilterType::Triangle)
@@ -153,5 +113,46 @@ impl SimilarityPlan {
         matches.sort_by(|a, b| a.distance.cmp(&b.distance).then(a.name.cmp(&b.name)));
         matches.truncate(100);
         Ok(matches)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn detects_resized_and_recompressed_images_without_merging_or_modifying_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut image = image::RgbImage::new(512, 256);
+        for (x, y, p) in image.enumerate_pixels_mut() {
+            *p = image::Rgb([
+                (x / 2) as u8,
+                (y / 2) as u8,
+                ((x / 32 + y / 16) % 2 * 160) as u8,
+            ]);
+        }
+        let first = dir.path().join("original.png");
+        image.save(&first).unwrap();
+        let second = dir.path().join("compressed.jpg");
+        image::DynamicImage::ImageRgb8(image)
+            .resize_exact(256, 128, image::imageops::FilterType::Triangle)
+            .save(&second)
+            .unwrap();
+        let unrelated = dir.path().join("other.png");
+        image::RgbImage::from_pixel(512, 256, image::Rgb([0, 0, 255]))
+            .save(&unrelated)
+            .unwrap();
+        let before = organize::hash_file(&first).unwrap();
+        let mut lib = Library::create(dir.path(), "近似").unwrap();
+        for file in [&first, &second, &unrelated] {
+            lib.import(file, None).unwrap();
+        }
+        let assets = lib.page(&Query::default(), 0, 5).unwrap().assets;
+        let reference = assets.iter().find(|a| a.name == "original.png").unwrap();
+        let matches = lib.similar_assets(reference.id).unwrap();
+        assert!(matches.iter().any(|a| a.name == "compressed.jpg"));
+        assert!(!matches.iter().any(|a| a.name == "other.png"));
+        assert_eq!(lib.info().unwrap().count, 3);
+        assert_eq!(organize::hash_file(&first).unwrap(), before);
     }
 }

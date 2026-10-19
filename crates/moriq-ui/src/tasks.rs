@@ -2,45 +2,77 @@ use super::*;
 use crate::components::*;
 use iced::widget::column;
 #[derive(Default)]
-pub(super) struct Scheduler {
-    pub driving: bool,
+pub(super) struct TaskState {
+    pub loading: bool,
+    pub error: Option<String>,
     pub request: u64,
     pub ticks: u8,
     pub(super) failures: Option<(LibraryId, String, Vec<JobFailure>)>,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn task_refresh_runs_with_empty_projection_and_rejects_stale_receipts() {
+        let mut app = crate::tests::app();
+        let id = app.library.as_ref().unwrap().info.id;
+        app.jobs.ticks = 3;
+        drop(app.job_tick());
+        assert!(app.jobs.loading);
+        let request = app.jobs.request;
+        drop(app.job_message(JobMessage::Refreshed(
+            LibraryId::default(),
+            request,
+            Err("other library".into()),
+        )));
+        drop(app.job_message(JobMessage::Refreshed(
+            id,
+            request - 1,
+            Err("old request".into()),
+        )));
+        assert!(app.jobs.loading);
+        assert!(app.jobs.error.is_none());
+        drop(app.job_message(JobMessage::Refreshed(
+            id,
+            request,
+            Err("job query failed".into()),
+        )));
+        assert!(!app.jobs.loading);
+        assert_eq!(app.jobs.error.as_deref(), Some("job query failed"));
+        assert!(app.error.is_none());
+        app.jobs.ticks = 3;
+        drop(app.job_tick());
+        drop(app.job_message(JobMessage::Refreshed(id, app.jobs.request, Ok(vec![]))));
+        assert!(app.jobs.error.is_none());
+    }
 }
 #[derive(Debug, Clone)]
 pub enum JobMessage {
     Queue(String),
     Control(String, JobCommand),
     Stored(LibraryId, Result<(), String>),
-    Step(LibraryId, u64, Result<(), String>),
+    Refreshed(LibraryId, u64, Result<Vec<BackgroundJob>, String>),
     Failures(String),
     FailuresLoaded(LibraryId, String, Result<Vec<JobFailure>, String>),
 }
 impl App {
     pub(super) fn job_tick(&mut self) -> Task<Message> {
         self.jobs.ticks = self.jobs.ticks.wrapping_add(1);
-        if self.jobs.driving
-            || self.jobs.ticks % 4 != 0
-            || !self
-                .manager
-                .organizer
-                .jobs
-                .iter()
-                .any(|j| matches!(j.state.as_str(), "queued" | "running"))
-        {
+        if self.jobs.loading || !self.jobs.ticks.is_multiple_of(4) {
             return Task::none();
         }
         let Some(library) = &self.library else {
             return Task::none();
         };
         let id = library.info.id;
-        self.jobs.driving = true;
+        self.jobs.loading = true;
         self.jobs.request += 1;
         let request = self.jobs.request;
         let service = self.service.clone();
-        Task::perform(async move { service.drive_job_step(id).await }, move |r| {
-            Message::Jobs(JobMessage::Step(id, request, r))
+        Task::perform(async move { service.background_jobs(id).await }, move |r| {
+            Message::Jobs(JobMessage::Refreshed(id, request, r))
         })
     }
     pub(super) fn job_message(&mut self, event: JobMessage) -> Task<Message> {
@@ -93,14 +125,26 @@ impl App {
                 }
                 return self.refresh_organizer();
             }
-            JobMessage::Step(owner, request, result)
+            JobMessage::Refreshed(owner, request, result)
                 if owner == id && request == self.jobs.request =>
             {
-                self.jobs.driving = false;
-                if let Err(e) = result {
-                    self.error = Some(e)
+                self.jobs.loading = false;
+                match result {
+                    Ok(jobs) => {
+                        self.manager.organizer.jobs = jobs;
+                        self.jobs.error = None;
+                        self.manager
+                            .organizer
+                            .errors
+                            .retain(|(section, _)| *section != OrganizerSection::Jobs);
+                    }
+                    Err(e) => {
+                        if self.jobs.error.as_ref() != Some(&e) {
+                            tracing::warn!(error = %e, "background job projection could not be loaded");
+                        }
+                        self.jobs.error = Some(e);
+                    }
                 }
-                return self.refresh_organizer();
             }
             _ => {}
         }
@@ -111,6 +155,11 @@ impl App {
             "此处显示当前导入、AI 分析、索引、资源检查、空间统计与 Synco 交接。"
         )]
         .spacing(12);
+        if self.jobs.error.is_some() {
+            view = view.push(muted(
+                "任务列表暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。",
+            ));
+        }
         view = view
             .push(action(
                 "原文件完整性检查（可暂停与断点继续）",
@@ -164,18 +213,17 @@ impl App {
                         Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::RetryFailed)),
                     ));
                 }
-                if let Some((owner, selected, items)) = &self.jobs.failures {
-                    if self.library.as_ref().is_some_and(|l| l.info.id == *owner)
-                        && *selected == job.id
-                    {
-                        for item in items {
-                            view = view.push(muted(format!("{}：{}", item.name, item.message)));
-                            if let Some(asset) = item.asset {
-                                view = view.push(action(
-                                    "查看此素材",
-                                    Message::Journal(journal::JournalMessage::OpenAsset(asset)),
-                                ));
-                            }
+                if let Some((owner, selected, items)) = &self.jobs.failures
+                    && self.library.as_ref().is_some_and(|l| l.info.id == *owner)
+                    && *selected == job.id
+                {
+                    for item in items {
+                        view = view.push(muted(format!("{}：{}", item.name, item.message)));
+                        if let Some(asset) = item.asset {
+                            view = view.push(action(
+                                "查看此素材",
+                                Message::Journal(journal::JournalMessage::OpenAsset(asset)),
+                            ));
                         }
                     }
                 }

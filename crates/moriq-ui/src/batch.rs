@@ -88,7 +88,7 @@ impl App {
                     project: self.batch.project.as_ref().and_then(|p| p.id),
                 };
                 let scope = if self.batch.all {
-                    BatchScope::Query(self.query.clone())
+                    BatchScope::Query(Box::new(self.query.clone()))
                 } else {
                     BatchScope::Assets(self.selected_ids())
                 };

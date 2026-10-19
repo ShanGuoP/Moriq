@@ -6,7 +6,7 @@ members = ["apps/desktop", "crates/*"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-license = "MIT"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 bytes = "1"
@@ -37,7 +37,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = {version="0.4",default-features=false,features=["clock"]}
 kamadak-exif = "0.6.1"
-resvg = { version = "=0.45.1", default-features = false }
+resvg = { version = "=0.45.1", default-features = false, features = ["text", "system-fonts"] }
 embed-resource = "=3.0.12"
 
 [profile.release]

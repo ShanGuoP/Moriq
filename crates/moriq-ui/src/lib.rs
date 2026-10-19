@@ -803,7 +803,7 @@ pub struct App {
     original_request: u64,
     original_size: Option<(u32, u32)>,
     playback: Option<std::sync::Arc<moriq_app::Playback>>,
-    jobs: tasks::Scheduler,
+    jobs: tasks::TaskState,
     compare: compare::Compare,
     tag_input: String,
     project_name: String,
@@ -1518,10 +1518,10 @@ impl App {
                     .map(|l| (l.info.id, self.navigation_snapshot()));
                 return Task::perform(
                     async move {
-                        if let Some((owner, value)) = navigation {
-                            if let Err(error) = service.save_navigation(owner, value).await {
-                                tracing::warn!(%error,"navigation could not be saved on exit");
-                            }
+                        if let Some((owner, value)) = navigation
+                            && let Err(error) = service.save_navigation(owner, value).await
+                        {
+                            tracing::warn!(%error,"navigation could not be saved on exit");
                         }
                         service.close().await
                     },

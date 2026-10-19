@@ -89,7 +89,7 @@ fn vector(value: &serde_json::Value) -> Result<Vec<f32>> {
     Ok(values)
 }
 pub fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>> {
-    if bytes.is_empty() || bytes.len() % 4 != 0 || bytes.len() > 16384 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) || bytes.len() > 16384 {
         return Err(Error::Invalid("已存向量数据无效".into()));
     }
     let values = bytes
@@ -209,10 +209,10 @@ pub(crate) fn suggest_people(
     });
     let mut used = std::collections::HashSet::new();
     for index in order {
-        if let Some((id, _)) = &best[index] {
-            if used.insert(id.clone()) {
-                faces[index]["suggested_person"] = serde_json::Value::String(id.clone());
-            }
+        if let Some((id, _)) = &best[index]
+            && used.insert(id.clone())
+        {
+            faces[index]["suggested_person"] = serde_json::Value::String(id.clone());
         }
     }
     Ok(())
