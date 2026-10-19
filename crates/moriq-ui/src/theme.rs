@@ -44,6 +44,16 @@ pub fn sidebar(_: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+pub fn modal(theme: &Theme) -> container::Style {
+    container::Style {
+        shadow: iced::Shadow {
+            color: Color::from_rgba8(24, 42, 72, 0.10),
+            offset: iced::Vector::new(0.0, 8.0),
+            blur_radius: 28.0,
+        },
+        ..panel(theme)
+    }
+}
 pub fn pale(_: &Theme) -> container::Style {
     container::Style {
         background: Some(PALE.into()),
@@ -62,6 +72,8 @@ pub fn primary(_: &Theme, status: button::Status) -> button::Style {
                 Color::from_rgb8(224, 235, 252)
             } else if matches!(status, button::Status::Hovered) {
                 Color::from_rgb8(0, 95, 237)
+            } else if matches!(status, button::Status::Pressed) {
+                Color::from_rgb8(0, 78, 206)
             } else {
                 BLUE
             }
@@ -84,6 +96,8 @@ pub fn secondary(_: &Theme, status: button::Status) -> button::Style {
         background: Some(
             if matches!(status, button::Status::Hovered) {
                 BG
+            } else if matches!(status, button::Status::Pressed) {
+                PALE
             } else {
                 Color::WHITE
             }
@@ -121,8 +135,16 @@ pub fn destructive(_: &Theme, status: button::Status) -> button::Style {
 }
 pub fn flat(_: &Theme, status: button::Status) -> button::Style {
     button::Style {
-        background: matches!(status, button::Status::Hovered).then_some(PALE.into()),
-        text_color: ICON,
+        background: match status {
+            button::Status::Hovered => Some(PALE.into()),
+            button::Status::Pressed => Some(Color::from_rgb8(213, 228, 252).into()),
+            _ => None,
+        },
+        text_color: if matches!(status, button::Status::Disabled) {
+            MUTED
+        } else {
+            ICON
+        },
         border: Border {
             radius: 6.0.into(),
             ..Default::default()
@@ -133,7 +155,9 @@ pub fn flat(_: &Theme, status: button::Status) -> button::Style {
 pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| button::Style {
         background: Some(
-            if active {
+            if matches!(status, button::Status::Pressed) {
+                Color::from_rgb8(213, 228, 252)
+            } else if active {
                 PALE
             } else if matches!(status, button::Status::Hovered) {
                 Color::from_rgb8(239, 244, 251)

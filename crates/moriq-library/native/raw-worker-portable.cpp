@@ -8,25 +8,38 @@
 #include <thread>
 #include <chrono>
 #include <vector>
+#include <atomic>
+#include <cstring>
+#include "raw-budget.h"
 #include <unistd.h>
 #include <sys/resource.h>
 #ifdef __APPLE__
 #include <mach/mach.h>
 #endif
-static void guard(pid_t parent){
+static std::atomic<uint64_t> memory_limit{1536ULL*1024*1024};
+static void set_memory_limit(uint32_t mib){
+    memory_limit=uint64_t(mib)*1024*1024;
+    rlimit memory{memory_limit.load(),1536ULL*1024*1024};if(setrlimit(RLIMIT_DATA,&memory)!=0)std::_Exit(3);
+}
+static void guard(pid_t parent,bool probe){
     rlimit cpu{90,90};if(setrlimit(RLIMIT_CPU,&cpu)!=0)std::_Exit(3);
-    rlimit memory{1536ULL*1024*1024,1536ULL*1024*1024};if(setrlimit(RLIMIT_DATA,&memory)!=0)std::_Exit(3);
+    set_memory_limit(probe?192:1536);
     std::thread([parent]{for(;;){if(getppid()!=parent)std::_Exit(9);
 #ifdef __APPLE__
         mach_task_basic_info info{};mach_msg_type_number_t count=MACH_TASK_BASIC_INFO_COUNT;
-        if(task_info(mach_task_self(),MACH_TASK_BASIC_INFO,reinterpret_cast<task_info_t>(&info),&count)==KERN_SUCCESS&&info.resident_size>1536ULL*1024*1024)std::_Exit(6);
+        if(task_info(mach_task_self(),MACH_TASK_BASIC_INFO,reinterpret_cast<task_info_t>(&info),&count)==KERN_SUCCESS&&info.resident_size>memory_limit.load())std::_Exit(6);
 #endif
         std::this_thread::sleep_for(std::chrono::milliseconds(100));}}).detach();
 }
 int main(int argc,char**argv){
-    if(argc!=5)return 2;const unsigned edge=std::strtoul(argv[3],nullptr,10);if(edge>65535)return 2;guard(std::strtol(argv[4],nullptr,10));
+    const bool probe=argc==6&&std::strcmp(argv[5],"--probe")==0;
+    if(argc!=5&&!probe)return 2;const unsigned edge=std::strtoul(argv[3],nullptr,10);if(edge>65535)return 2;guard(std::strtol(argv[4],nullptr,10),probe);
     LibRaw raw;raw.imgdata.rawparams.max_raw_memory_mb=1024;raw.imgdata.params.use_camera_wb=1;raw.imgdata.params.output_color=1;raw.imgdata.params.output_bps=8;raw.imgdata.params.user_qual=3;
-    if(raw.open_file(argv[1])!=LIBRAW_SUCCESS)return 4;if(raw.unpack()!=LIBRAW_SUCCESS||raw.dcraw_process()!=LIBRAW_SUCCESS)return 5;
+    if(raw.open_file(argv[1])!=LIBRAW_SUCCESS)return 4;
+    const uint32_t child_mib=raw_child_mib(raw.imgdata,edge);
+    if(probe){std::ofstream output(argv[2],std::ios::binary);raw_memory_report(output,child_mib);return output.good()?0:7;}
+    set_memory_limit(child_mib);raw.imgdata.rawparams.max_raw_memory_mb=std::min(1024u,child_mib);
+    if(raw.unpack()!=LIBRAW_SUCCESS||raw.dcraw_process()!=LIBRAW_SUCCESS)return 5;
     int error=0;libraw_processed_image_t* image=raw.dcraw_make_mem_image(&error);if(!image||error!=LIBRAW_SUCCESS)return 5;
     if(image->type!=LIBRAW_IMAGE_BITMAP||image->bits!=8||(image->colors!=3&&image->colors!=1))return 5;
     const uint32_t width=image->width,height=image->height;uint32_t w=width,h=height;

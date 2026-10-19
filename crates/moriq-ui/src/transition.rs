@@ -3,19 +3,42 @@ use super::*;
 use std::time::Instant;
 pub(super) const FADE_OUT: Duration = Duration::from_millis(70);
 pub(super) const FADE_IN: Duration = Duration::from_millis(110);
+pub(super) struct Entrance {
+    pub started: Instant,
+    sampled: Instant,
+}
+impl Entrance {
+    fn new(now: Instant) -> Self {
+        Self {
+            started: now,
+            sampled: now,
+        }
+    }
+    pub fn remaining(&self) -> f32 {
+        let t = (self
+            .sampled
+            .saturating_duration_since(self.started)
+            .as_secs_f32()
+            / 0.16)
+            .clamp(0.0, 1.0);
+        (1.0 - t).powi(3)
+    }
+}
 pub(super) struct PageTransition {
     pub pending: Option<Box<Message>>,
     pub started: Instant,
     pub sampled: Instant,
     from: f32,
+    offset_from: f32,
 }
 impl PageTransition {
-    pub fn outgoing(message: Message, now: Instant, from: f32) -> Self {
+    pub fn outgoing(message: Message, now: Instant, from: f32, offset: f32) -> Self {
         Self {
             pending: Some(Box::new(message)),
             started: now,
             sampled: now,
             from: from.clamp(0.0, 1.0),
+            offset_from: offset,
         }
     }
     pub fn incoming(now: Instant, from: f32) -> Self {
@@ -24,19 +47,27 @@ impl PageTransition {
             started: now,
             sampled: now,
             from: from.clamp(0.0, 1.0),
+            offset_from: 6.0 * from.clamp(0.0, 1.0),
         }
     }
     pub fn elapsed(&self) -> Duration {
         self.sampled.saturating_duration_since(self.started)
     }
-    pub fn alpha(&self) -> f32 {
+    fn progress(&self) -> f32 {
         let duration = if self.pending.is_some() {
             FADE_OUT
         } else {
             FADE_IN
         };
         let t = (self.elapsed().as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
-        let eased = t * t * (3.0 - 2.0 * t);
+        t * t * (3.0 - 2.0 * t)
+    }
+    pub fn offset(&self) -> f32 {
+        let target = if self.pending.is_some() { -2.0 } else { 0.0 };
+        self.offset_from + (target - self.offset_from) * self.progress()
+    }
+    pub fn alpha(&self) -> f32 {
+        let eased = self.progress();
         if self.pending.is_some() {
             self.from + (1.0 - self.from) * eased
         } else {
@@ -45,6 +76,18 @@ impl PageTransition {
     }
 }
 impl App {
+    pub(super) fn surface_offset(&self) -> f32 {
+        self.surface_motion
+            .as_ref()
+            .map_or(0.0, |motion| 10.0 * motion.remaining())
+    }
+    pub(super) fn backdrop_alpha(&self) -> f32 {
+        0.22 * (1.0
+            - self
+                .surface_motion
+                .as_ref()
+                .map_or(0.0, Entrance::remaining))
+    }
     fn is_page_navigation(message: &Message) -> bool {
         matches!(
             message,
@@ -67,12 +110,13 @@ impl App {
                 !self.surface_open() && !self.preview_expanded && self.history.can_forward()
             }
             Message::Navigate(to) => {
-                self.screen
-                    != match to {
-                        1 => Screen::Assets,
-                        2 => Screen::Models,
-                        _ => Screen::Overview,
-                    }
+                self.library_picker
+                    || self.screen
+                        != match to {
+                            1 => Screen::Assets,
+                            2 => Screen::Models,
+                            _ => Screen::Overview,
+                        }
             }
             Message::AllAssets => self.screen != Screen::Assets || self.query != Query::default(),
             Message::Favorites => self.screen != Screen::Assets || !self.query.favorites_only,
@@ -86,6 +130,12 @@ impl App {
     }
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
         if let Message::TransitionFrame(now) = message {
+            if let Some(entrance) = &mut self.surface_motion {
+                entrance.sampled = now;
+                if entrance.remaining() <= 0.0 {
+                    self.surface_motion = None;
+                }
+            }
             let Some(mut transition) = self.transition.take() else {
                 return Task::none();
             };
@@ -103,6 +153,10 @@ impl App {
         }
         if matches!(message, Message::WindowClose) {
             self.transition = None;
+            self.surface_motion = None;
+        }
+        if matches!(message, Message::ShowLibraries) {
+            self.transition = None;
         }
         if self.library.is_some() && Self::is_page_navigation(&message) {
             if self.page_changes(&message) {
@@ -113,8 +167,13 @@ impl App {
                     transition.pending = Some(Box::new(message));
                 } else {
                     let alpha = self.transition.as_ref().map_or(0.0, PageTransition::alpha);
-                    self.transition =
-                        Some(PageTransition::outgoing(message, Instant::now(), alpha));
+                    let offset = self.transition.as_ref().map_or(0.0, PageTransition::offset);
+                    self.transition = Some(PageTransition::outgoing(
+                        message,
+                        Instant::now(),
+                        alpha,
+                        offset,
+                    ));
                 }
                 return Task::none();
             } else if self
@@ -123,22 +182,96 @@ impl App {
                 .is_some_and(|t| t.pending.is_some())
             {
                 let alpha = self.transition.as_ref().map_or(0.0, PageTransition::alpha);
-                self.transition = Some(PageTransition::incoming(Instant::now(), alpha));
+                let offset = self.transition.as_ref().map_or(0.0, PageTransition::offset);
+                let mut transition = PageTransition::incoming(Instant::now(), alpha);
+                transition.offset_from = offset;
+                self.transition = Some(transition);
             }
         }
-        let before = (self.screen, self.model_tab);
+        let before = (self.content_screen(), self.model_tab);
+        let surface = self.surface();
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.commit_navigation(message);
+        if surface != self.surface() {
+            self.surface_motion = self.surface_open().then(|| Entrance::new(Instant::now()));
+            if self.surface_open() {
+                // A newly opened form owns input immediately; never leave it via an older click.
+                self.transition = None;
+            }
+        }
         let current = self.library.as_ref().map(|l| l.info.id);
         if current != library {
             // Never run a queued action against a different library.
-            self.transition = current.map(|_| PageTransition::incoming(Instant::now(), 0.3));
-        } else if self.library.is_some()
-            && before != (self.screen, self.model_tab)
-            && self.transition.is_none()
-        {
-            self.transition = Some(PageTransition::incoming(Instant::now(), 0.25));
+            self.transition = current.map(|_| PageTransition::incoming(Instant::now(), 0.8));
+        } else if before != (self.content_screen(), self.model_tab) {
+            // Global destinations also animate, replacing stale outgoing actions.
+            self.transition = Some(PageTransition::incoming(Instant::now(), 0.8));
         }
         task
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn global_picker_replaces_pending_navigation_and_animation_stops() {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Assets;
+        drop(app.update(Message::Navigate(2)));
+        assert!(app.transition.as_ref().unwrap().pending.is_some());
+        drop(app.update(Message::ShowLibraries));
+        assert!(app.library_picker);
+        let start = app.transition.as_ref().unwrap().started;
+        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(200))));
+        assert!(app.library_picker);
+        assert_eq!(app.screen, Screen::Overview);
+        assert!(app.transition.is_none());
+        drop(app.update(Message::Navigate(0)));
+        let start = app.transition.as_ref().unwrap().started;
+        drop(app.update(Message::TransitionFrame(start + FADE_OUT)));
+        assert!(!app.library_picker);
+    }
+    #[test]
+    fn opening_form_cancels_old_destination_and_closing_stops_motion() {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Assets;
+        drop(app.update(Message::Navigate(2)));
+        drop(app.update(Message::ShowSettings));
+        assert!(app.transition.is_none());
+        assert_eq!(app.surface_offset(), 10.0);
+        let start = app.surface_motion.as_ref().unwrap().started;
+        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(80))));
+        assert!((app.surface_offset() - 1.25).abs() < 0.01);
+        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(160))));
+        assert!(app.surface_motion.is_none());
+        assert_eq!(app.screen, Screen::Assets);
+        drop(app.update(Message::HideCreate));
+        assert_eq!(app.surface_offset(), 0.0);
+        assert!(app.dialog.is_none());
+        drop(app.update(Message::ShowSettings));
+        drop(app.update(Message::HideCreate));
+        assert!(app.surface_motion.is_none());
+    }
+    #[test]
+    fn interrupting_entrance_preserves_current_position_and_dimming() {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Assets;
+        let start = Instant::now();
+        let mut entrance = PageTransition::incoming(start, 0.8);
+        entrance.sampled = start + Duration::from_millis(35);
+        let alpha = entrance.alpha();
+        let offset = entrance.offset();
+        app.transition = Some(entrance);
+        drop(app.update(Message::Navigate(2)));
+        let next = app.transition.as_ref().unwrap();
+        assert_eq!(next.alpha(), alpha);
+        assert_eq!(next.offset(), offset);
+        drop(app.update(Message::Navigate(1)));
+        let cancelled = app.transition.as_ref().unwrap();
+        assert!(cancelled.pending.is_none());
+        assert_eq!(cancelled.alpha(), alpha);
+        assert_eq!(cancelled.offset(), offset);
     }
 }

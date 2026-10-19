@@ -38,6 +38,7 @@ mod models;
 mod navigation;
 pub use journal::JournalMessage;
 pub use manage::ManageMessage;
+mod motion;
 mod overview;
 mod preview;
 mod theme;
@@ -49,7 +50,7 @@ use iced::{Element, Font, Size, Subscription, Task, Theme};
 use moriq_app::{ImportControl, LoadedPage, Opened, Service};
 use moriq_domain::*;
 use moriq_render::Grid;
-use std::{path::PathBuf, sync::atomic::Ordering, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::atomic::Ordering, time::Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -94,6 +95,140 @@ mod tests {
         app
     }
     #[test]
+    fn global_models_open_without_library_and_keep_library_actions_separate() {
+        let mut app = app();
+        app.library = None;
+        app.library_picker = true;
+        drop(app.update(Message::Navigate(2)));
+        assert_eq!(app.content_screen(), Some(Screen::Models));
+        assert!(!app.library_picker);
+        drop(app.shell());
+        let old_policy = app.on_demand_models;
+        drop(app.update(Message::ToggleModelPolicy));
+        assert_eq!(app.on_demand_models, !old_policy);
+        let control = moriq_app::DownloadControl::default();
+        app.ai.downloads.insert("faces".into(), control.clone());
+        drop(app.update(Message::Ai(AiMessage::Pause("faces".into()))));
+        assert!(control.stop.load(Ordering::Relaxed));
+        drop(app.update(Message::Ai(AiMessage::Category("人像".into()))));
+        drop(app.update(Message::Ai(AiMessage::People)));
+        assert_eq!(app.content_screen(), Some(Screen::Models));
+        assert!(app.manager.panel.is_none());
+        drop(app.update(Message::ShowLibraries));
+        assert_eq!(app.content_screen(), None);
+        assert_eq!(app.screen, Screen::Overview);
+        drop(app.update(Message::Navigate(2)));
+        assert_eq!(app.content_screen(), Some(Screen::Models));
+    }
+    #[test]
+    fn model_sidebar_has_all_libraries_and_switch_keeps_global_model_state() {
+        let mut app = app();
+        app.screen = Screen::Models;
+        let old = app.library.clone().unwrap();
+        app.preferences.recent = (0..18)
+            .map(|n| ("同名库".into(), PathBuf::from(format!("{n}.moriq"))))
+            .collect();
+        assert_eq!(app.model_libraries().len(), 19);
+        assert_eq!(
+            app.model_libraries()
+                .iter()
+                .filter(|(_, _, active)| *active)
+                .count(),
+            1
+        );
+        app.model_search = "CLIP".into();
+        app.ai.downloads.insert("faces".into(), Default::default());
+        let mut next = old.clone();
+        next.root = PathBuf::from("17.moriq");
+        next.info.id = LibraryId::default();
+        next.info.name = "新的名称".into();
+        app.switching = true;
+        drop(app.update(Message::Ai(AiMessage::LibraryOpened(Ok(next.clone())))));
+        assert_eq!(app.content_screen(), Some(Screen::Models));
+        assert!(!app.switching);
+        assert!(!app.library_picker);
+        assert_eq!(app.library.as_ref().unwrap().info.id, next.info.id);
+        assert_eq!(app.model_search, "CLIP");
+        assert!(app.ai.downloads.contains_key("faces"));
+        assert!(
+            app.model_libraries()
+                .iter()
+                .any(|(name, path, active)| name == "新的名称" && *path == next.root && *active)
+        );
+        drop(app.update(Message::Ai(AiMessage::LibraryOpened(Err(
+            "路径不存在".into(),
+        )))));
+        assert_eq!(app.library.as_ref().unwrap().info.id, next.info.id);
+        assert_eq!(app.content_screen(), Some(Screen::Models));
+        assert!(app.error.is_some());
+        app.manager.busy = true;
+        drop(app.update(Message::Ai(AiMessage::SwitchLibrary(old.root))));
+        assert!(!app.switching);
+    }
+    #[test]
+    fn changing_model_load_policy_keeps_selected_download_source() {
+        let mut app = app();
+        app.launch.design_preview = true;
+        assert!(app.preferences.ai.use_mirror);
+        drop(app.update(Message::ToggleModelMirror));
+        assert!(!app.preferences.ai.use_mirror);
+        drop(app.update(Message::ToggleModelPolicy));
+        drop(app.update(Message::ToggleRetainIndexes));
+        assert!(!app.preferences.ai.use_mirror);
+    }
+    #[test]
+    fn category_covers_reject_other_libraries_and_clear_when_category_is_empty() {
+        use moriq_app::LoadedOverview;
+        let mut app = app();
+        let owner = app.library.as_ref().unwrap().info.id;
+        let loaded = || LoadedOverview {
+            categories: vec![(
+                "风景".into(),
+                Some(moriq_app::Pixels {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![10, 20, 30, 255].into(),
+                }),
+            )],
+            ..Default::default()
+        };
+        drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
+            LibraryId::default(),
+            Ok(loaded()),
+        ))));
+        assert!(app.manager.category_covers.is_empty());
+        drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
+            owner,
+            Ok(loaded()),
+        ))));
+        assert!(app.manager.category_covers.contains_key("风景"));
+        drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
+            owner,
+            Ok(LoadedOverview::default()),
+        ))));
+        assert!(app.manager.category_covers.is_empty());
+    }
+    #[test]
+    fn library_picker_keeps_gallery_state_and_returns_through_history() {
+        let mut app = app();
+        app.screen = Screen::Assets;
+        app.scroll_y = 640.0;
+        app.query.text = "旅行".into();
+        drop(app.commit_navigation(Message::ShowLibraries));
+        assert!(app.library_picker);
+        assert_eq!(app.query.text, "旅行");
+        drop(app.travel(false));
+        assert!(!app.library_picker);
+        assert_eq!(app.screen, Screen::Assets);
+        assert_eq!(app.scroll_y, 640.0);
+        assert_eq!(app.query.text, "旅行");
+        drop(app.travel(true));
+        assert!(app.library_picker);
+        drop(app.commit_navigation(Message::Navigate(2)));
+        assert!(!app.library_picker);
+        assert_eq!(app.screen, Screen::Models);
+    }
+    #[test]
     fn maintenance_and_purge_receipts_cannot_reset_another_library_selection() {
         let mut app = app();
         let control = moriq_app::MaintenanceControl::default();
@@ -122,7 +257,7 @@ mod tests {
         assert!(control.cancel.load(Ordering::Relaxed));
     }
     #[test]
-    fn page_chrome_is_identical_and_empty_library_navigation_does_not_move_content() {
+    fn page_chrome_is_identical_and_global_navigation_has_no_delayed_action() {
         let mut app = app();
         let mut metrics = Vec::new();
         for screen in [Screen::Overview, Screen::Assets, Screen::Models] {
@@ -138,7 +273,7 @@ mod tests {
         drop(app.update(Message::Navigate(0)));
         drop(app.update(Message::Navigate(2)));
         assert_eq!(app.screen, Screen::Models);
-        assert!(app.transition.is_none());
+        assert!(app.transition.as_ref().unwrap().pending.is_none());
     }
     #[test]
     fn rapid_page_navigation_retargets_without_jumps_or_committing_old_destinations() {
@@ -625,7 +760,9 @@ pub enum Message {
     Manage(ManageMessage),
     Modifiers(iced::keyboard::Modifiers),
     SettingsLoaded(Result<UserSettings, String>),
+    LibraryCardsLoaded(Result<Vec<(PathBuf, Option<moriq_app::Pixels>)>, String>),
     OpenRecent(PathBuf),
+    ShowLibraries,
     Name(String),
     Create,
     Open,
@@ -726,6 +863,7 @@ pub enum Message {
     RevealLibrary,
     ToggleTagEditor,
     ToggleModelPolicy,
+    ToggleModelMirror,
     ToggleRetainIndexes,
     PlatformDone(&'static str, Result<(), String>),
     OpenSourceRepository,
@@ -782,9 +920,12 @@ pub struct App {
     neighbors: Vec<Tile>,
     neighbor_position: Option<(usize, u64)>,
     transition: Option<transition::PageTransition>,
+    surface_motion: Option<transition::Entrance>,
     modifiers: iced::keyboard::Modifiers,
     manager: manage::Manager,
     preferences: UserSettings,
+    library_covers: HashMap<PathBuf, image::Handle>,
+    library_picker: bool,
     service: Service,
     library: Option<Opened>,
     screen: Screen,
@@ -944,8 +1085,11 @@ impl App {
                 neighbors: vec![],
                 neighbor_position: None,
                 transition: None,
+                surface_motion: None,
                 manager: Default::default(),
                 preferences: Default::default(),
+                library_covers: HashMap::new(),
+                library_picker: false,
                 service,
                 library: None,
                 screen: match launch.screen {
@@ -1136,7 +1280,7 @@ impl App {
     }
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            if self.transition.is_some() {
+            if self.transition.is_some() || self.surface_motion.is_some() {
                 iced::time::every(Duration::from_millis(16)).map(Message::TransitionFrame)
             } else {
                 Subscription::none()
@@ -1452,16 +1596,55 @@ impl App {
                     let value = prefs.ai;
                     let service = self.service.clone();
                     self.preferences = prefs;
-                    return Task::perform(
-                        async move { service.ai_policy(value).await },
-                        |r| match r {
+                    let cards_service = self.service.clone();
+                    let paths = self
+                        .preferences
+                        .recent
+                        .iter()
+                        .map(|(_, path)| path.clone())
+                        .collect();
+                    self.library_covers
+                        .retain(|path, _| self.preferences.recent.iter().any(|(_, p)| p == path));
+                    return Task::batch([
+                        Task::perform(async move { service.ai_policy(value).await }, |r| match r {
                             Ok(()) => Message::Noop,
                             Err(e) => Message::Notice(e),
-                        },
-                    );
+                        }),
+                        Task::perform(
+                            async move { cards_service.library_cards(paths).await },
+                            Message::LibraryCardsLoaded,
+                        ),
+                    ]);
                 }
                 Err(e) => self.error = Some(e),
             },
+            Message::LibraryCardsLoaded(Ok(cards)) => {
+                for (path, cover) in cards {
+                    if self.preferences.recent.iter().any(|(_, p)| p == &path) {
+                        if let Some(pixels) = cover {
+                            self.library_covers.insert(
+                                path,
+                                image::Handle::from_rgba(pixels.width, pixels.height, pixels.rgba),
+                            );
+                        } else {
+                            self.library_covers.remove(&path);
+                        }
+                    }
+                }
+            }
+            Message::LibraryCardsLoaded(Err(error)) => self.error = Some(error),
+            Message::ShowLibraries if !self.manager.busy => {
+                self.library_picker = true;
+                self.screen = Screen::Overview;
+                self.preview_expanded = false;
+                self.dialog = None;
+                self.manager.panel = None;
+                let service = self.service.clone();
+                return Task::perform(
+                    async move { service.settings().await },
+                    Message::SettingsLoaded,
+                );
+            }
             Message::OpenRecent(path)
                 if self.import.is_none() && !self.switching && !self.manager.busy =>
             {
@@ -1561,15 +1744,20 @@ impl App {
                 Err(error) => self.error = Some(error),
             },
             Message::ToggleTagEditor => self.editing_tags = !self.editing_tags,
-            Message::ToggleModelPolicy | Message::ToggleRetainIndexes => {
+            Message::ToggleModelPolicy
+            | Message::ToggleRetainIndexes
+            | Message::ToggleModelMirror => {
                 if matches!(message, Message::ToggleModelPolicy) {
                     self.on_demand_models = !self.on_demand_models
+                } else if matches!(message, Message::ToggleModelMirror) {
+                    self.preferences.ai.use_mirror = !self.preferences.ai.use_mirror;
                 } else {
                     self.retain_indexes = !self.retain_indexes
                 }
                 self.preferences.ai = AiPreferences {
                     on_demand: self.on_demand_models,
                     retain_indexes: self.retain_indexes,
+                    ..self.preferences.ai
                 };
                 if !self.launch.design_preview {
                     let value = self.preferences.ai;
@@ -1767,13 +1955,21 @@ impl App {
             }
             Message::PickedLibrary(Some(path)) => {
                 let service = self.service.clone();
-                return Task::perform(async move { service.open(path).await }, Message::Opened);
+                let models = self.screen == Screen::Models;
+                return Task::perform(async move { service.open(path).await }, move |r| {
+                    if models {
+                        Message::Ai(AiMessage::LibraryOpened(r))
+                    } else {
+                        Message::Opened(r)
+                    }
+                });
             }
             Message::PickedParent(None) | Message::PickedLibrary(None) => self.switching = false,
             Message::Opened(result) => {
                 self.switching = false;
                 match result {
                     Ok(library) => {
+                        self.library_picker = false;
                         self.history = Default::default();
                         self.journal.reset();
                         self.storage.reset();
@@ -1820,6 +2016,7 @@ impl App {
                 }
             }
             Message::Navigate(screen) => {
+                self.library_picker = false;
                 self.manager.panel = None;
                 self.dialog = None;
                 self.screen = match screen {
@@ -1843,6 +2040,7 @@ impl App {
                 return self.restore_page();
             }
             Message::Search(value) => {
+                self.library_picker = false;
                 self.ai.request = self.ai.request.wrapping_add(1);
                 self.query.semantic_active = false;
                 self.query.semantic_ids.clear();
@@ -1972,6 +2170,17 @@ impl App {
                 }
             }
             Message::Imported(report) => {
+                let parallelism = self
+                    .import
+                    .as_ref()
+                    .map(|job| {
+                        format!(
+                            " · 解码峰值 {} 张 / 上限 {} 张",
+                            job.peak.load(Ordering::Relaxed),
+                            job.workers
+                        )
+                    })
+                    .unwrap_or_default();
                 self.import = None;
                 self.manager.referenced_import = false;
                 self.status = format!(
@@ -1985,6 +2194,7 @@ impl App {
                     report.duplicates,
                     report.failed
                 );
+                self.status.push_str(&parallelism);
                 if !report.failures.is_empty() {
                     self.error = Some(report.failures.join("\n"));
                 }
@@ -2113,6 +2323,21 @@ impl App {
                     }
                     if self.capture_ticks == 2 {
                         match self.launch.panel.as_deref() {
+                            Some("model-switch") if self.screen == Screen::Models => {
+                                if let Some((_, path)) = self.preferences.recent.get(1) {
+                                    return self.update(Message::Ai(AiMessage::SwitchLibrary(
+                                        path.clone(),
+                                    )));
+                                }
+                                self.capture_ticks = 1;
+                                return Task::none();
+                            }
+                            Some("models-bottom") if self.screen == Screen::Models => {
+                                return iced::widget::operation::scroll_to(
+                                    "models",
+                                    iced::widget::scrollable::AbsoluteOffset { x: 0., y: 420. },
+                                );
+                            }
                             Some("delete-project" | "delete-project-final") => {
                                 let project = self
                                     .library

@@ -192,6 +192,16 @@ pub(crate) fn verified_lease(id: &str) -> Result<File> {
     Ok(lock)
 }
 pub fn install(id: &str, control: &DownloadControl) -> Result<()> {
+    install_with_mirror(id, control, true)
+}
+fn download_url(url: &str, use_mirror: bool) -> String {
+    if use_mirror && let Some(path) = url.strip_prefix("https://huggingface.co/") {
+        format!("https://hf-mirror.com/{path}")
+    } else {
+        url.to_string()
+    }
+}
+pub fn install_with_mirror(id: &str, control: &DownloadControl, use_mirror: bool) -> Result<()> {
     let model = spec(id)?;
     let root = model_folder(&model)?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -211,6 +221,7 @@ pub fn install(id: &str, control: &DownloadControl) -> Result<()> {
         .store(model.files.iter().map(|f| f.bytes).sum(), Ordering::Relaxed);
     control.downloaded.store(0, Ordering::Relaxed);
     let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("MORIQ/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
         .build()
@@ -251,12 +262,14 @@ pub fn install(id: &str, control: &DownloadControl) -> Result<()> {
                 return Err("模型下载已暂停，已保留断点".into());
             }
             let end = (received + 8 * 1024 * 1024 - 1).min(artifact.bytes - 1);
-            let mut response = client
-                .get(&artifact.url)
-                .header(reqwest::header::RANGE, format!("bytes={received}-{end}"))
-                .send()
-                .map_err(|e| format!("下载 {} 失败，保留断点：{e}", artifact.path))?;
-            response.error_for_status_ref().map_err(|e| e.to_string())?;
+            let mut response = request_range(
+                &client,
+                &download_url(&artifact.url, use_mirror),
+                received,
+                end,
+                control,
+            )
+            .map_err(|e| download_error(&artifact.path, use_mirror, &e))?;
             let ranged = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
             if ranged {
                 let expected = format!("bytes {received}-{end}/{}", artifact.bytes);
@@ -334,6 +347,58 @@ pub fn install(id: &str, control: &DownloadControl) -> Result<()> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+fn request_range(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    start: u64,
+    end: u64,
+    control: &DownloadControl,
+) -> Result<reqwest::blocking::Response> {
+    for attempt in 0..4 {
+        if control.stop.load(Ordering::Relaxed) {
+            return Err("模型下载已暂停，已保留断点".into());
+        }
+        let response = client
+            .get(url)
+            .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
+            .send()
+            .map_err(|e| e.to_string())?;
+        if (response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || response.status().is_server_error())
+            && attempt < 3
+        {
+            let seconds = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2 << attempt)
+                .min(30);
+            drop(response);
+            for _ in 0..seconds * 10 {
+                if control.stop.load(Ordering::Relaxed) {
+                    return Err("模型下载已暂停，已保留断点".into());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            continue;
+        }
+        return response.error_for_status().map_err(|e| e.to_string());
+    }
+    Err("下载源暂时不可用，已保留断点".into())
+}
+fn download_error(path: &str, use_mirror: bool, error: &impl std::fmt::Display) -> String {
+    format!(
+        "{} 下载失败（{}）：{}。可在模型设置中切换下载源后继续，断点已保留。",
+        path,
+        if use_mirror {
+            "HF-Mirror"
+        } else {
+            "Hugging Face"
+        },
+        error
+    )
+}
 pub fn uninstall(id: &str) -> Result<()> {
     crate::unload()?;
     let model = spec(id)?;
@@ -369,4 +434,78 @@ pub fn uninstall(id: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn throttled_source_retries_the_same_range_and_pause_makes_no_request() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for response in [
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-7/8\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") && request.len() < 4096 {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                assert!(
+                    String::from_utf8_lossy(&request)
+                        .to_lowercase()
+                        .contains("range: bytes=5-7")
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let control = DownloadControl::default();
+        let response =
+            request_range(&client, &format!("http://{address}/model"), 5, 7, &control).unwrap();
+        assert_eq!(response.text().unwrap(), "abc");
+        server.join().unwrap();
+        control.stop.store(true, Ordering::Relaxed);
+        assert!(
+            request_range(&client, "http://127.0.0.1:1", 5, 7, &control)
+                .unwrap_err()
+                .contains("暂停")
+        );
+    }
+    #[test]
+    fn mirror_keeps_every_pinned_revision_and_artifact_path() {
+        let models = registry().unwrap_or_default();
+        assert_eq!(models.len(), 3);
+        for file in models.iter().flat_map(|m| &m.files) {
+            let suffix = file
+                .url
+                .strip_prefix("https://huggingface.co/")
+                .unwrap_or_default();
+            assert!(!suffix.is_empty());
+            assert_eq!(
+                download_url(&file.url, true),
+                format!("https://hf-mirror.com/{suffix}")
+            );
+            assert_eq!(download_url(&file.url, false), file.url);
+        }
+        for url in [
+            "https://huggingface.co.evil.test/repo",
+            "https://other.test/file",
+            "http://127.0.0.1/model",
+        ] {
+            assert_eq!(download_url(url, true), url);
+        }
+    }
 }

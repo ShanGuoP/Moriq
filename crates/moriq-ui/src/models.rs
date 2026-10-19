@@ -8,25 +8,30 @@ use iced::widget::{
 use iced::{Alignment, Border, Color, Length};
 impl App {
     pub(super) fn models(&self) -> Element<'_, Message> {
-        if !self.launch.design_preview {
-            return self.real_models();
-        }
+        let can_organize = self.library.is_some()
+            && !self.switching
+            && self.ai.models.iter().any(|model| model.installed);
         let categories = [
-            ("人像", "category-portrait", 1842, Icon::Person),
-            ("风景", "category-landscape", 2163, Icon::Landscape),
-            ("建筑", "category-building", 892, Icon::Building),
-            ("插画", "category-illustration", 420, Icon::Sparkles),
-            ("截图", "category-screen", 680, Icon::Raw),
-            ("未分类", "category-other", 316, Icon::More),
+            ("人像", Icon::Person),
+            ("风景", Icon::Landscape),
+            ("建筑", Icon::Building),
+            ("插画", Icon::Sparkles),
+            ("截图", Icon::Raw),
+            ("未分类", Icon::More),
         ];
         let mut category_rows = Column::new().spacing(13);
         for chunk in categories.chunks(3) {
             let mut cards = Row::new().spacing(16);
-            for &(label, key, count, kind) in chunk {
+            for &(label, kind) in chunk {
+                let count = self.category_count(label);
                 let cover = stack![
-                    container(photo(self.artwork.get(key), Length::Fill, 96.0))
-                        .height(110)
-                        .width(Length::Fill),
+                    container(photo(
+                        self.manager.category_covers.get(label),
+                        Length::Fill,
+                        96.0
+                    ))
+                    .height(110)
+                    .width(Length::Fill),
                     container(column![
                         Space::new().height(78),
                         row![
@@ -56,10 +61,10 @@ impl App {
                                 row![
                                     column![
                                         heading(label, 14),
-                                        muted(if self.launch.design_preview {
-                                            format!("{} 张照片", number(count))
+                                        muted(if self.library.is_some() {
+                                            format!("{} 张素材", number(count))
                                         } else {
-                                            "尚未分析".into()
+                                            "选择资源库后查看".into()
                                         })
                                     ]
                                     .spacing(4)
@@ -75,14 +80,38 @@ impl App {
                     .padding(0)
                     .width(Length::Fill)
                     .style(secondary)
-                    .on_press_maybe(self.launch.design_preview.then_some(if label == "未分类" {
-                        Message::AllAssets
-                    } else {
-                        Message::Search(label.into())
-                    })),
+                    .on_press_maybe(
+                        self.library
+                            .as_ref()
+                            .map(|_| Message::Ai(AiMessage::Category(label.into()))),
+                    ),
                 );
             }
             category_rows = category_rows.push(cards);
+        }
+        let mut more_categories = Row::new().spacing(8);
+        let mut has_more_categories = false;
+        for (label, count) in &self.manager.organizer.ai_categories {
+            if !categories.iter().any(|(name, _)| name == label) {
+                has_more_categories = true;
+                more_categories = more_categories.push(action(
+                    &format!("{label} · {count}"),
+                    Message::Ai(AiMessage::Category(label.clone())),
+                ));
+            }
+        }
+        if has_more_categories {
+            category_rows = category_rows.push(more_categories.wrap());
+        }
+        if self
+            .manager
+            .organizer
+            .errors
+            .iter()
+            .any(|(section, _)| *section == OrganizerSection::Categories)
+        {
+            category_rows =
+                category_rows.push(muted("分类信息暂时无法读取，请重新打开资源库重试。"));
         }
         let organization = container(
             column![
@@ -92,17 +121,17 @@ impl App {
                         row![
                             heading("智能整理", 22),
                             chip(
-                                if self.launch.design_preview {
-                                    "AI 驱动"
+                                if can_organize {
+                                    "本地 AI"
                                 } else {
-                                    "本地 AI · 未启用"
+                                    "按需安装模型"
                                 },
                                 BLUE
                             )
                         ]
                         .spacing(12)
                         .align_y(Alignment::Center),
-                        muted("安装并启用可信模型后可分析图片内容；当前分类与模型安装尚未开放。")
+                        muted("在本机理解照片内容，自动分类、识别文字并建立相似搜索索引。")
                     ]
                     .spacing(6)
                     .width(Length::Fill),
@@ -116,18 +145,8 @@ impl App {
                     )
                     .padding([10, 14])
                     .style(secondary)
-                    .on_press_maybe(self.launch.design_preview.then_some(Message::ModelTab(1))),
-                    button(
-                        row![
-                            text("按内容类型分组").size(13),
-                            icon(Icon::Down, 14.0, ICON)
-                        ]
-                        .spacing(17)
-                        .align_y(Alignment::Center)
-                    )
-                    .padding([10, 14])
-                    .style(secondary)
-                    .on_press_maybe(self.launch.design_preview.then_some(Message::ModelTab(0)))
+                    .on_press_maybe(can_organize.then_some(Message::Ai(AiMessage::Organize))),
+                    self.model_grouping()
                 ]
                 .spacing(15)
                 .align_y(Alignment::Center),
@@ -142,198 +161,32 @@ impl App {
             left: 20.0,
         })
         .style(panel);
-        let mut models = Column::new().spacing(10);
-        let mut any_model = false;
-        let registry = [
-            (
-                Icon::Settings,
-                "Chinese-CLIP",
-                "图像内容理解与分类，支持中文语义检索。",
-                "v1.2.0 · 1.8 GB",
-                BLUE,
-            ),
-            (
-                Icon::Text,
-                "OCR 文字识别",
-                "识别照片中的文字，支持中英日韩等多语言。",
-                "v1.1.0 · 820 MB",
-                Color::from_rgb8(94, 64, 255),
-            ),
-            (
-                Icon::Eye,
-                "视觉相似模型",
-                "基于向量相似度的图像相似搜索。",
-                "v1.0.0 · 1.6 GB",
-                BLUE,
-            ),
-            (
-                Icon::Person,
-                "人像识别",
-                "识别人物、面部特征与相似人物聚类。",
-                "v1.0.0 · 900 MB",
-                BLUE,
-            ),
-            (
-                Icon::Image,
-                "场景与物体识别",
-                "识别照片中的场景、物体、活动等内容。",
-                "v1.0.0 · 1.1 GB",
-                BLUE,
-            ),
-            (
-                Icon::Sparkles,
-                "图像描述生成",
-                "生成照片的自然语言描述，便于搜索与管理。",
-                "v1.0.0 · 1.3 GB",
-                Color::from_rgb8(96, 73, 255),
-            ),
-        ];
-        for (row_index, chunk) in registry.chunks(3).enumerate() {
+        let columns = if self.viewport.width >= 1480.0 { 3 } else { 2 };
+        let visible: Vec<_> = self
+            .ai
+            .models
+            .iter()
+            .filter(|model| self.model_visible(model))
+            .collect();
+        let mut models = Column::new().spacing(11);
+        for chunk in visible.chunks(columns) {
             let mut cards = Row::new().spacing(11);
-            for (column_index, &(kind, name, description, version, color)) in
-                chunk.iter().enumerate()
-            {
-                let index = row_index * 3 + column_index;
-                if (!self.launch.design_preview && self.model_filter < 2)
-                    || (!self.model_search.is_empty()
-                        && !name
-                            .to_lowercase()
-                            .contains(&self.model_search.to_lowercase())
-                        && !description.contains(&self.model_search))
-                {
-                    cards = cards.push(Space::new().width(Length::Fill));
-                    continue;
-                }
-                any_model = true;
-                let installed = self.launch.design_preview && index < 2;
-                let downloading = self.launch.design_preview && index == 2;
-                let badge = if installed {
-                    chip("已安装", Color::from_rgb8(70, 162, 103))
-                } else if downloading {
-                    chip("下载中 68%", BLUE)
-                } else {
-                    chip("未安装", MUTED)
-                };
-                let actions: Element<'_, Message> = if downloading {
-                    row![
-                        progress_bar(0.0..=1.0, 0.68)
-                            .girth(5)
-                            .style(theme::progress)
-                            .length(Length::Fill),
-                        icon_button(
-                            Icon::Pause,
-                            Message::Notice("设计预览不会创建真实下载任务。".into())
-                        ),
-                        icon_button(
-                            Icon::Close,
-                            Message::Notice("设计预览不会创建真实下载任务。".into())
-                        )
-                    ]
-                    .spacing(7)
-                    .align_y(Alignment::Center)
-                    .into()
-                } else {
-                    row![
-                        muted(if self.launch.design_preview {
-                            version
-                        } else {
-                            "模型包尚未提供"
-                        }),
-                        Space::new().width(Length::Fill),
-                        button(if installed {
-                            row![text("卸载").size(12)]
-                        } else {
-                            row![
-                                icon(
-                                    Icon::Download,
-                                    14.0,
-                                    if self.launch.design_preview {
-                                        Color::WHITE
-                                    } else {
-                                        MUTED
-                                    }
-                                ),
-                                text(if self.launch.design_preview {
-                                    "安装"
-                                } else {
-                                    "暂不可用"
-                                })
-                                .size(12)
-                                .color(
-                                    if self.launch.design_preview {
-                                        Color::WHITE
-                                    } else {
-                                        MUTED
-                                    }
-                                )
-                            ]
-                            .spacing(5)
-                            .align_y(Alignment::Center)
-                        })
-                        .padding([7, 13])
-                        .style(move |theme, status| if installed {
-                            secondary(theme, status)
-                        } else {
-                            primary(theme, status)
-                        })
-                        .on_press_maybe(
-                            self.launch.design_preview.then_some(Message::Notice(
-                                if self.launch.design_preview {
-                                    "这是设计预览，不会安装或卸载真实模型。"
-                                } else {
-                                    "当前没有经过验证的可安装模型包。"
-                                }
-                                .into()
-                            ))
-                        )
-                    ]
-                    .spacing(4)
-                    .align_y(Alignment::Center)
-                    .into()
-                };
-                cards = cards.push(
-                    container(
-                        column![
-                            row![
-                                container(icon(kind, 27.0, color))
-                                    .padding(8)
-                                    .style(move |_| container::Style {
-                                        background: Some(Color { a: 0.06, ..color }.into()),
-                                        border: Border {
-                                            radius: 10.0.into(),
-                                            ..Default::default()
-                                        },
-                                        ..Default::default()
-                                    }),
-                                column![
-                                    row![
-                                        heading(name, 13),
-                                        Space::new().width(Length::Fill),
-                                        badge
-                                    ]
-                                    .spacing(5)
-                                    .align_y(Alignment::Center),
-                                    text(description).size(11).color(MUTED)
-                                ]
-                                .spacing(8)
-                                .width(Length::Fill)
-                            ]
-                            .spacing(9),
-                            actions
-                        ]
-                        .spacing(12),
-                    )
-                    .padding(11)
-                    .width(Length::Fill)
-                    .style(panel),
-                );
+            for model in chunk {
+                cards = cards.push(self.model_card(model));
+            }
+            for _ in chunk.len()..columns {
+                cards = cards.push(Space::new().width(Length::Fill));
             }
             models = models.push(cards);
         }
-        if !any_model {
-            models = Column::new().push(
-                container(muted(if self.model_search.is_empty() {
-                    "当前没有此类模型包"
+        if visible.is_empty() {
+            models = models.push(
+                container(muted(if self.ai.loading {
+                    "正在读取模型…"
+                } else if self.ai.models.is_empty() {
+                    "模型列表尚未就绪，请刷新重试"
+                } else if self.model_search.is_empty() {
+                    "当前没有此类模型，可切换到全部模型安装"
                 } else {
                     "没有找到匹配的模型"
                 }))
@@ -342,18 +195,24 @@ impl App {
                 .style(pale),
             );
         }
-        let mut tabs = Row::new().spacing(10);
-        for (index, label) in if self.launch.design_preview {
-            ["已安装模型 ③", "可用模型 ⑥", "全部模型 ⑨"]
-        } else {
-            ["已安装模型 0", "可用模型 0", "全部模型 6"]
-        }
-        .iter()
+        let installed = self
+            .ai
+            .models
+            .iter()
+            .filter(|model| model.installed)
+            .count();
+        let mut tabs = Row::new().spacing(6);
+        for (index, (label, count)) in [
+            ("已安装模型", installed),
+            ("可用模型", self.ai.models.len() - installed),
+            ("全部模型", self.ai.models.len()),
+        ]
+        .into_iter()
         .enumerate()
         {
             tabs = tabs.push(
-                button(text(*label).size(12))
-                    .padding([7, 15])
+                button(text(format!("{label} {count}")).size(12))
+                    .padding([7, 10])
                     .style(if self.model_filter == index as u8 {
                         primary
                     } else {
@@ -362,6 +221,33 @@ impl App {
                     .on_press(Message::ModelFilter(index as u8)),
             );
         }
+        let search = container(
+            row![
+                icon(Icon::Search, 15.0, MUTED),
+                text_input("搜索模型…", &self.model_search)
+                    .on_input(Message::ModelSearch)
+                    .padding(0)
+                    .size(12)
+                    .style(|theme, status| {
+                        let mut style = input(theme, status);
+                        style.border.width = 0.0;
+                        style
+                    })
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([8, 12])
+        .width(210)
+        .style(panel);
+        let model_toolbar: Element<'_, Message> = if self.viewport.width >= 1400.0 {
+            row![tabs, Space::new().width(Length::Fill), search]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into()
+        } else {
+            column![tabs.wrap(), search].spacing(10).into()
+        };
         let model_management = container(
             column![
                 row![
@@ -376,30 +262,7 @@ impl App {
                 ]
                 .spacing(15)
                 .align_y(Alignment::Center),
-                row![
-                    tabs,
-                    Space::new().width(Length::Fill),
-                    container(
-                        row![
-                            icon(Icon::Search, 15.0, MUTED),
-                            text_input("搜索模型…", &self.model_search)
-                                .on_input(Message::ModelSearch)
-                                .padding(0)
-                                .size(12)
-                                .style(|theme, status| {
-                                    let mut style = input(theme, status);
-                                    style.border.width = 0.0;
-                                    style
-                                })
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center)
-                    )
-                    .padding([8, 12])
-                    .width(210)
-                    .style(panel)
-                ]
-                .align_y(Alignment::Center),
+                model_toolbar,
                 models
             ]
             .spacing(12),
@@ -407,105 +270,7 @@ impl App {
         .padding(15)
         .width(Length::Fill)
         .style(panel);
-        let settings = container(
-            column![
-                row![icon(Icon::Settings, 19.0, ICON), heading("模型设置", 14)]
-                    .spacing(12)
-                    .align_y(Alignment::Center),
-                self.model_setting(
-                    Icon::Package,
-                    "按需下载模型",
-                    "仅在你主动安装时下载模型",
-                    self.on_demand_models,
-                    Message::ToggleModelPolicy
-                ),
-                self.model_setting(
-                    Icon::Clock,
-                    "卸载模型后保留索引",
-                    "保留已生成的索引与整理结果",
-                    self.retain_indexes,
-                    Message::ToggleRetainIndexes
-                ),
-                separator(),
-                row![
-                    icon(Icon::Refresh, 18.0, ICON),
-                    heading("后台索引任务", 13),
-                    Space::new().width(Length::Fill),
-                    button(text("全部任务").size(11).color(BLUE))
-                        .padding(0)
-                        .style(flat)
-                        .on_press(Message::Manage(ManageMessage::Tasks))
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-                row![
-                    container(ring(
-                        if self.launch.design_preview {
-                            "36%".into()
-                        } else {
-                            "0%".into()
-                        },
-                        "",
-                        if self.launch.design_preview {
-                            0.36
-                        } else {
-                            0.0
-                        },
-                        72.0
-                    ))
-                    .width(72)
-                    .height(72),
-                    column![
-                        heading(
-                            if self.launch.design_preview {
-                                "正在分析照片内容…"
-                            } else {
-                                "当前没有索引任务"
-                            },
-                            11
-                        ),
-                        progress_bar(
-                            0.0..=1.0,
-                            if self.launch.design_preview {
-                                0.44
-                            } else {
-                                0.0
-                            }
-                        )
-                        .girth(4)
-                        .style(theme::progress),
-                        text(if self.launch.design_preview {
-                            "已处理 2,480 / 6,892 张   预计剩余 12 分钟"
-                        } else {
-                            "安装模型后可主动开始分析"
-                        })
-                        .size(10)
-                        .color(MUTED)
-                    ]
-                    .spacing(9)
-                    .width(Length::Fill)
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                heading(
-                    if self.launch.design_preview {
-                        "当前任务 (2)"
-                    } else {
-                        "当前任务 (0)"
-                    },
-                    11
-                ),
-                muted(if self.launch.design_preview {
-                    "风景照片特征提取        分析中…"
-                } else {
-                    "暂无后台任务"
-                })
-            ]
-            .spacing(17),
-        )
-        .padding(18)
-        .width(336)
-        .style(panel);
+        let settings = self.model_settings();
         scroll(
             column![
                 column![
@@ -533,6 +298,332 @@ impl App {
         })
         .height(Length::Fill)
         .into()
+    }
+    fn model_grouping(&self) -> Element<'_, Message> {
+        if self.library.is_none() {
+            button(text("选择资源库后分组").size(13))
+                .padding([8, 12])
+                .style(secondary)
+                .into()
+        } else {
+            crate::components::choice(
+                vec!["按内容类型分组", "人物管理与纠正"],
+                Some("按内容类型分组"),
+                |value| {
+                    if value == "人物管理与纠正" {
+                        Message::Ai(AiMessage::People)
+                    } else {
+                        Message::Noop
+                    }
+                },
+            )
+            .into()
+        }
+    }
+    pub(super) fn category_count(&self, label: &str) -> u64 {
+        let categories = &self.manager.organizer.ai_categories;
+        if label == "未分类" {
+            let classified: u64 = categories
+                .iter()
+                .filter(|(name, _)| name != "未分类")
+                .map(|(_, count)| *count)
+                .sum();
+            self.library
+                .as_ref()
+                .map_or(0, |library| library.info.count.saturating_sub(classified))
+        } else {
+            categories
+                .iter()
+                .find(|(name, _)| name == label)
+                .map_or(0, |(_, count)| *count)
+        }
+    }
+    fn model_visible(&self, model: &moriq_app::ModelInfo) -> bool {
+        (match self.model_filter {
+            0 => model.installed,
+            1 => !model.installed,
+            _ => true,
+        }) && format!(
+            "{} {} {}",
+            model.spec.name,
+            model.spec.id,
+            model_description(&model.spec.id)
+        )
+        .to_lowercase()
+        .contains(&self.model_search.trim().to_lowercase())
+    }
+    fn model_card<'a>(&'a self, model: &'a moriq_app::ModelInfo) -> Element<'a, Message> {
+        let id = &model.spec.id;
+        let downloading = self.ai.downloads.get(id);
+        let kind = match id.as_str() {
+            "florence" => Icon::Text,
+            "faces" => Icon::Person,
+            _ => Icon::Settings,
+        };
+        let color = if id == "florence" { PURPLE } else { BLUE };
+        let badge = if downloading.is_some() {
+            chip("下载中", BLUE)
+        } else if model.installed {
+            chip("已安装", GREEN)
+        } else {
+            chip("未安装", MUTED)
+        };
+        let mut content = column![
+            row![
+                container(icon(kind, 27.0, color))
+                    .padding(8)
+                    .style(move |_| container::Style {
+                        background: Some(Color { a: 0.06, ..color }.into()),
+                        border: Border {
+                            radius: 10.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                column![
+                    row![
+                        heading(model.spec.name.clone(), 13).width(Length::Fill),
+                        badge
+                    ]
+                    .spacing(5),
+                    text(model_description(id)).size(11).color(MUTED)
+                ]
+                .spacing(8)
+                .width(Length::Fill)
+            ]
+            .spacing(9),
+            muted(format!(
+                "{:.0} MiB · {}",
+                model.bytes as f64 / 1048576.,
+                model.spec.license
+            )),
+        ]
+        .spacing(12);
+        if let Some(control) = downloading {
+            let done = control.downloaded.load(Ordering::Relaxed);
+            let total = control.total.load(Ordering::Relaxed);
+            let ratio = if total == 0 {
+                0.
+            } else {
+                (done as f64 / total as f64).min(1.) as f32
+            };
+            content = content
+                .push(
+                    progress_bar(0.0..=1.0, ratio)
+                        .girth(5)
+                        .style(theme::progress),
+                )
+                .push(
+                    row![
+                        muted(format!(
+                            "{:.1} / {:.1} MiB",
+                            done as f64 / 1048576.,
+                            total as f64 / 1048576.
+                        ))
+                        .width(Length::Fill),
+                        button(
+                            row![
+                                icon(Icon::Pause, 13.0, ICON),
+                                text(if control.stop.load(Ordering::Relaxed) {
+                                    "暂停中…"
+                                } else {
+                                    "暂停"
+                                })
+                                .size(12)
+                            ]
+                            .spacing(5)
+                            .align_y(Alignment::Center)
+                        )
+                        .padding([7, 10])
+                        .style(secondary)
+                        .on_press_maybe(
+                            (!control.stop.load(Ordering::Relaxed))
+                                .then(|| Message::Ai(AiMessage::Pause(id.clone())))
+                        )
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center),
+                );
+        } else if model.installed {
+            content = content.push(
+                row![
+                    action(
+                        "重新分析",
+                        Message::Jobs(tasks::JobMessage::Queue(format!("analysis:{id}")))
+                    )
+                    .on_press_maybe(self.library.as_ref().map(|_| {
+                        Message::Jobs(tasks::JobMessage::Queue(format!("analysis:{id}")))
+                    })),
+                    action("卸载", Message::Ai(AiMessage::Uninstall(id.clone())))
+                ]
+                .spacing(7)
+                .wrap(),
+            );
+        } else {
+            content = content.push(row![
+                Space::new().width(Length::Fill),
+                action(
+                    if model.resumable {
+                        "继续安装"
+                    } else {
+                        "安装"
+                    },
+                    Message::Ai(AiMessage::Install(id.clone()))
+                )
+                .style(primary)
+            ]);
+        }
+        iced::widget::tooltip(
+            container(content)
+                .padding(11)
+                .width(Length::Fill)
+                .style(panel),
+            container(
+                column![
+                    muted(format!("模型版本：{}", model.spec.revision)),
+                    muted(format!("建议内存：{} MiB", model.spec.minimum_memory_mib)),
+                    text(model.spec.source.clone())
+                        .size(11)
+                        .wrapping(text::Wrapping::Glyph),
+                ]
+                .spacing(6),
+            )
+            .padding(12)
+            .width(340)
+            .style(panel),
+            iced::widget::tooltip::Position::Bottom,
+        )
+        .delay(Duration::from_millis(600))
+        .snap_within_viewport(true)
+        .into()
+    }
+    fn model_settings(&self) -> Element<'_, Message> {
+        let jobs: Vec<_> = self
+            .manager
+            .organizer
+            .jobs
+            .iter()
+            .filter(|job| {
+                (job.kind.starts_with("analysis:")
+                    || ["fingerprints", "thumbnails", "metadata"].contains(&job.kind.as_str()))
+                    && !["completed", "cancelled"].contains(&job.state.as_str())
+            })
+            .collect();
+        let current = jobs
+            .iter()
+            .find(|job| job.state == "running")
+            .or_else(|| jobs.first());
+        let ratio = current.map_or(0., |job| {
+            if job.total == 0 {
+                0.
+            } else {
+                (job.completed as f64 / job.total as f64).min(1.) as f32
+            }
+        });
+        let mut content = column![
+            row![icon(Icon::Settings, 19.0, ICON), heading("模型设置", 14)]
+                .spacing(12)
+                .align_y(Alignment::Center),
+            self.model_setting(
+                Icon::Package,
+                "国内下载加速",
+                if self.preferences.ai.use_mirror {
+                    "下载源：HF-Mirror · hf-mirror.com"
+                } else {
+                    "下载源：Hugging Face · huggingface.co"
+                },
+                self.preferences.ai.use_mirror,
+                Message::ToggleModelMirror
+            ),
+            muted("切换源在下次安装或继续时生效，保留下载断点。"),
+            self.model_setting(
+                Icon::Package,
+                "按需加载模型",
+                "闲置时释放模型，下次使用再加载",
+                self.on_demand_models,
+                Message::ToggleModelPolicy
+            ),
+            self.model_setting(
+                Icon::Clock,
+                "卸载模型后保留索引",
+                "保留已生成的索引与整理结果",
+                self.retain_indexes,
+                Message::ToggleRetainIndexes
+            ),
+            separator(),
+            row![
+                icon(Icon::Refresh, 18.0, ICON),
+                heading("后台索引任务", 13),
+                Space::new().width(Length::Fill),
+                button(text("全部任务").size(11).color(BLUE))
+                    .padding(0)
+                    .style(flat)
+                    .on_press(Message::Manage(ManageMessage::Tasks))
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            row![
+                ring(
+                    if current.is_some() {
+                        format!("{:.0}%", ratio * 100.)
+                    } else {
+                        "—".into()
+                    },
+                    "",
+                    ratio,
+                    72.
+                ),
+                column![
+                    heading(
+                        current.map_or("当前没有索引任务", |job| job_title(&job.kind)),
+                        11
+                    ),
+                    progress_bar(0.0..=1.0, ratio)
+                        .girth(4)
+                        .style(theme::progress),
+                    text(current.map_or_else(
+                        || "安装模型后可主动开始分析".into(),
+                        |job| format!(
+                            "已处理 {} / {} 张 · 失败 {} 张",
+                            job.completed, job.total, job.failed
+                        )
+                    ))
+                    .size(10)
+                    .color(MUTED),
+                ]
+                .spacing(9)
+                .width(Length::Fill)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            heading(format!("当前任务 ({})", jobs.len()), 11),
+        ]
+        .spacing(17);
+        if self.jobs.error.is_some() {
+            content = content.push(muted("任务信息暂时无法读取，请在全部任务中查看。"));
+        }
+        for job in jobs.iter().take(3) {
+            content = content.push(muted(format!(
+                "{} · {}",
+                job_title(&job.kind),
+                job_state(&job.state)
+            )));
+        }
+        if jobs.is_empty() {
+            content = content.push(muted("暂无后台任务"));
+        }
+        if let Some(hardware) = &self.ai.hardware {
+            content = content.push(separator()).push(muted(format!(
+                "{} · {} 核 · 可用内存 {} MiB",
+                hardware.provider, hardware.logical_cpus, hardware.available_mib
+            )));
+        }
+        content = content.push(action("刷新模型列表", Message::Ai(AiMessage::Refresh)));
+        container(content)
+            .padding(18)
+            .width(336)
+            .style(panel)
+            .into()
     }
     fn model_setting<'a>(
         &self,
@@ -592,7 +683,7 @@ impl App {
                 },
                 ..Default::default()
             })
-            .on_press_maybe(self.launch.design_preview.then_some(message))
+            .on_press(message)
         ]
         .spacing(10)
         .align_y(Alignment::Center)
@@ -609,4 +700,31 @@ fn number(value: u64) -> String {
         out.push(c);
     }
     out
+}
+fn model_description(id: &str) -> &'static str {
+    match id {
+        "chinese-clip" => "图像内容分类、中文语义检索与相似搜索。",
+        "florence" => "识别照片中的文字，并生成图像描述。",
+        "faces" => "人脸检测、特征提取与人物聚类。",
+        _ => "在本机分析图片内容。",
+    }
+}
+fn job_title(kind: &str) -> &'static str {
+    match kind {
+        "analysis:chinese-clip" => "内容分类与语义索引",
+        "analysis:florence" => "文字识别与图像描述",
+        "analysis:faces" => "人物识别与聚类",
+        "fingerprints" => "近似图片索引",
+        "thumbnails" => "重建图片缩略图",
+        _ => "图片元数据索引",
+    }
+}
+fn job_state(state: &str) -> &'static str {
+    match state {
+        "running" => "分析中…",
+        "queued" => "等待中",
+        "paused" => "已暂停",
+        "failed" => "失败",
+        _ => "等待恢复",
+    }
 }

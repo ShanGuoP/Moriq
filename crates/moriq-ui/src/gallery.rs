@@ -987,32 +987,44 @@ impl App {
         ];
         column![
             row![
-                heading(
+                container(heading(
                     self.selected
                         .as_ref()
                         .map(|a| a.name.as_str())
                         .unwrap_or_default(),
                     17
-                ),
-                Space::new().width(Length::Fill),
+                ))
+                .width(Length::Fill),
+                action("返回图库 · Esc", Message::ExpandPreview)
+            ]
+            .spacing(20)
+            .align_y(Alignment::Center),
+            row![
                 muted(match self.original_size {
                     Some((w, h)) => format!("原尺寸 {w} × {h} · 滚轮缩放 · 拖动平移"),
                     None => "预览 · 滚轮缩放 · 拖动平移".into(),
                 }),
-                button("100%").style(secondary).on_press_maybe(
-                    self.selected
-                        .as_ref()
-                        .is_some_and(|a| !moriq_app::is_video_format(&a.format))
-                        .then_some(Message::Regions(RegionMessage::Actual))
-                ),
-                button("适应窗口").style(secondary).on_press_maybe(
-                    self.selected
-                        .as_ref()
-                        .is_some_and(|a| !moriq_app::is_video_format(&a.format))
-                        .then_some(Message::Regions(RegionMessage::Fit))
-                ),
-                action("返回图库 · Esc", Message::ExpandPreview)
+                Space::new().width(Length::Fill),
+                button(text("100%").size(13))
+                    .padding([8, 14])
+                    .style(secondary)
+                    .on_press_maybe(
+                        self.selected
+                            .as_ref()
+                            .is_some_and(|a| !moriq_app::is_video_format(&a.format))
+                            .then_some(Message::Regions(RegionMessage::Actual))
+                    ),
+                button(text("适应窗口").size(13))
+                    .padding([8, 14])
+                    .style(secondary)
+                    .on_press_maybe(
+                        self.selected
+                            .as_ref()
+                            .is_some_and(|a| !moriq_app::is_video_format(&a.format))
+                            .then_some(Message::Regions(RegionMessage::Fit))
+                    )
             ]
+            .spacing(12)
             .align_y(Alignment::Center),
             art
         ]

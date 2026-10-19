@@ -84,6 +84,7 @@ pub struct LoadedNeighborhood {
 }
 #[derive(Debug, Clone, Default)]
 pub struct LoadedOverview {
+    pub categories: Vec<(String, Option<Pixels>)>,
     pub favorites: Vec<Tile>,
     pub projects: Vec<(ProjectId, Option<Pixels>)>,
 }
@@ -99,6 +100,8 @@ pub struct ImportControl {
     pub scanning: Arc<AtomicBool>,
     pub active: Arc<AtomicUsize>,
     pub peak: Arc<AtomicUsize>,
+    pub waiting_memory: Arc<AtomicUsize>,
+    pub largest_mib: Arc<AtomicUsize>,
 }
 impl Default for ImportControl {
     fn default() -> Self {
@@ -117,6 +120,8 @@ impl Default for ImportControl {
             scanning: Arc::default(),
             active: Arc::default(),
             peak: Arc::default(),
+            waiting_memory: Arc::default(),
+            largest_mib: Arc::default(),
         }
     }
 }
@@ -140,6 +145,26 @@ impl ImportControl {
     }
 }
 impl Service {
+    pub async fn library_cards(
+        &self,
+        paths: Vec<PathBuf>,
+    ) -> Result<Vec<(PathBuf, Option<Pixels>)>> {
+        tokio::task::spawn_blocking(move || {
+            paths
+                .into_iter()
+                .map(|path| {
+                    let cover =
+                        moriq_library::settings::card_cover(&path).unwrap_or_else(|error| {
+                            tracing::debug!(%error, "library card cover unavailable");
+                            None
+                        });
+                    (path, cover)
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
     pub async fn orphan_plan(&self, id: LibraryId) -> Result<Arc<OrphanPlan>> {
         self.read_plan(
             128,
@@ -476,9 +501,21 @@ impl Service {
             .map_err(|e| e.to_string())?
     }
     pub async fn install_model(&self, model: String, control: DownloadControl) -> Result<()> {
-        tokio::task::spawn_blocking(move || moriq_ai::install(&model, &control))
+        let preferences = self.settings().await?;
+        self.install_model_with_mirror(model, control, preferences.ai.use_mirror)
             .await
-            .map_err(|e| e.to_string())?
+    }
+    pub async fn install_model_with_mirror(
+        &self,
+        model: String,
+        control: DownloadControl,
+        use_mirror: bool,
+    ) -> Result<()> {
+        tokio::task::spawn_blocking(move || {
+            moriq_ai::install_with_mirror(&model, &control, use_mirror)
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
     pub async fn uninstall_model(&self, model: String) -> Result<()> {
         tokio::task::spawn_blocking(move || moriq_ai::uninstall(&model))
@@ -663,15 +700,35 @@ impl Service {
                     .map_err(|e| e.to_string())?
                     .assets;
                 let projects = lib.project_covers().map_err(|e| e.to_string())?;
+                let categories = ["人像", "风景", "建筑", "插画", "截图", "未分类"]
+                    .into_iter()
+                    .map(|category| {
+                        let page = lib
+                            .page(
+                                &Query {
+                                    category: category.into(),
+                                    ..Default::default()
+                                },
+                                0,
+                                1,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        Ok((
+                            category.to_string(),
+                            page.assets.first().map(|a| a.version_id),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 let versions = favorites
                     .iter()
                     .map(|a| a.version_id)
                     .chain(projects.iter().filter_map(|(_, v)| *v))
+                    .chain(categories.iter().filter_map(|(_, v)| *v))
                     .collect::<Vec<_>>();
                 let thumbnails = lib.thumbnail_plan(&versions).map_err(|e| e.to_string())?;
-                Ok((favorites, projects, thumbnails))
+                Ok((favorites, projects, categories, thumbnails))
             },
-            move |(favorites, projects, thumbnails)| {
+            move |(favorites, projects, categories, thumbnails)| {
                 let (images, _warnings) = thumbnails.read();
                 let mut images = images.into_iter();
                 let favorites = favorites
@@ -685,7 +742,12 @@ impl Service {
                     .into_iter()
                     .map(|(id, version)| (id, version.and_then(|_| images.next().flatten())))
                     .collect();
+                let categories = categories
+                    .into_iter()
+                    .map(|(label, version)| (label, version.and_then(|_| images.next().flatten())))
+                    .collect();
                 Ok(LoadedOverview {
+                    categories,
                     favorites,
                     projects,
                 })
@@ -1939,9 +2001,30 @@ impl Service {
         let cancel = control.cancel.clone();
         let copy_slot = slot.clone();
         let result = async {
-            let weight = tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 let _slot = copy_slot;
-                work.copy(&cancel)?;
+                work.copy(&cancel)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+            // Metadata-only RAW probing is isolated at 192 MiB plus parent workspace.
+            // Admit probes too; a batch of headers must not bypass the memory budget.
+            let probe_batch = memory
+                .clone()
+                .acquire_many_owned(256)
+                .await
+                .map_err(|e| e.to_string())?;
+            let probe_global = self
+                .import_memory
+                .clone()
+                .acquire_many_owned(256)
+                .await
+                .map_err(|e| e.to_string())?;
+            let work = ticket.clone();
+            let weight = tokio::task::spawn_blocking(move || {
+                let _batch = probe_batch;
+                let _global = probe_global;
                 work.memory_mib()
             })
             .await
@@ -1952,6 +2035,11 @@ impl Service {
                     "单张图片解码预计需要 {weight} MiB，请在设置中提高导入内存预算"
                 ));
             }
+            control
+                .largest_mib
+                .fetch_max(weight as usize, Ordering::Relaxed);
+            control.waiting_memory.fetch_add(1, Ordering::Relaxed);
+            let waiting = ImportActivity(control.waiting_memory.clone());
             let _batch_memory = memory
                 .acquire_many_owned(weight)
                 .await
@@ -1962,6 +2050,7 @@ impl Service {
                 .acquire_many_owned(weight)
                 .await
                 .map_err(|e| e.to_string())?;
+            drop(waiting);
             let work = ticket.clone();
             let cancel = control.cancel.clone();
             let active = control.active.clone();
@@ -2017,6 +2106,127 @@ fn check(active: &mut Option<Library>, expected: LibraryId) -> Result<&mut Libra
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let a = dir.path().join("a.png");
+            let b = dir.path().join("b.png");
+            image::RgbImage::from_pixel(24, 16, image::Rgb([20, 80, 140]))
+                .save(&a)
+                .unwrap();
+            image::RgbImage::from_pixel(24, 16, image::Rgb([190, 70, 60]))
+                .save(&b)
+                .unwrap();
+            let service = Service::start().unwrap();
+            let library = service
+                .create(dir.path().into(), "covers".into())
+                .await
+                .unwrap();
+            let owner = library.info.id;
+            let project = service.project(owner, "project".into()).await.unwrap();
+            let report = service
+                .import_sources(owner, vec![a, b], Some(project), ImportControl::default())
+                .await;
+            assert_eq!(report.imported, 2);
+            let asset = service
+                .call(move |active| {
+                    Ok(check(active, owner)?
+                        .page(&Query::default(), 0, 2)
+                        .map_err(|e| e.to_string())?
+                        .assets
+                        .into_iter()
+                        .find(|a| a.name == "a.png")
+                        .ok_or("missing asset")?
+                        .id)
+                })
+                .await
+                .unwrap();
+            service
+                .set_category(owner, vec![asset], "风景".into())
+                .await
+                .unwrap();
+            service.favorite(owner, asset, true).await.unwrap();
+            let overview = service.overview(owner).await.unwrap();
+            assert_eq!(overview.favorites.len(), 1);
+            assert!(overview.projects.iter().all(|(_, p)| p.is_some()));
+            for (label, pixels) in overview.categories {
+                match label.as_str() {
+                    "风景" => assert_eq!(&pixels.unwrap().rgba[..4], &[20, 80, 140, 255]),
+                    "未分类" => assert_eq!(&pixels.unwrap().rgba[..4], &[190, 70, 60, 255]),
+                    _ => assert!(pixels.is_none()),
+                }
+            }
+            service
+                .edit(owner, vec![asset], Edit::Trash(true))
+                .await
+                .unwrap();
+            assert!(
+                service
+                    .overview(owner)
+                    .await
+                    .unwrap()
+                    .categories
+                    .iter()
+                    .any(|(label, p)| label == "风景" && p.is_none())
+            );
+            let next = service
+                .create(dir.path().into(), "empty".into())
+                .await
+                .unwrap();
+            assert!(
+                service
+                    .overview(next.info.id)
+                    .await
+                    .unwrap()
+                    .categories
+                    .iter()
+                    .all(|(_, p)| p.is_none())
+            );
+            assert!(service.overview(owner).await.is_err());
+            service.close().await.unwrap();
+        });
+    }
+    #[test]
+    fn ten_worker_jpeg_import_runs_concurrently_with_one_gib_budget() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let source_dir = dir.path().join("photos");
+            std::fs::create_dir(&source_dir).unwrap();
+            let source = source_dir.join("0.jpg");
+            image::RgbImage::from_pixel(4016, 6016, image::Rgb([20, 80, 140]))
+                .save(&source)
+                .unwrap();
+            for index in 1..10 {
+                std::fs::copy(&source, source_dir.join(format!("{index}.jpg"))).unwrap();
+            }
+            let service = Service::start().unwrap();
+            let library = service
+                .create(dir.path().into(), "concurrent".into())
+                .await
+                .unwrap();
+            let control = ImportControl {
+                workers: 10,
+                memory_mib: 1024,
+                ..Default::default()
+            };
+            let report = service
+                .import_sources(library.info.id, vec![source_dir], None, control.clone())
+                .await;
+            let peak = control.peak.load(Ordering::Relaxed);
+            eprintln!(
+                "24 MP JPEG: workers=10 budget=1024 MiB peak={peak} largest={} MiB",
+                control.largest_mib.load(Ordering::Relaxed)
+            );
+            assert_eq!(report.failed, 0, "{:?}", report.failures);
+            assert_eq!(report.imported + report.duplicates, 10);
+            assert!(peak > 1, "JPEG pipeline unexpectedly serialized");
+            assert!(peak <= 10);
+            assert_eq!(control.active.load(Ordering::Relaxed), 0);
+            assert_eq!(control.waiting_memory.load(Ordering::Relaxed), 0);
+            service.close().await.unwrap();
+        });
+    }
     #[test]
     fn blocked_media_reads_leave_writer_responsive_and_cancellation_releases_library_lease() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {

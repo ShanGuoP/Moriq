@@ -18,11 +18,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let result = service.import_sources(opened.info.id, vec![input], None, control.clone()).await;
         let count=control.discovered.load(Ordering::Relaxed);
-        println!("workers={workers} memory_mib={memory_mib} peak={} count={count} imported={} duplicates={} failed={} total={:.3}s",control.peak.load(Ordering::Relaxed),result.imported,result.duplicates,result.failed,start.elapsed().as_secs_f64());
+        println!("workers={workers} memory_mib={memory_mib} peak={} largest_mib={} count={count} imported={} duplicates={} failed={} total={:.3}s",control.peak.load(Ordering::Relaxed),control.largest_mib.load(Ordering::Relaxed),result.imported,result.duplicates,result.failed,start.elapsed().as_secs_f64());
         for failure in &result.failures { println!("{failure}"); }
         if result.failed != 0 { return Err("import failed".into()); }
         let page = service.page(opened.info.id, Default::default(), 0, 64).await?;
-        if page.total != count as u64 { return Err("row count mismatch".into()); }
+        if page.total != result.imported as u64 { return Err("row count mismatch".into()); }
         service.close().await?;
         Ok::<(),Box<dyn std::error::Error>>(())
     })

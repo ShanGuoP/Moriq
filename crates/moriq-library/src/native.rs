@@ -51,6 +51,77 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
 pub fn decode_raw(path: &Path, edge: u32) -> Result<Decoded> {
     decode_worker(path, edge, true)
 }
+/// LibRaw identifies sensor layout without unpacking/demosaicing. The worker uses
+/// the same estimate as an enforced process cap when it actually decodes.
+pub fn raw_memory_mib(path: &Path) -> Result<u32> {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        #[cfg(windows)]
+        let worker = raw_worker()?;
+        #[cfg(target_os = "macos")]
+        let worker = crate::raw_portable::worker()?;
+        let output = tempfile::NamedTempFile::new()?.into_temp_path();
+        let mut command = Command::new(worker);
+        command
+            .arg(path)
+            .arg(&output)
+            .arg("256")
+            .arg(std::process::id().to_string())
+            .arg("--probe")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env("OMP_NUM_THREADS", "1");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = command.spawn()?;
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        return Err(Error::Invalid(format!(
+                            "RAW 元数据探测失败（{}），原片保留",
+                            status.code().unwrap_or(-1)
+                        )));
+                    }
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error.into());
+                }
+            }
+            if start.elapsed() > Duration::from_secs(15) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Invalid("RAW 元数据探测超时，原片保留".into()));
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        if fs::metadata(&output)?.len() != 12 {
+            return Err(Error::Invalid("RAW 内存回执长度无效".into()));
+        }
+        let bytes = fs::read(output)?;
+        let value = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        if &bytes[..8] != b"MORIQMEM" || !(128..=1600).contains(&value) {
+            return Err(Error::Invalid("RAW 内存回执无效".into()));
+        }
+        Ok(value)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = path;
+        Err(Error::Invalid("此平台尚未提供 RAW 探测".into()))
+    }
+}
 #[cfg(all(windows, bundled_libraw))]
 pub(crate) fn raw_worker() -> Result<PathBuf> {
     let exe = include_bytes!(concat!(env!("OUT_DIR"), "/raw-runtime/raw-worker.exe"));
@@ -257,6 +328,14 @@ pub(crate) fn file_limit(path: &Path) -> u64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn raw_probe_rejects_broken_metadata_without_touching_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rw2");
+        fs::write(&path, b"broken raw metadata").unwrap();
+        assert!(raw_memory_mib(&path).is_err());
+        assert_eq!(fs::read(path).unwrap(), b"broken raw metadata");
+    }
     #[test]
     fn isolated_decoder_scales_and_validates_output_and_tiff_roundtrips_without_touching_source() {
         let dir = tempfile::tempdir().unwrap();

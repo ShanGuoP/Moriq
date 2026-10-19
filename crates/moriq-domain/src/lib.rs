@@ -322,12 +322,14 @@ impl Default for SyncoPreferences {
 pub struct AiPreferences {
     pub on_demand: bool,
     pub retain_indexes: bool,
+    pub use_mirror: bool,
 }
 impl Default for AiPreferences {
     fn default() -> Self {
         Self {
             on_demand: true,
             retain_indexes: true,
+            use_mirror: true,
         }
     }
 }

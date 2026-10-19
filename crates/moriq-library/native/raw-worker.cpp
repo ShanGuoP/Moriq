@@ -10,8 +10,9 @@
 #include <fstream>
 #include <thread>
 #include <vector>
+#include "raw-budget.h"
 using Microsoft::WRL::ComPtr;
-static void guard(DWORD parent) {
+static HANDLE guard(DWORD parent,bool probe) {
     HANDLE handle=OpenProcess(SYNCHRONIZE,FALSE,parent);
     if(!handle) ExitProcess(3);
     std::thread([handle]{WaitForSingleObject(handle,INFINITE);ExitProcess(9);}).detach();
@@ -19,14 +20,16 @@ static void guard(DWORD parent) {
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_PROCESS_MEMORY|JOB_OBJECT_LIMIT_PROCESS_TIME;
     limits.BasicLimitInformation.PerProcessUserTimeLimit.QuadPart=90LL*10000000;
-    limits.ProcessMemoryLimit=1536ULL*1024*1024;
+    limits.ProcessMemoryLimit=(probe?192ULL:1536ULL)*1024*1024;
     if(!job||!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits))||!AssignProcessToJobObject(job,GetCurrentProcess())) ExitProcess(3);
+    return job;
 }
 int wmain(int argc,wchar_t** argv) {
-    if(argc!=5) return 2;
+    const bool probe=argc==6&&wcscmp(argv[5],L"--probe")==0;
+    if(argc!=5&&!probe) return 2;
     const unsigned edge=wcstoul(argv[3],nullptr,10);
     if(edge>65535) return 2;
-    guard(wcstoul(argv[4],nullptr,10));
+    HANDLE job=guard(wcstoul(argv[4],nullptr,10),probe);
     LibRaw raw;
     raw.imgdata.rawparams.max_raw_memory_mb=1024;
     raw.imgdata.params.use_camera_wb=1;
@@ -35,6 +38,17 @@ int wmain(int argc,wchar_t** argv) {
     raw.imgdata.params.user_qual=3;
     int error=raw.open_file(argv[1]);
     if(error!=LIBRAW_SUCCESS) return 4;
+    const uint32_t child_mib=raw_child_mib(raw.imgdata,edge);
+    if(probe) {
+        std::ofstream output(argv[2],std::ios::binary|std::ios::trunc);
+        raw_memory_report(output,child_mib);
+        return output.good()?0:7;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    if(!QueryInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits),nullptr))return 3;
+    limits.ProcessMemoryLimit=uint64_t(child_mib)*1024*1024;
+    if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)))return 3;
+    raw.imgdata.rawparams.max_raw_memory_mb=std::min(1024u,child_mib);
     // Always decode sensor data. No embedded JPEG substitution.
     if((error=raw.unpack())!=LIBRAW_SUCCESS||(error=raw.dcraw_process())!=LIBRAW_SUCCESS) return 5;
     libraw_processed_image_t* pixels=raw.dcraw_make_mem_image(&error);

@@ -771,6 +771,41 @@ fn copy_tree(root: &Path, relative: &Path, destination: &Path) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn ai_category_cards_filter_real_classification_and_unclassified_assets() {
+        let (_dir, mut lib, assets) = fixture();
+        lib.set_category(&[assets[0].id], "风景").unwrap();
+        lib.set_category(&[assets[1].id], "未分类").unwrap();
+        let landscape = lib
+            .page(
+                &Query {
+                    category: "风景".into(),
+                    ..Default::default()
+                },
+                0,
+                128,
+            )
+            .unwrap();
+        assert_eq!(landscape.assets.len(), 1);
+        assert_eq!(landscape.assets[0].id, assets[0].id);
+        let query = Query {
+            category: "未分类".into(),
+            ..Default::default()
+        };
+        let unclassified = lib.page(&query, 0, 128).unwrap();
+        assert_eq!(unclassified.total, assets.len() as u64 - 1);
+        assert!(
+            !unclassified
+                .assets
+                .iter()
+                .any(|asset| asset.id == assets[0].id)
+        );
+        lib.edit(&[assets[2].id], &Edit::Trash(true)).unwrap();
+        assert_eq!(
+            lib.page(&query, 0, 128).unwrap().total,
+            assets.len() as u64 - 2
+        );
+    }
+    #[test]
     fn interrupted_import_recovers_from_owned_copy_with_project_and_name() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("需要恢复.png");

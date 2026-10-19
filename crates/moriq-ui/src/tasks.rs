@@ -266,10 +266,13 @@ impl App {
         if let Some(control) = &self.import {
             count += 1;
             view = view.push(heading("图片导入", 15)).push(muted(format!(
-                "已处理 {}，已发现 {}，同时处理 {}",
+                "已处理 {}，已发现 {}，解码 {} / 上限 {}，峰值 {}，等待内存 {}",
                 control.finished.load(Ordering::Relaxed),
                 control.discovered.load(Ordering::Relaxed),
-                control.active.load(Ordering::Relaxed)
+                control.active.load(Ordering::Relaxed),
+                control.workers,
+                control.peak.load(Ordering::Relaxed),
+                control.waiting_memory.load(Ordering::Relaxed)
             )));
             if !control.cancel.load(Ordering::Relaxed) {
                 view = view.push(action("停止导入", Message::CancelImport));

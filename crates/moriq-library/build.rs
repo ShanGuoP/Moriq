@@ -2,6 +2,7 @@ use std::{env, path::PathBuf};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=native/wic-worker.cpp");
     println!("cargo:rerun-if-changed=native/raw-worker.cpp");
+    println!("cargo:rerun-if-changed=native/raw-budget.h");
     println!("cargo:rerun-if-changed=native/video-worker.cpp");
     println!("cargo:rerun-if-changed=native/codec-runner.cpp");
     println!("cargo:rerun-if-changed=native/raw-worker-portable.cpp");

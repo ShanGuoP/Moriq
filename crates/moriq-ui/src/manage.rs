@@ -58,6 +58,7 @@ pub(super) struct Manager {
     pub organizer: Organizer,
     pub favorites: Vec<Tile>,
     pub project_covers: std::collections::HashMap<ProjectId, image::Handle>,
+    pub category_covers: std::collections::HashMap<String, image::Handle>,
     pub details: AssetDetails,
     pub notes: String,
     pub notes_dirty: bool,
@@ -981,6 +982,18 @@ impl App {
                             .map(|p| image::Handle::from_rgba(p.width, p.height, p.rgba)),
                     })
                     .collect();
+                self.manager.category_covers = result
+                    .categories
+                    .into_iter()
+                    .filter_map(|(label, pixels)| {
+                        pixels.map(|pixels| {
+                            (
+                                label,
+                                image::Handle::from_rgba(pixels.width, pixels.height, pixels.rgba),
+                            )
+                        })
+                    })
+                    .collect();
                 self.manager.project_covers = result
                     .projects
                     .into_iter()
@@ -992,6 +1005,7 @@ impl App {
             OverviewLoaded(id, Err(e))
                 if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
+                self.manager.category_covers.clear();
                 self.error = Some(e)
             }
             OrganizerLoaded(id, Ok(result))
@@ -2231,7 +2245,7 @@ impl App {
                 )
             })
             .max_height((self.viewport.height - 80.0).max(160.0))
-            .style(panel);
+            .style(crate::theme::modal);
         stack![
             base,
             mouse_area(
@@ -2239,14 +2253,22 @@ impl App {
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .style(|_| container::Style {
-                        background: Some(iced::Color::from_rgba8(25, 40, 64, 0.22).into()),
+                        background: Some(
+                            iced::Color::from_rgba8(25, 40, 64, self.backdrop_alpha()).into()
+                        ),
                         ..Default::default()
                     })
             )
             .on_press(Message::Manage(Close)),
-            container(mouse_area(modal).on_press(Message::Noop))
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
+            container(
+                mouse_area(crate::motion::translated(
+                    modal.into(),
+                    self.surface_offset()
+                ))
+                .on_press(Message::Noop)
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
         ]
         .into()
     }

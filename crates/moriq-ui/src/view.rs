@@ -3,45 +3,54 @@ use crate::components::choice as pick_list;
 use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
+use crate::welcome::compact;
 use iced::widget::{
     Column, Row, Space, button, column, container, mouse_area, progress_bar, row, stack, text,
     text_input,
 };
 use iced::{Alignment, Border, Color, Length};
 impl App {
-    pub(super) fn shell(&self) -> Element<'_, Message> {
-        let content = if self.library.is_none() {
-            self.welcome()
+    pub(super) fn content_screen(&self) -> Option<Screen> {
+        if self.library_picker {
+            None
+        } else if self.screen == Screen::Models || self.library.is_some() {
+            Some(self.screen)
         } else {
-            match self.screen {
-                Screen::Overview => self.overview(),
-                Screen::Assets => self.assets(),
-                Screen::Models => self.models(),
-            }
+            None
+        }
+    }
+    pub(super) fn shell(&self) -> Element<'_, Message> {
+        let content = match self.content_screen() {
+            None => self.welcome(),
+            Some(Screen::Overview) => self.overview(),
+            Some(Screen::Assets) => self.assets(),
+            Some(Screen::Models) => self.models(),
         };
         let alpha = self
             .transition
             .as_ref()
             .map_or(0.0, transition::PageTransition::alpha);
-        let content: Element<'_, Message> = if alpha > 0.001 {
-            stack![
-                content,
-                container(Space::new())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(move |_| container::Style {
-                        background: Some(Color::from_rgba(1.0, 1.0, 1.0, alpha).into()),
-                        ..Default::default()
-                    })
-            ]
-            .into()
-        } else {
-            content
-        };
+        let offset = self
+            .transition
+            .as_ref()
+            .map_or(0.0, transition::PageTransition::offset);
+        // Always retain the wrapper and stack, so animation frames do not remount scroll/input state.
+        let content = container(crate::motion::translated(content, offset)).clip(true);
+        let content: Element<'_, Message> = stack![
+            content,
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Color::from_rgba(1.0, 1.0, 1.0, alpha * 0.14).into()),
+                    ..Default::default()
+                })
+        ]
+        .into();
         let mut body = column![self.header(), content].height(Length::Fill);
         let status = if let Some(import) = &self.import {
             format!(
-                "{} {} / {} · 同时处理 {} 张",
+                "{} {} / {} · 解码 {} / 上限 {} · 峰值 {} · 等待内存 {}",
                 if import.scanning.load(Ordering::Relaxed) {
                     "扫描并导入"
                 } else {
@@ -49,7 +58,10 @@ impl App {
                 },
                 import.finished.load(Ordering::Relaxed),
                 import.discovered.load(Ordering::Relaxed).max(import.total),
-                import.active.load(Ordering::Relaxed)
+                import.active.load(Ordering::Relaxed),
+                import.workers,
+                import.peak.load(Ordering::Relaxed),
+                import.waiting_memory.load(Ordering::Relaxed)
             )
         } else if let Some(control) = &self.manager.maintenance {
             format!(
@@ -216,7 +228,7 @@ impl App {
             )
             .padding(26)
             .width(480)
-            .style(panel);
+            .style(crate::theme::modal);
             let modal = if dialog == Dialog::Settings {
                 container(
                     column![
@@ -269,9 +281,14 @@ impl App {
                                 ]
                                 .align_y(Alignment::Center),
                                 muted(format!(
-                                    "本机自动上限 {}；大图会按内存预算减少同时处理数量。",
+                                    "本机自动上限 {}。并发数是上限，实际数量受内存预算限制；保存后在下次导入生效。",
                                     moriq_app::ImportControl::default().workers
                                 )),
+                                muted(self.import.as_ref().map(|job| format!(
+                                    "当前批次：最多 {} 张 / {} MiB；单张最高估算 {} MiB，解码峰值 {} 张，等待内存 {} 张。",
+                                    job.workers, job.memory_mib, job.largest_mib.load(Ordering::Relaxed),
+                                    job.peak.load(Ordering::Relaxed), job.waiting_memory.load(Ordering::Relaxed)
+                                )).unwrap_or_default()),
                                 action("保存导入设置", Message::SaveImportPreferences),
                                 separator(),
                                 heading("资源库位置", 13),
@@ -291,7 +308,7 @@ impl App {
                                 separator(),
                                 heading("模型与索引", 13),
                                 muted(
-                                    "当前尚未提供可安装的模型包，自动分类、OCR 和语义搜索尚未启用。"
+                                    "模型按需安装，可在 AI 模型页选择下载源、安装模型并管理索引任务。"
                                 ),
                                 action("查看模型管理", Message::Navigate(2)),
                                 separator(),
@@ -318,7 +335,7 @@ impl App {
                 .padding(26)
                 .width((self.viewport.width - 40.0).clamp(260.0, 480.0))
                 .max_height((self.viewport.height - 100.0).max(140.0))
-                .style(panel)
+                .style(crate::theme::modal)
             } else {
                 modal
             };
@@ -329,14 +346,22 @@ impl App {
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .style(|_| container::Style {
-                            background: Some(Color::from_rgba8(25, 40, 64, 0.22).into()),
+                            background: Some(
+                                Color::from_rgba8(25, 40, 64, self.backdrop_alpha()).into()
+                            ),
                             ..Default::default()
                         })
                 )
                 .on_press(Message::HideCreate),
-                container(mouse_area(modal).on_press(Message::Noop))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
+                container(
+                    mouse_area(crate::motion::translated(
+                        modal.into(),
+                        self.surface_offset()
+                    ))
+                    .on_press(Message::Noop)
+                )
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
             ]
             .into()
         } else if self.manager.panel.is_some() {
@@ -715,7 +740,7 @@ impl App {
                 Icon::Folder,
                 "资源库",
                 None,
-                Message::Navigate(0),
+                Message::ShowLibraries,
                 self.screen != Screen::Models
             ),
             self.nav_row(
@@ -727,22 +752,102 @@ impl App {
             )
         ]
         .spacing(5);
+        content = content
+            .push(Space::new().height(if self.screen == Screen::Assets { 6 } else { 13 }))
+            .push(separator())
+            .push(Space::new().height(if self.screen == Screen::Assets { 3 } else { 10 }));
         if self.screen == Screen::Models {
             content = content
-                .push(Space::new().height(9))
+                .push(heading("资源库", 13))
+                .push(Space::new().height(6));
+            let can_switch = !self.switching && self.import.is_none() && !self.manager.busy;
+            let libraries = self.model_libraries();
+            if libraries.is_empty() {
+                content = content.push(muted("暂无资源库，打开后会显示在这里"));
+            }
+            for (name, path, active) in libraries {
+                let cover = photo(self.library_covers.get(&path), Length::Fixed(34.0), 34.0);
+                let location = display_path(path.parent().unwrap_or(&path));
+                let entry = button(
+                    row![
+                        cover,
+                        container(
+                            column![
+                                text(compact(&name, 12))
+                                    .size(13)
+                                    .width(Length::Fill)
+                                    .height(18)
+                                    .wrapping(text::Wrapping::None)
+                                    .color(if active { BLUE } else { TEXT }),
+                                text(compact(&location, 21))
+                                    .size(10)
+                                    .color(MUTED)
+                                    .width(Length::Fill)
+                                    .height(14)
+                                    .wrapping(text::Wrapping::None),
+                            ]
+                            .spacing(4)
+                            .width(Length::Fill)
+                        )
+                        .width(Length::Fill)
+                        .clip(true),
+                        text(if active { "当前" } else { "" }).size(10).color(BLUE)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([8, 7])
+                .style(theme::nav(active))
+                .on_press_maybe(
+                    (can_switch && !active)
+                        .then(|| Message::Ai(AiMessage::SwitchLibrary(path.clone()))),
+                );
+                content = content.push(
+                    iced::widget::tooltip(
+                        entry,
+                        container(
+                            column![
+                                heading(name, 13),
+                                text(display_path(&path))
+                                    .size(12)
+                                    .color(ICON)
+                                    .wrapping(text::Wrapping::Glyph)
+                            ]
+                            .spacing(6),
+                        )
+                        .padding(10)
+                        .width(330)
+                        .style(panel),
+                        iced::widget::tooltip::Position::Right,
+                    )
+                    .delay(Duration::from_millis(450))
+                    .snap_within_viewport(true),
+                );
+            }
+            content = content
+                .push(
+                    action("打开其他资源库…", Message::Open)
+                        .on_press_maybe(can_switch.then_some(Message::Open)),
+                )
+                .push(muted(if self.switching {
+                    "正在切换资源库…"
+                } else {
+                    "模型安装与设置全局可用"
+                }))
+                .push(Space::new().height(10))
                 .push(separator())
-                .push(self.nav_row(
+                .push(Space::new().height(8));
+            if self.library.is_some() {
+                content = content.push(self.nav_row(
                     Icon::Clock,
                     "Synco",
                     None,
                     Message::Manage(ManageMessage::Synco),
                     false,
                 ));
+            }
         }
-        content = content
-            .push(Space::new().height(if self.screen == Screen::Assets { 6 } else { 13 }))
-            .push(separator())
-            .push(Space::new().height(if self.screen == Screen::Assets { 3 } else { 10 }));
         if self.screen == Screen::Overview {
             content = content
                 .push(
@@ -818,7 +923,7 @@ impl App {
                     .padding(10)
                     .style(flat),
             );
-        } else {
+        } else if self.library.is_some() || self.launch.design_preview {
             content = content.push(
                 row![
                     muted(if self.screen == Screen::Models {
@@ -940,14 +1045,27 @@ impl App {
                     (
                         Icon::Video,
                         "视频",
-                        118,
+                        if self.launch.design_preview {
+                            118
+                        } else {
+                            self.manager.organizer.video_count
+                        },
                         Message::Notice("当前尚不支持视频预览".into()),
                     ),
-                    (Icon::Image, "截图", 76, Message::AllAssets),
+                    (
+                        Icon::Image,
+                        "截图",
+                        if self.launch.design_preview {
+                            76
+                        } else {
+                            self.category_count("截图")
+                        },
+                        Message::Ai(AiMessage::Category("截图".into())),
+                    ),
                     (
                         Icon::Duplicate,
                         "重复文件",
-                        24,
+                        if self.launch.design_preview { 24 } else { 0 },
                         Message::Notice("导入时会自动跳过完全相同的图片".into()),
                     ),
                 ]
@@ -1088,7 +1206,7 @@ impl App {
             }
         }
         let mut bottom = Column::new().spacing(8);
-        if self.screen == Screen::Models {
+        if self.screen == Screen::Models && self.library.is_some() {
             bottom = bottom
                 .push(
                     progress_bar(

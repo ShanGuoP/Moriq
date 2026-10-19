@@ -2,6 +2,20 @@
 use super::*;
 use std::collections::{HashSet, VecDeque};
 
+#[cfg(test)]
+#[test]
+#[allow(clippy::unwrap_used)]
+fn ai_library_switch_does_not_restore_a_saved_gallery_page() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Models;
+    let mut next = app.library.clone().unwrap();
+    next.info.id = LibraryId::default();
+    next.root = PathBuf::from("next.moriq");
+    drop(app.update(Message::Ai(AiMessage::LibraryOpened(Ok(next)))));
+    assert_eq!(app.screen, Screen::Models);
+    assert!(!app.history.restoring);
+}
+
 const HISTORY_LIMIT: usize = 32;
 
 #[derive(Clone)]
@@ -9,6 +23,7 @@ pub(super) struct Location {
     surface: surfaces::Surface,
     surfaces: surfaces::Surfaces,
     expanded: bool,
+    library_picker: bool,
     screen: Screen,
     query: Query,
     scroll_y: f32,
@@ -50,6 +65,7 @@ impl Location {
             },
             surfaces: Default::default(),
             expanded: false,
+            library_picker: false,
             screen: match value.screen {
                 1 => Screen::Assets,
                 2 => Screen::Models,
@@ -82,6 +98,7 @@ impl Location {
     }
     fn same_destination(&self, other: &Self) -> bool {
         self.screen == other.screen
+            && self.library_picker == other.library_picker
             && self.query == other.query
             && self.list == other.list
             && self.masonry == other.masonry
@@ -174,6 +191,7 @@ impl App {
             surface: self.surface(),
             surfaces: self.surfaces.clone(),
             expanded: self.preview_expanded,
+            library_picker: self.library_picker,
             screen: self.screen,
             query: self.query.clone(),
             scroll_y: self.scroll_y,
@@ -193,9 +211,11 @@ impl App {
         }
     }
     pub(super) fn commit_navigation(&mut self, message: Message) -> Task<Message> {
+        let models_switch = matches!(&message, Message::Ai(AiMessage::LibraryOpened(_)));
         let navigating = matches!(
             message,
             Message::Navigate(_)
+                | Message::ShowLibraries
                 | Message::AllAssets
                 | Message::Favorites
                 | Message::Project(_)
@@ -229,6 +249,9 @@ impl App {
             ));
         let searching = matches!(message, Message::Search(_) | Message::ModelSearch(_));
         let before = navigating.then(|| self.location());
+        if navigating && !matches!(message, Message::ShowLibraries) {
+            self.library_picker = false;
+        }
         let surface = self.surface();
         let surface_y = self.surfaces.y;
         let anchor = self.surfaces.anchor;
@@ -267,6 +290,7 @@ impl App {
             self.history.searching = searching;
         }
         let navigation = if library != self.library.as_ref().map(|l| l.info.id)
+            && !models_switch
             && !self.launch.design_preview
             && self.launch.capture.is_none()
             && self.launch.screen == 0
@@ -327,6 +351,7 @@ impl App {
         self.restore_location(destination)
     }
     fn restore_location(&mut self, destination: Location) -> Task<Message> {
+        self.library_picker = destination.library_picker;
         self.screen = destination.screen;
         self.query = destination.query;
         self.list = destination.list;

@@ -75,8 +75,20 @@ impl Ticket {
         let mut reader = ImageReader::open(&staged)?.with_guessed_format()?;
         reader.limits(decode_limits());
         if native::raw_extension(&self.source).is_some()
-            || crate::video::extension(&self.source).is_some()
+            && !matches!(
+                reader.format(),
+                Some(
+                    ImageFormat::Jpeg
+                        | ImageFormat::Png
+                        | ImageFormat::WebP
+                        | ImageFormat::Gif
+                        | ImageFormat::Bmp
+                )
+            )
         {
+            return native::raw_memory_mib(&staged);
+        }
+        if crate::video::extension(&self.source).is_some() {
             return Ok(1024);
         }
         let decoder = match reader.into_decoder() {
@@ -295,6 +307,29 @@ impl Library {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn jpeg_admission_uses_dimensions_instead_of_fallback_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("photo.jpg");
+        image::RgbImage::from_pixel(4016, 6016, image::Rgb([10, 80, 150]))
+            .save(&source)
+            .unwrap();
+        let mut library = Library::create(dir.path(), "test").unwrap();
+        let ticket = library
+            .begin_import(
+                &ImportFile {
+                    path: source,
+                    relative: "photo.jpg".into(),
+                    project_name: None,
+                },
+                None,
+                false,
+            )
+            .unwrap();
+        ticket.copy(&AtomicBool::new(false)).unwrap();
+        let weight = ticket.memory_mib().unwrap();
+        assert!(weight < 256, "24 MP JPEG was assigned {weight} MiB");
+    }
     #[test]
     fn ticket_keeps_library_locked_and_cancelled_copy_is_not_recoverable_media() {
         let dir = tempfile::tempdir().unwrap();

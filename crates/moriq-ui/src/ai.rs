@@ -1,7 +1,6 @@
 use super::*;
 use crate::components::*;
-use iced::Length;
-use iced::widget::{column, container, progress_bar, row, scrollable, text_input};
+use iced::widget::{column, text_input};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -52,6 +51,9 @@ impl std::fmt::Display for PersonChoice {
 }
 #[derive(Debug, Clone)]
 pub enum AiMessage {
+    SwitchLibrary(PathBuf),
+    LibraryOpened(Result<Opened, String>),
+    Organize,
     Refresh,
     Loaded(Result<(Vec<moriq_app::ModelInfo>, moriq_app::Hardware), String>),
     Install(String),
@@ -81,9 +83,80 @@ pub enum AiMessage {
     ),
 }
 impl App {
+    pub(super) fn model_libraries(&self) -> Vec<(String, PathBuf, bool)> {
+        let mut entries = self
+            .preferences
+            .recent
+            .iter()
+            .map(|(name, path)| {
+                let active = self
+                    .library
+                    .as_ref()
+                    .is_some_and(|library| library.root == *path);
+                let name = if active {
+                    self.library
+                        .as_ref()
+                        .map_or(name.clone(), |library| library.info.name.clone())
+                } else {
+                    name.clone()
+                };
+                (name, path.clone(), active)
+            })
+            .collect::<Vec<_>>();
+        if let Some(library) = &self.library
+            && !entries.iter().any(|(_, path, _)| *path == library.root)
+        {
+            entries.insert(0, (library.info.name.clone(), library.root.clone(), true));
+        }
+        entries
+    }
     pub(super) fn ai_message(&mut self, event: AiMessage) -> Task<Message> {
         let service = self.service.clone();
         match event {
+            AiMessage::SwitchLibrary(path)
+                if self.import.is_none() && !self.switching && !self.manager.busy =>
+            {
+                if self
+                    .library
+                    .as_ref()
+                    .is_some_and(|library| library.root == path)
+                {
+                    self.library_picker = false;
+                    self.screen = Screen::Models;
+                    return Task::none();
+                }
+                self.switching = true;
+                self.transition = None;
+                return Task::perform(async move { service.open(path).await }, |r| {
+                    Message::Ai(AiMessage::LibraryOpened(r))
+                });
+            }
+            AiMessage::LibraryOpened(result) => {
+                let opened = result.is_ok();
+                let task = self.update_inner(Message::Opened(result));
+                if opened {
+                    self.screen = Screen::Models;
+                    self.preview_expanded = false;
+                    self.library_picker = false;
+                }
+                return task;
+            }
+            AiMessage::Organize => {
+                let Some(library) = &self.library else {
+                    return Task::none();
+                };
+                let owner = library.info.id;
+                return Task::batch(self.ai.models.iter().filter(|model| model.installed).map(
+                    |model| {
+                        let service = service.clone();
+                        let kind = format!("analysis:{}", model.spec.id);
+                        Task::perform(
+                            async move { service.queue_media_job(owner, kind).await },
+                            move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
+                        )
+                    },
+                ));
+            }
             AiMessage::Recommended(owner, asset, version, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == owner)
                     && self
@@ -120,8 +193,13 @@ impl App {
                 let control = moriq_app::DownloadControl::default();
                 self.ai.downloads.insert(model.clone(), control.clone());
                 let receipt = model.clone();
+                let use_mirror = self.preferences.ai.use_mirror;
                 return Task::perform(
-                    async move { service.install_model(model, control).await },
+                    async move {
+                        service
+                            .install_model_with_mirror(model, control, use_mirror)
+                            .await
+                    },
                     move |r| Message::Ai(AiMessage::Installed(receipt.clone(), r)),
                 );
             }
@@ -202,6 +280,9 @@ impl App {
                 }
             }
             AiMessage::Category(category) => {
+                if self.library.is_none() {
+                    return Task::none();
+                }
                 self.query = Query {
                     category,
                     ..Query::default()
@@ -223,6 +304,9 @@ impl App {
                 );
             }
             AiMessage::People => {
+                if self.library.is_none() {
+                    return Task::none();
+                }
                 self.manager.panel = Some(manage::Panel::People);
                 return self.refresh_organizer();
             }
@@ -291,119 +375,6 @@ impl App {
             _ => {}
         }
         Task::none()
-    }
-    pub(super) fn real_models(&self) -> Element<'_, Message> {
-        let mut content = column![
-            heading("本地 AI", 24),
-            muted("模型由你选择安装。分析、文字识别和相似度计算在本机执行。")
-        ]
-        .spacing(14);
-        content = content
-            .push(
-                iced::widget::checkbox(self.on_demand_models)
-                    .label("按需加载，闲置后释放模型")
-                    .on_toggle(|_| Message::ToggleModelPolicy),
-            )
-            .push(
-                iced::widget::checkbox(self.retain_indexes)
-                    .label("卸载模型时保留分析结果和索引")
-                    .on_toggle(|_| Message::ToggleRetainIndexes),
-            );
-        if let Some(hardware) = &self.ai.hardware {
-            content = content.push(muted(format!(
-                "{} · {} 核 · 可用内存 {} MiB",
-                hardware.provider, hardware.logical_cpus, hardware.available_mib
-            )));
-        }
-        for model in &self.ai.models {
-            if !self.model_search.is_empty()
-                && !format!("{} {}", model.spec.name, model.spec.id)
-                    .to_lowercase()
-                    .contains(&self.model_search.to_lowercase())
-            {
-                continue;
-            }
-            let id = model.spec.id.clone();
-            let mut card = column![
-                heading(model.spec.name.clone(), 17),
-                muted(format!(
-                    "{} · {:.0} MiB · 建议内存 {} MiB",
-                    model.spec.license,
-                    model.bytes as f64 / 1048576.,
-                    model.spec.minimum_memory_mib
-                )),
-                muted(model.spec.source.clone())
-            ]
-            .spacing(9);
-            if let Some(control) = self.ai.downloads.get(&id) {
-                let done = control.downloaded.load(Ordering::Relaxed);
-                let total = control.total.load(Ordering::Relaxed).max(1);
-                card = card
-                    .push(progress_bar(
-                        0.0..=1.0,
-                        (done as f64 / total as f64).min(1.) as f32,
-                    ))
-                    .push(muted(format!(
-                        "下载 {:.1} / {:.1} MiB",
-                        done as f64 / 1048576.,
-                        total as f64 / 1048576.
-                    )))
-                    .push(action("暂停并保留断点", Message::Ai(AiMessage::Pause(id))));
-            } else if model.installed {
-                card = card.push(
-                    row![
-                        action(
-                            "分析 / 重新整理全库",
-                            Message::Jobs(tasks::JobMessage::Queue(format!("analysis:{id}")))
-                        ),
-                        action(
-                            if self.retain_indexes {
-                                "卸载模型（保留分析结果）"
-                            } else {
-                                "卸载模型并清除自动分析索引"
-                            },
-                            Message::Ai(AiMessage::Uninstall(id))
-                        )
-                    ]
-                    .spacing(8),
-                );
-            } else {
-                card = card.push(action(
-                    if model.resumable {
-                        "继续下载安装"
-                    } else {
-                        "下载并安装"
-                    },
-                    Message::Ai(AiMessage::Install(id)),
-                ));
-            }
-            content = content.push(
-                container(card)
-                    .padding(18)
-                    .width(Length::Fill)
-                    .style(crate::theme::panel),
-            );
-        }
-        content = content.push(heading("自动分类", 18));
-        for _ in self
-            .manager
-            .organizer
-            .errors
-            .iter()
-            .filter(|(section, _)| *section == OrganizerSection::Categories)
-        {
-            content = content.push(muted(
-                "分类暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。",
-            ));
-        }
-        for (category, count) in &self.manager.organizer.ai_categories {
-            content = content.push(action(
-                &format!("{category} · {count}"),
-                Message::Ai(AiMessage::Category(category.clone())),
-            ));
-        }
-        content = content.push(action("人物管理与人工纠正", Message::Ai(AiMessage::People)));
-        scrollable(content.padding(24)).height(Length::Fill).into()
     }
     pub(super) fn refresh_people_choices(&mut self) {
         let people = &self.manager.organizer.people;

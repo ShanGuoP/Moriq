@@ -283,7 +283,14 @@ impl App {
             )
             .on_press(Message::Manage(Close))
             .on_right_press(Message::Manage(Close)),
-            container(mouse_area(popup).on_press(Message::Noop)).padding(iced::Padding {
+            container(
+                mouse_area(crate::motion::translated(
+                    popup.into(),
+                    -0.4 * self.surface_offset()
+                ))
+                .on_press(Message::Noop)
+            )
+            .padding(iced::Padding {
                 top: y,
                 left: x,
                 ..Default::default()
