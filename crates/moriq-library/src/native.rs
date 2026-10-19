@@ -24,7 +24,7 @@ pub(super) fn raw_sql() -> String {
         .join(",")
 }
 #[cfg(windows)]
-fn worker() -> Result<PathBuf> {
+pub(crate) fn worker() -> Result<PathBuf> {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/wic-worker.exe"));
     let hash = format!("{:x}", Sha256::digest(bytes));
     let root = std::env::temp_dir().join("MORIQ-codecs").join(&hash);
@@ -46,6 +46,50 @@ fn worker() -> Result<PathBuf> {
     Ok(path)
 }
 pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
+    decode_worker(path, edge, false)
+}
+pub fn decode_raw(path: &Path, edge: u32) -> Result<Decoded> {
+    decode_worker(path, edge, true)
+}
+#[cfg(all(windows, bundled_libraw))]
+pub(crate) fn raw_worker() -> Result<PathBuf> {
+    let exe = include_bytes!(concat!(env!("OUT_DIR"), "/raw-runtime/raw-worker.exe"));
+    let dll = include_bytes!(concat!(env!("OUT_DIR"), "/raw-runtime/libraw.dll"));
+    let mut digest = Sha256::new();
+    digest.update(exe);
+    digest.update(dll);
+    let root = std::env::temp_dir()
+        .join("MORIQ-codecs")
+        .join(format!("{:x}", digest.finalize()));
+    fs::create_dir_all(&root)?;
+    for (name, bytes) in [
+        ("raw-worker.exe", exe.as_slice()),
+        ("libraw.dll", dll.as_slice()),
+    ] {
+        let path = root.join(name);
+        if !path.exists() {
+            let mut staged = tempfile::NamedTempFile::new_in(&root)?;
+            staged.write_all(bytes)?;
+            staged.as_file().sync_all()?;
+            if let Err(e) = staged.persist_noclobber(&path)
+                && e.error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(Error::Io(e.error));
+            }
+        }
+        if organize::hash_file(&path)? != format!("{:x}", Sha256::digest(bytes)) {
+            return Err(Error::Invalid("内置 RAW 解码组件校验失败".into()));
+        }
+    }
+    Ok(root.join("raw-worker.exe"))
+}
+#[cfg(all(windows, not(bundled_libraw)))]
+pub(crate) fn raw_worker() -> Result<PathBuf> {
+    Err(Error::Invalid(
+        "此构建未包含 LibRaw，请使用包含内置 RAW 解码器的发行包".into(),
+    ))
+}
+fn decode_worker(path: &Path, edge: u32, raw: bool) -> Result<Decoded> {
     #[cfg(windows)]
     {
         use std::{
@@ -53,13 +97,13 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
             process::{Command, Stdio},
             time::{Duration, Instant},
         };
-        if edge > 8192 {
+        if edge > if raw { 65535 } else { 8192 } {
             return Err(Error::Invalid("系统解码输出尺寸超出预算".into()));
         }
         let output = tempfile::NamedTempFile::new()?;
         // The child opens this path independently; no write handle may remain locked.
         let output = output.into_temp_path();
-        let mut child = Command::new(worker()?)
+        let mut child = Command::new(if raw { raw_worker()? } else { worker()? })
             .arg(path)
             .arg(&output)
             .arg(edge.to_string())
@@ -67,6 +111,7 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .env("OMP_NUM_THREADS", "1")
             .creation_flags(0x08000000)
             .spawn()?;
         let start = Instant::now();
@@ -80,7 +125,7 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
                     return Err(Error::Io(error));
                 }
             }
-            if start.elapsed() > Duration::from_secs(45) {
+            if start.elapsed() > Duration::from_secs(if raw { 120 } else { 45 }) {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(Error::Invalid(
@@ -90,6 +135,12 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
             std::thread::sleep(Duration::from_millis(15));
         };
         if !status.success() {
+            if raw {
+                return Err(Error::Invalid(format!(
+                    "内置 LibRaw 解码失败（{}）：文件损坏、机型/压缩方式不支持或超出资源预算；原片保留",
+                    status.code().unwrap_or(-1)
+                )));
+            }
             return Err(Error::Invalid(match status.code() {
                 Some(4) => {
                     "系统没有可用的此格式/相机解码器；RAW 需要兼容的系统 RAW 编解码器，原片未修改"
@@ -103,7 +154,7 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
             }));
         }
         let length = fs::metadata(&output)?.len();
-        if !(24..=256 * 1024 * 1024 + 24).contains(&length) {
+        if !(24..=512 * 1024 * 1024 + 24).contains(&length) {
             return Err(Error::Invalid("系统解码回执长度无效".into()));
         }
         let mut file = File::open(&output)?;
@@ -119,14 +170,13 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
         let bytes = u64::from(w) * u64::from(h) * 4;
         if width == 0
             || height == 0
-            || w > edge
-            || h > edge
+            || (edge > 0 && (w > edge || h > edge))
             || bytes + 24 != length
             || (edge > 0 && (w == 0 || h == 0))
         {
             return Err(Error::Invalid("系统解码尺寸声明无效".into()));
         }
-        let image = if edge == 0 {
+        let image = if edge == 0 && !raw {
             None
         } else {
             let mut rgba = vec![0; bytes as usize];
@@ -144,7 +194,11 @@ pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
     }
     #[cfg(not(windows))]
     {
-        let _ = (path, edge);
+        #[cfg(target_os = "macos")]
+        if raw {
+            return crate::raw_portable::decode(path, edge);
+        }
+        let _ = (path, edge, raw);
         Err(Error::Invalid(
             "此平台的 RAW/系统媒体解码适配尚不可用".into(),
         ))
@@ -157,25 +211,46 @@ pub fn decode_file(file: File, extension: &str, edge: u32) -> Result<Decoded> {
         ".image".into()
     };
     let mut input = tempfile::Builder::new().suffix(&suffix).tempfile()?;
-    if std::io::copy(&mut file.take(MAX_BYTES + 1), input.as_file_mut())? > MAX_BYTES {
+    let limit = file_limit(Path::new(&format!("image.{extension}")));
+    if std::io::copy(&mut file.take(limit + 1), input.as_file_mut())? > limit {
         return Err(Error::Invalid("媒体文件超出大小预算".into()));
     }
     input.as_file().sync_all()?;
     let input = input.into_temp_path();
-    decode(&input, edge)
+    if RAW_EXTENSIONS
+        .iter()
+        .any(|e| extension.eq_ignore_ascii_case(e))
+    {
+        decode_raw(&input, edge)
+    } else {
+        decode(&input, edge)
+    }
 }
 
 pub const IMPORT_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff", "heic", "heif", "avif", "raw",
-    "dng", "crw", "cr2", "cr3", "nef", "nrw", "arw", "sr2", "srf", "rw2", "orf", "raf", "pef",
-    "srw", "rwl", "3fr", "fff", "iiq", "kdc", "dcr", "mos", "mrw", "erf", "x3f",
+    "svg", "mp4", "mov", "m4v", "mkv", "webm", "avi", "mts", "m2ts", "jpg", "jpeg", "png", "webp",
+    "gif", "bmp", "tif", "tiff", "heic", "heif", "avif", "raw", "dng", "crw", "cr2", "cr3", "nef",
+    "nrw", "arw", "sr2", "srf", "rw2", "orf", "raf", "pef", "srw", "rwl", "3fr", "fff", "iiq",
+    "kdc", "dcr", "mos", "mrw", "erf", "x3f",
 ];
 pub fn supported_path(path: &Path) -> bool {
+    if crate::video::extension(path).is_some() {
+        return true;
+    }
     path.extension().is_some_and(|value| {
         IMPORT_EXTENSIONS
             .iter()
             .any(|e| value.eq_ignore_ascii_case(e))
     })
+}
+pub(crate) fn file_limit(path: &Path) -> u64 {
+    if crate::video::extension(path).is_some() {
+        64 * 1024 * 1024 * 1024
+    } else if raw_extension(path).is_some() {
+        2 * 1024 * 1024 * 1024
+    } else {
+        MAX_BYTES
+    }
 }
 
 #[cfg(all(test, windows))]

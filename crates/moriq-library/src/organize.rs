@@ -99,6 +99,16 @@ impl Library {
     }
     pub fn organizer(&self) -> Result<Organizer> {
         let mut result = Organizer::default();
+        (result.quarantined_files, result.quarantined_bytes) = self.db.query_row(
+            "SELECT count(*),coalesce(sum(bytes),0) FROM orphan_quarantine",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        result.folders = self.virtual_folders()?;
+        result.jobs = self.background_jobs()?;
+        result.people = self.people()?;
+        result.ai_categories=self.db.prepare("SELECT c.category,count(*) FROM asset_classification c JOIN assets a ON a.id=c.asset_id WHERE a.deleted_at IS NULL GROUP BY c.category ORDER BY c.category")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        result.video_count=self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at IS NULL AND v.format IN({})",crate::video::sql_formats()),[],|r|r.get(0))?;
         result.tags=self.db.prepare("SELECT t.name,count(*) FROM tags t JOIN asset_tags at ON at.tag_id=t.id JOIN assets a ON a.id=at.asset_id WHERE a.deleted_at IS NULL GROUP BY t.id ORDER BY t.name LIMIT 2000")?
             .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
         let mut stmt = self
@@ -172,6 +182,7 @@ impl Library {
             exif: vec![],
             versions:self.versions(id)?,
             referenced:self.db.query_row("SELECT EXISTS(SELECT 1 FROM file_locations f JOIN assets a ON a.display_version_id=f.version_id WHERE a.id=?1)",[id.to_string()],|r|r.get(0))?,
+            ..Default::default()
         })
     }
     pub fn edit(&mut self, ids: &[AssetId], edit: &Edit) -> Result<()> {
@@ -354,6 +365,12 @@ impl Library {
     }
     /// A worker owns the only writer throughout the snapshot and copy. No WAL-only copy.
     pub fn backup(&self, parent: &Path) -> Result<PathBuf> {
+        self.copy_library(parent, false)
+    }
+    pub fn clone_library(&self, parent: &Path) -> Result<PathBuf> {
+        self.copy_library(parent, true)
+    }
+    fn copy_library(&self, parent: &Path, independent: bool) -> Result<PathBuf> {
         let parent = parent.canonicalize()?;
         if parent.starts_with(&self.root) {
             return Err(Error::Invalid(
@@ -370,9 +387,40 @@ impl Library {
             &safe_path(&self.root, "library.toml")?,
             &stage.path().join("library.toml"),
         )?;
+        if independent {
+            let mut manifest: Manifest =
+                toml::from_str(&fs::read_to_string(stage.path().join("library.toml"))?)
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+            manifest.library_id = LibraryId::default();
+            manifest.name = format!("{}-克隆", manifest.name);
+            let mut db = Connection::open(&database)?;
+            let tx = db.transaction()?;
+            tx.execute(
+                "UPDATE library_identity SET id=?1",
+                [manifest.library_id.to_string()],
+            )?;
+            tx.execute("DELETE FROM synco_tasks", [])?;
+            tx.execute("DELETE FROM import_context", [])?;
+            tx.execute("DELETE FROM operation_journal", [])?;
+            tx.execute("INSERT INTO library_preferences VALUES('display_name',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[&manifest.name])?;
+            tx.execute("UPDATE notifications SET retry='' WHERE retry<>''", [])?;
+            tx.execute("UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1 WHERE state IN('running','queued')",[])?;
+            tx.commit()?;
+            let mut output = File::create(stage.path().join("library.toml"))?;
+            output.write_all(
+                toml::to_string_pretty(&manifest)
+                    .map_err(|e| Error::Invalid(e.to_string()))?
+                    .as_bytes(),
+            )?;
+            output.sync_all()?;
+        }
         for directory in DIRECTORIES {
             let dest = stage.path().join(directory);
             fs::create_dir_all(&dest)?;
+            if independent && (directory.starts_with("interop/") || matches!(*directory, "staging"))
+            {
+                continue;
+            }
             // Caches and earlier backups are regenerable/recursive; all durable data is copied.
             if directory.starts_with("thumbnails")
                 || matches!(
@@ -385,7 +433,7 @@ impl Library {
             copy_tree(&self.root, Path::new(directory), stage.path())?;
         }
         let dest = parent.join(format!(
-            "{}-备份-{}.moriq",
+            "{}-副本-{}.moriq",
             self.manifest.name,
             Uuid::new_v4()
         ));
@@ -574,8 +622,8 @@ pub(super) fn decode_path(platform: &str, bytes: &[u8]) -> Result<PathBuf> {
 }
 pub(super) fn hash_file(path: &Path) -> Result<String> {
     let mut input = File::open(path)?;
-    if input.metadata()?.len() > MAX_BYTES {
-        return Err(Error::Invalid("文件超出 256 MiB 限制".into()));
+    if input.metadata()?.len() > 64 * 1024 * 1024 * 1024 {
+        return Err(Error::Invalid("文件超出 64 GiB 大小预算".into()));
     }
     let mut hasher = Sha256::new();
     let mut bytes = [0u8; 65536];

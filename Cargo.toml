@@ -9,18 +9,20 @@ rust-version = "1.99"
 license = "MIT"
 
 [workspace.dependencies]
+bytes = "1"
 moriq-domain = { path = "crates/moriq-domain" }
 moriq-render = { path = "crates/moriq-render" }
 moriq-library = { path = "crates/moriq-library" }
 moriq-app = { path = "crates/moriq-app" }
 moriq-ui = { path = "crates/moriq-ui" }
 moriq-synco = { path = "crates/moriq-synco" }
+moriq-ai = {path="crates/moriq-ai"}
 reqwest = {version="0.12",default-features=false,features=["json","rustls-tls"]}
 serde_json = "1"
 futures = "0.3"
 fast_image_resize = {version="=6.1.0",features=["image"]}
 iced = { version = "=0.14.0", default-features = false, features = ["wgpu", "tokio", "image-without-codecs", "svg", "advanced", "x11", "wayland"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }

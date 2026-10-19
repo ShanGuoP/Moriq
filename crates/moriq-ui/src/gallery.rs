@@ -29,6 +29,8 @@ impl App {
         }
         let title = if self.query.media_kind == MediaKind::Raw {
             "RAW 素材".into()
+        } else if self.query.media_kind == MediaKind::Video {
+            "视频素材".into()
         } else if self.query.trash {
             "回收站".into()
         } else if self.query.favorites_only {
@@ -640,27 +642,10 @@ impl App {
                     info = info.push(ratings);
                 }
             }
+        } else if self.detail_tab == 2 {
+            info = info.push(self.ai_details());
         } else {
-            info = info.push(
-                container(
-                    column![
-                        icon(
-                            if self.detail_tab == 2 {
-                                Icon::Cube
-                            } else {
-                                Icon::Image
-                            },
-                            25.0,
-                            BLUE
-                        ),
-                        muted("尚未安装用于此功能的本地模型。"),
-                        action("查看模型", Message::Navigate(2))
-                    ]
-                    .spacing(12),
-                )
-                .padding(14)
-                .style(pale),
-            );
+            info = info.push(self.ai_recommendations());
         }
         let mut tags = Column::new().spacing(5);
         for tag in asset.tags.iter().filter(|_| !self.manager.tags_collapsed) {
@@ -911,6 +896,7 @@ impl App {
                 .push(
                     row![
                         action("导出素材", Message::Manage(ManageMessage::ExportMenu)),
+                        action("查找视觉近似", Message::Manage(ManageMessage::Similar)),
                         action(
                             if self.query.trash {
                                 "恢复素材"
@@ -939,13 +925,43 @@ impl App {
     }
     fn large_preview(&self) -> Element<'_, Message> {
         let art: Element<'_, Message> = if let Some(handle) = &self.preview {
-            image::Viewer::new(handle.clone())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .min_scale(0.1)
-                .max_scale(32.0)
-                .content_fit(ContentFit::Contain)
+            if !self.launch.design_preview
+                && let Some(asset) = &self.selected
+                && !moriq_app::is_video_format(&asset.format)
+            {
+                let (width, height) = self.original_size.unwrap_or((asset.width, asset.height));
+                crate::region_viewer::Viewer {
+                    zoom_request: self.regions.zoom_request,
+                    target_scale: self.regions.target_scale,
+                    key: asset.version_id,
+                    handle: handle.clone(),
+                    width,
+                    height,
+                    tiles: self.regions.images(),
+                }
                 .into()
+            } else {
+                if let Some(asset) = self
+                    .selected
+                    .as_ref()
+                    .filter(|a| moriq_app::is_video_format(&a.format))
+                {
+                    crate::region_viewer::NativeSurface {
+                        key: asset.version_id,
+                        ready: self.playback.is_some(),
+                        handle: handle.clone(),
+                    }
+                    .into()
+                } else {
+                    image::Viewer::new(handle.clone())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .min_scale(0.1)
+                        .max_scale(32.0)
+                        .content_fit(ContentFit::Contain)
+                        .into()
+                }
+            }
         } else {
             Space::new().into()
         };
@@ -979,7 +995,22 @@ impl App {
                     17
                 ),
                 Space::new().width(Length::Fill),
-                muted("滚轮缩放 · 拖动平移"),
+                muted(match self.original_size {
+                    Some((w, h)) => format!("原尺寸 {w} × {h} · 滚轮缩放 · 拖动平移"),
+                    None => "预览 · 滚轮缩放 · 拖动平移".into(),
+                }),
+                button("100%").style(secondary).on_press_maybe(
+                    self.selected
+                        .as_ref()
+                        .is_some_and(|a| !moriq_app::is_video_format(&a.format))
+                        .then_some(Message::Regions(RegionMessage::Actual))
+                ),
+                button("适应窗口").style(secondary).on_press_maybe(
+                    self.selected
+                        .as_ref()
+                        .is_some_and(|a| !moriq_app::is_video_format(&a.format))
+                        .then_some(Message::Regions(RegionMessage::Fit))
+                ),
                 action("返回图库 · Esc", Message::ExpandPreview)
             ]
             .align_y(Alignment::Center),

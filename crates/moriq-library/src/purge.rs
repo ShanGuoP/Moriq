@@ -39,6 +39,30 @@ fn no_links_path(root: &Path, relative: &str) -> Result<PathBuf> {
 }
 
 impl Library {
+    pub fn trash_snapshot(&self) -> Result<Vec<AssetId>> {
+        self.db
+            .prepare("SELECT id FROM assets WHERE deleted_at IS NOT NULL ORDER BY id")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .map(|r| Ok(AssetId(parse_id(&r?)?)))
+            .collect()
+    }
+    pub fn purge_trash_chunk(&mut self, ids: &[AssetId]) -> Result<PurgeReport> {
+        let mut current = Vec::new();
+        for id in ids {
+            let trashed: bool = self.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND deleted_at IS NOT NULL)",
+                [id.to_string()],
+                |r| r.get(0),
+            )?;
+            if trashed {
+                current.push(*id)
+            }
+        }
+        if current.is_empty() {
+            return Ok(PurgeReport::default());
+        }
+        self.purge(&current)
+    }
     /// Only assets already in the trash can be removed. The caller freezes the confirmed IDs.
     pub fn purge(&mut self, ids: &[AssetId]) -> Result<PurgeReport> {
         if ids.is_empty() || ids.len() > 10000 {

@@ -27,6 +27,59 @@ pub(super) struct Location {
     notes_dirty: bool,
 }
 impl Location {
+    fn saved(&self) -> SavedVisit {
+        SavedVisit {
+            screen: match self.screen {
+                Screen::Overview => 0,
+                Screen::Assets => 1,
+                Screen::Models => 2,
+            },
+            query: self.query.clone(),
+            scroll_y: self.scroll_y,
+            selected: self.selected,
+            list: self.list,
+            masonry: self.masonry,
+            card_width: self.card_width,
+        }
+    }
+    fn from_saved(value: SavedVisit) -> Self {
+        Self {
+            surface: surfaces::Surface {
+                panel: None,
+                dialog: None,
+            },
+            surfaces: Default::default(),
+            expanded: false,
+            screen: match value.screen {
+                1 => Screen::Assets,
+                2 => Screen::Models,
+                _ => Screen::Overview,
+            },
+            query: value.query,
+            scroll_y: if value.scroll_y.is_finite() {
+                value.scroll_y.clamp(0., 1e9)
+            } else {
+                0.
+            },
+            total: 0,
+            selected: value.selected,
+            selection: Default::default(),
+            anchor: None,
+            multiselect: false,
+            list: value.list,
+            masonry: value.masonry,
+            card_width: if value.card_width.is_finite() {
+                value.card_width.clamp(120., 600.)
+            } else {
+                216.
+            },
+            model_tab: 0,
+            model_search: String::new(),
+            model_filter: 0,
+            notes: String::new(),
+            notes_dirty: false,
+        }
+    }
     fn same_destination(&self, other: &Self) -> bool {
         self.screen == other.screen
             && self.query == other.query
@@ -40,6 +93,7 @@ impl Location {
 }
 #[derive(Default)]
 pub(super) struct History {
+    restoring: bool,
     back: VecDeque<Location>,
     forward: VecDeque<Location>,
     searching: bool,
@@ -59,6 +113,62 @@ impl History {
     }
 }
 impl App {
+    pub(super) fn navigation_snapshot(&self) -> SavedNavigation {
+        SavedNavigation {
+            current: self.location().saved(),
+            back: self.history.back.iter().map(Location::saved).collect(),
+            forward: self.history.forward.iter().map(Location::saved).collect(),
+        }
+    }
+    pub(super) fn persist_navigation(&self) -> Task<Message> {
+        if self.launch.design_preview || self.launch.capture.is_some() || self.history.restoring {
+            return Task::none();
+        }
+        let Some(library) = &self.library else {
+            return Task::none();
+        };
+        let id = library.info.id;
+        let value = self.navigation_snapshot();
+        let service = self.service.clone();
+        Task::perform(
+            async move { service.save_navigation(id, value).await },
+            move |r| Message::NavigationSaved(id, r),
+        )
+    }
+    pub(super) fn navigation_loaded(
+        &mut self,
+        id: LibraryId,
+        generation: u64,
+        result: Result<Option<SavedNavigation>, String>,
+    ) -> Task<Message> {
+        if self.library.as_ref().is_none_or(|l| l.info.id != id) {
+            return Task::none();
+        }
+        self.history.restoring = false;
+        if self.generation != generation {
+            return Task::none();
+        }
+        match result {
+            Ok(Some(value)) => {
+                self.history.back = value
+                    .back
+                    .into_iter()
+                    .take(HISTORY_LIMIT)
+                    .map(Location::from_saved)
+                    .collect();
+                self.history.forward = value
+                    .forward
+                    .into_iter()
+                    .take(HISTORY_LIMIT)
+                    .map(Location::from_saved)
+                    .collect();
+                return self.restore_location(Location::from_saved(value.current));
+            }
+            Err(e) => self.error = Some(e),
+            _ => {}
+        }
+        Task::none()
+    }
     fn location(&self) -> Location {
         Location {
             surface: self.surface(),
@@ -90,6 +200,13 @@ impl App {
                 | Message::Favorites
                 | Message::Project(_)
                 | Message::Search(_)
+                | Message::Folder(FolderMessage::Open(_))
+                | Message::Metadata(MetadataMessage::Apply | MetadataMessage::Clear)
+                | Message::Ai(
+                    AiMessage::Category(_)
+                        | AiMessage::PersonFilter(_)
+                        | AiMessage::SearchLoaded(_, _, Ok(_))
+                )
                 | Message::ModelSearch(_)
                 | Message::ModelFilter(_)
                 | Message::ModelTab(_)
@@ -133,6 +250,10 @@ impl App {
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.update_inner(message);
         if library != self.library.as_ref().map(|l| l.info.id) {
+            self.jobs = crate::tasks::Scheduler {
+                request: self.jobs.request + 1,
+                ..Default::default()
+            };
             self.history = History::default();
         } else if library.is_some()
             && let Some(before) = before
@@ -145,8 +266,30 @@ impl App {
             }
             self.history.searching = searching;
         }
+        let navigation = if library != self.library.as_ref().map(|l| l.info.id)
+            && !self.launch.design_preview
+            && self.launch.capture.is_none()
+            && self.launch.screen == 0
+        {
+            if let Some(library) = &self.library {
+                self.history.restoring = true;
+                let owner = library.info.id;
+                let generation = self.generation;
+                let service = self.service.clone();
+                Task::perform(
+                    async move { service.saved_navigation(owner).await },
+                    move |r| Message::NavigationLoaded(owner, generation, r),
+                )
+            } else {
+                Task::none()
+            }
+        } else if navigating || page_return {
+            self.persist_navigation()
+        } else {
+            Task::none()
+        };
         if page_return {
-            return task;
+            return Task::batch([task, navigation]);
         }
         let overlay = self.sync_surface(
             surface,
@@ -154,7 +297,7 @@ impl App {
             anchor,
             dismiss || library != self.library.as_ref().map(|l| l.info.id),
         );
-        Task::batch([task, overlay])
+        Task::batch([task, overlay, navigation])
     }
     pub(super) fn travel(&mut self, forward: bool) -> Task<Message> {
         if self.library.is_none()
@@ -181,6 +324,9 @@ impl App {
             current,
         );
         self.history.searching = false;
+        self.restore_location(destination)
+    }
+    fn restore_location(&mut self, destination: Location) -> Task<Message> {
         self.screen = destination.screen;
         self.query = destination.query;
         self.list = destination.list;

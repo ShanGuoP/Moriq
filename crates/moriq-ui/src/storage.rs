@@ -4,6 +4,8 @@ use iced::widget::{Space, button, column, row, text};
 use iced::{Alignment, Length};
 #[derive(Default)]
 pub(super) struct Storage {
+    cache_running: bool,
+    cache_report: Option<CacheReport>,
     pub stats: Option<StorageStats>,
     pub volume: Option<(u64, u64)>,
     pub control: Option<moriq_app::StorageControl>,
@@ -24,6 +26,8 @@ impl Storage {
 }
 #[derive(Debug, Clone)]
 pub enum StorageMessage {
+    Trim(bool),
+    Trimmed(LibraryId, Result<CacheReport, String>),
     Open,
     Refresh,
     Stop,
@@ -45,6 +49,26 @@ impl App {
     }
     pub(super) fn storage_message(&mut self, event: StorageMessage) -> Task<Message> {
         match event {
+            StorageMessage::Trim(clear) if !self.storage.cache_running && self.import.is_none() => {
+                if let Some(library) = &self.library {
+                    let id = library.info.id;
+                    let service = self.service.clone();
+                    self.storage.cache_running = true;
+                    return Task::perform(
+                        async move { service.trim_cache(id, clear).await },
+                        move |r| Message::Storage(StorageMessage::Trimmed(id, r)),
+                    );
+                }
+            }
+            StorageMessage::Trimmed(owner, result)
+                if self.library.as_ref().is_some_and(|l| l.info.id == owner) =>
+            {
+                self.storage.cache_running = false;
+                match result {
+                    Ok(report) => self.storage.cache_report = Some(report),
+                    Err(e) => self.error = Some(e),
+                }
+            }
             StorageMessage::Open => {
                 self.manager.panel = Some(manage::Panel::Storage);
                 if self.storage.stats.is_none() && self.storage.control.is_none() {
@@ -98,6 +122,27 @@ impl App {
     }
     pub(super) fn storage_panel(&self) -> Element<'_, Message> {
         let mut content=column![muted("统计当前资源库内的实际文件分配空间，硬链接按文件身份去重。外部引用原片仅显示登记量，不扫描来源磁盘；采样期间文件可能变化。")].spacing(12);
+        content=content.push(heading("集中预览缓存",16)).push(muted("内存预览缓存上限 256 MiB，磁盘预览缓存每 5 分钟按 4 GiB 预算回收较早内容。只处理可再生预览，不删除原片、缩略图或 AI 结果。"));
+        if self.storage.cache_running {
+            content = content.push(muted("正在回收预览缓存…"));
+        } else {
+            content = content.push(
+                row![
+                    action("按预算回收", Message::Storage(StorageMessage::Trim(false))),
+                    action("清空预览缓存", Message::Storage(StorageMessage::Trim(true)))
+                ]
+                .spacing(8),
+            );
+        }
+        if let Some(report) = &self.storage.cache_report {
+            content = content.push(muted(format!(
+                "回收 {} 个预览（{}），剩余 {}，跳过 {} 项。",
+                report.removed_files,
+                size(report.removed_bytes),
+                size(report.remaining_bytes),
+                report.skipped
+            )));
+        }
         if let Some(control) = &self.storage.control {
             content = content.push(
                 row![

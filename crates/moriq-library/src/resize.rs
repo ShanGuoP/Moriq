@@ -2,6 +2,13 @@ use super::*;
 /// SIMD area filtering, preserving aspect, pixel type and premultiplied alpha.
 /// Only the small output is allocated; source pixels are borrowed without a full-size conversion.
 pub(super) fn fit(source: &image::DynamicImage, longest: u32) -> Result<image::DynamicImage> {
+    fit_with(source, longest, Resampling::Area)
+}
+pub(super) fn fit_with(
+    source: &image::DynamicImage,
+    longest: u32,
+    filter: Resampling,
+) -> Result<image::DynamicImage> {
     let (width, height) = source.dimensions();
     let edge = width.max(height);
     if edge == 0 || longest == 0 {
@@ -13,9 +20,14 @@ pub(super) fn fit(source: &image::DynamicImage, longest: u32) -> Result<image::D
     let width = (u64::from(width) * u64::from(longest) / u64::from(edge)).max(1) as u32;
     let height = (u64::from(height) * u64::from(longest) / u64::from(edge)).max(1) as u32;
     let mut output = image::DynamicImage::new(width, height, source.color());
-    let options = fast_image_resize::ResizeOptions::new().resize_alg(
-        fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Box),
-    );
+    use fast_image_resize::{FilterType, ResizeAlg};
+    let algorithm = match filter {
+        Resampling::Area => ResizeAlg::Convolution(FilterType::Box),
+        Resampling::Lanczos3 => ResizeAlg::Convolution(FilterType::Lanczos3),
+        Resampling::Bicubic => ResizeAlg::Convolution(FilterType::CatmullRom),
+        Resampling::Nearest => ResizeAlg::Nearest,
+    };
+    let options = fast_image_resize::ResizeOptions::new().resize_alg(algorithm);
     fast_image_resize::Resizer::new()
         .resize(source, &mut output, Some(&options))
         .map_err(|e| Error::Invalid(format!("缩略图生成失败：{e}")))?;

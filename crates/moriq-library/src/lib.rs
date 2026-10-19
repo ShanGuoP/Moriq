@@ -13,17 +13,34 @@ use std::{
 };
 use uuid::Uuid;
 
-const SCHEMA: u32 = 12;
+const SCHEMA: u32 = 22;
+pub mod analysis;
+mod batch;
+pub mod cache;
 mod catalog;
+mod color;
 pub mod export;
+mod export_metadata;
+mod folders;
 pub mod import;
 pub mod ingest;
+pub mod jobs;
 mod journal;
+pub mod lifecycle;
 mod location;
 pub mod maintenance;
 pub mod media;
+pub mod metadata;
 pub mod native;
+pub mod orphans;
+#[cfg(target_os = "macos")]
+mod raw_portable;
+mod read_pool;
+pub mod region;
+pub mod similarity;
 pub mod storage;
+mod vector;
+pub mod video;
 pub use catalog::validate_reference;
 mod organize;
 mod project_deletion;
@@ -58,6 +75,8 @@ pub enum Error {
     Db(#[from] rusqlite::Error),
     #[error("图片无法解码，请检查文件是否损坏：{0}")]
     Image(#[from] image::ImageError),
+    #[error("色彩配置无法转换：{0}")]
+    Color(String),
     #[error("{0}")]
     Invalid(String),
     #[error("资源库正由另一个窗口或进程使用，请先关闭它")]
@@ -80,6 +99,7 @@ pub struct Library {
     manifest: Manifest,
     db: Connection,
     _lock: std::sync::Arc<File>,
+    readers: std::sync::Arc<read_pool::ReadPool>,
     snapshot: Option<(Query, u64)>,
     last_import: ImportMetrics,
 }
@@ -95,7 +115,7 @@ pub struct ImportMetrics {
 pub struct Pixels {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    pub rgba: bytes::Bytes,
 }
 
 pub fn now_ms() -> Result<u64> {
@@ -307,6 +327,57 @@ impl Library {
         if version <= 11 {
             db.execute_batch("PRAGMA user_version=12;")?;
         }
+        if version <= 12 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_13.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 13 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_14.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 14 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_15.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 15 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_16.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 16 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_17.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 17 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_18.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 18 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_19.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 19 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_20.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 20 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_21.sql"))?;
+            tx.commit()?;
+        }
+        if version <= 21 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("migration_22.sql"))?;
+            tx.commit()?;
+        }
+        db.execute("UPDATE background_jobs SET inflight=0,state=CASE WHEN state='running' THEN 'queued' ELSE state END WHERE inflight=1 OR state='running'",[])?;
         if manifest.schema_version < SCHEMA {
             manifest.schema_version = SCHEMA;
             manifest.min_reader_version = SCHEMA;
@@ -329,15 +400,19 @@ impl Library {
         if interrupted > 0 {
             tracing::warn!(interrupted, "import recovery records retained");
         }
+        let lock = std::sync::Arc::new(lock);
+        let readers = read_pool::ReadPool::new(root.clone(), lock.clone());
         let mut library = Self {
             root,
             manifest,
             db,
-            _lock: std::sync::Arc::new(lock),
+            _lock: lock,
+            readers,
             snapshot: None,
             last_import: Default::default(),
         };
         library.recover_purges()?;
+        library.recover_orphans()?;
         Ok(library)
     }
 
@@ -411,7 +486,7 @@ impl Library {
     pub fn page(&mut self, query: &Query, offset: usize, limit: usize) -> Result<Page> {
         let project = query.project.map(|id| id.to_string());
         // instr makes %, _ and quotes literal. All user input stays parameterized.
-        let mut condition = "WHERE (?1='' OR instr(lower(a.name),lower(?1))>0 OR instr(lower(a.notes),lower(?1))>0 OR EXISTS(SELECT 1 FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND instr(lower(t.name),lower(?1))>0))
+        let mut condition = "WHERE (?1='' OR instr(lower(a.name),lower(?1))>0 OR instr(lower(a.notes),lower(?1))>0 OR EXISTS(SELECT 1 FROM ai_results ar WHERE ar.version_id=v.id AND (instr(lower(coalesce(json_extract(ar.data,'$.caption'),'')),lower(?1))>0 OR instr(lower(coalesce(json_extract(ar.data,'$.ocr'),'')),lower(?1))>0)) OR EXISTS(SELECT 1 FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND instr(lower(t.name),lower(?1))>0))
           AND (?2=0 OR a.favorite=1) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM project_assets pa WHERE pa.asset_id=a.id AND pa.project_id IN(WITH RECURSIVE descendants(id) AS(SELECT ?3 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT id FROM descendants)))
           AND (a.deleted_at IS NOT NULL)=?4 AND (?5='' OR v.format=?5) AND a.rating>=?6
           AND v.bytes>=?7 AND (?8=0 OR v.bytes<=?8) AND a.imported_at>=?9 AND v.width>=?10
@@ -421,8 +496,9 @@ impl Library {
           AND (?13=0 OR NOT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=a.id))
           AND (?14='' OR EXISTS(SELECT 1 FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND t.name=?14)) AND (?15='' OR v.dominant_color=?15) AND a.edited_at>=?16 AND (?17=0 OR (?17=1 AND NOT EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)) OR (?17=2 AND EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)))";
         let media_condition = format!(
-            "{condition} AND (?19=0 OR v.format IN({}))",
-            native::raw_sql()
+            "{condition} AND (?19=0 OR (?19=1 AND v.format IN({})) OR (?19=2 AND v.format IN({}))) AND (?20='' OR EXISTS(SELECT 1 FROM asset_classification ac WHERE ac.asset_id=a.id AND ac.category=?20)) AND (?21='' OR EXISTS(SELECT 1 FROM detected_faces df WHERE df.version_id=v.id AND df.person_id=?21)) AND (?23=0 OR a.id IN(SELECT value FROM json_each(?22))) AND (?24='' OR EXISTS(SELECT 1 FROM virtual_folder_assets fa WHERE fa.folder_id=?24 AND fa.asset_id=a.id))",
+            native::raw_sql(),
+            video::sql_formats()
         );
         condition = &media_condition;
         let indexed_text = if query.text.chars().count() >= 3 {
@@ -437,7 +513,7 @@ impl Library {
                 .find("\n          AND (?2")
                 .ok_or_else(|| Error::Invalid("搜索条件无效".into()))?;
             indexed_condition = format!(
-                "WHERE a.id IN(SELECT asset_id FROM search_fts WHERE search_fts MATCH ?1){}",
+                "WHERE (a.id IN(SELECT asset_id FROM search_fts WHERE search_fts MATCH ?1) OR a.display_version_id IN(SELECT version_id FROM ai_text_fts WHERE ai_text_fts MATCH ?1)){}",
                 &condition[end..]
             );
             condition = &indexed_condition;
@@ -461,7 +537,17 @@ impl Library {
             query.edited_since,
             query.storage,
             query.before,
-            query.media_kind == MediaKind::Raw
+            match query.media_kind {
+                MediaKind::All => 0,
+                MediaKind::Raw => 1,
+                MediaKind::Video => 2,
+            },
+            query.category,
+            query.person.as_deref().unwrap_or(""),
+            serde_json::to_string(&query.semantic_ids)
+                .map_err(|e| Error::Invalid(e.to_string()))?,
+            query.semantic_active,
+            query.folder.as_deref().unwrap_or("")
         ]
         .iter()
         .map(|p| {
@@ -474,6 +560,14 @@ impl Library {
             })
         })
         .collect::<std::result::Result<_, _>>()?;
+        let metadata_condition;
+        if !query.metadata.is_empty() {
+            metadata_condition = format!(
+                "{condition} AND ({})",
+                metadata::compile(&query.metadata, &mut values)?
+            );
+            condition = &metadata_condition;
+        }
         let rule_condition;
         if let Some(rule) = &query.rule {
             rule_condition = format!("{condition} AND ({})", rules::compile(rule, &mut values)?);
@@ -485,6 +579,11 @@ impl Library {
             SortOrder::Name => "a.name COLLATE NOCASE,a.id",
             SortOrder::Largest => "v.bytes DESC,a.id",
             SortOrder::Rating => "a.rating DESC,a.id",
+        };
+        let order_by = if query.semantic_active {
+            "(SELECT key FROM json_each(?22) WHERE value=a.id),a.id"
+        } else {
+            order_by
         };
         let unfiltered = *query == Query::default();
         let total: u64 = if unfiltered {
@@ -593,8 +692,9 @@ impl Library {
         let stage_started = std::time::Instant::now();
         let input = File::open(source)?;
         let length = input.metadata()?.len();
-        if length == 0 || length > MAX_BYTES {
-            return Err(Error::Invalid("图片超过 256 MiB 或为空文件".into()));
+        let limit = native::file_limit(source);
+        if length == 0 || length > limit {
+            return Err(Error::Invalid("媒体超出文件大小预算或为空文件".into()));
         }
         let asset = AssetId::default();
         let version = AssetVersionId::default();
@@ -621,11 +721,11 @@ impl Library {
             .write(true)
             .create_new(true)
             .open(&staged)?;
-        let copied = std::io::copy(&mut input.take(MAX_BYTES + 1), &mut output)?;
+        let copied = std::io::copy(&mut input.take(limit + 1), &mut output)?;
         output.sync_all()?;
         drop(output);
-        if copied > MAX_BYTES {
-            return Err(Error::Invalid("读取期间文件超出 256 MiB 限制".into()));
+        if copied > limit {
+            return Err(Error::Invalid("读取期间媒体超出文件大小预算".into()));
         }
         self.last_import.copy_ms = stage_started.elapsed().as_secs_f64() * 1000.0;
         let result = self.install(
@@ -718,6 +818,9 @@ impl Library {
             dominant_color,
             metrics,
             reference_verified,
+            video,
+            signature,
+            metadata,
         } = prepared;
         let copy_ms = self.last_import.copy_ms;
         self.last_import = metrics;
@@ -785,6 +888,19 @@ impl Library {
             params![asset.to_string(), version.to_string(), name, now_ms()?],
         )?;
         transaction.execute("INSERT INTO asset_versions(id,asset_id,origin,path,sha256,format,width,height,bytes) VALUES(?1,?2,'original',?3,?4,?5,?6,?7,?8)",params![version.to_string(),asset.to_string(),relative,hash,extension,width,height,fs::metadata(staged)?.len()])?;
+        if let Some(metadata) = video {
+            transaction.execute(
+                "INSERT INTO video_metadata(version_id,json) VALUES(?1,?2)",
+                params![
+                    version.to_string(),
+                    serde_json::to_string(&metadata).map_err(|e| Error::Invalid(e.to_string()))?
+                ],
+            )?;
+        }
+        if let Some(signature) = signature {
+            similarity::store(&transaction, &version.to_string(), &signature)?;
+        }
+        metadata::store(&transaction, &version.to_string(), &metadata)?;
         transaction.execute(
             "UPDATE asset_versions SET dominant_color=?1 WHERE id=?2",
             params![dominant_color, version.to_string()],
@@ -916,7 +1032,7 @@ fn pixels(image: image::DynamicImage) -> Pixels {
     Pixels {
         width,
         height,
-        rgba: image.into_rgba8().into_raw(),
+        rgba: image.into_rgba8().into_raw().into(),
     }
 }
 fn decode_limits() -> image::Limits {

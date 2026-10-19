@@ -391,6 +391,17 @@ impl App {
         let search = container(
             row![
                 icon(Icon::Search, 17.0, MUTED),
+                button(text("语义").size(11))
+                    .on_press_maybe(
+                        (self.screen != Screen::Models
+                            && self
+                                .ai
+                                .models
+                                .iter()
+                                .any(|m| m.spec.id == "chinese-clip" && m.installed))
+                        .then_some(Message::Ai(AiMessage::Semantic))
+                    )
+                    .style(flat),
                 text_input(
                     if self.screen == Screen::Models {
                         "搜索模型与功能说明…"
@@ -1005,8 +1016,8 @@ impl App {
                     (
                         Icon::Video,
                         "视频",
-                        206,
-                        Message::Notice("当前尚不支持视频预览".into()),
+                        self.manager.organizer.video_count,
+                        Message::Manage(ManageMessage::Builtin(7)),
                     ),
                     (
                         Icon::Unsorted,
@@ -1030,6 +1041,7 @@ impl App {
                         "未归类项目",
                         "RAW 文件",
                         "未加标签",
+                        "视频",
                     ]
                     .contains(&label)
                 {
@@ -1040,9 +1052,10 @@ impl App {
                 let active = (label == "全部素材"
                     && !self.query.favorites_only
                     && self.query.project.is_none()
-                    && self.query.media_kind != MediaKind::Raw)
+                    && self.query.media_kind == MediaKind::All)
                     || (label == "收藏夹" && self.query.favorites_only)
-                    || (label == "RAW 文件" && self.query.media_kind == MediaKind::Raw);
+                    || (label == "RAW 文件" && self.query.media_kind == MediaKind::Raw)
+                    || (label == "视频" && self.query.media_kind == MediaKind::Video);
                 content = content.push(self.nav_row(
                     kind,
                     label,

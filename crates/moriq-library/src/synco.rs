@@ -89,8 +89,85 @@ impl Library {
         Ok(updated > 0)
     }
     pub fn synco_acked(&self, task: &str) -> Result<()> {
-        self.db.execute("UPDATE synco_tasks SET ack=NULL,state=CASE WHEN state='ready' THEN 'delivered' ELSE state END,error='' WHERE id=?1",[task])?;
+        self.db.execute("UPDATE synco_tasks SET ack=NULL,state=CASE WHEN state='ready' THEN 'delivered' ELSE state END,error=CASE WHEN state IN('ready','delivered') THEN '' ELSE error END WHERE id=?1",[task])?;
+        self.cleanup_synco_copy(task)?;
         Ok(())
+    }
+    fn cleanup_synco_copy(&self, task: &str) -> Result<()> {
+        if Uuid::parse_str(task).is_err() {
+            return Err(Error::Invalid("交接任务身份无效".into()));
+        }
+        let request:Option<String>=self.db.query_row("SELECT request FROM synco_tasks WHERE id=?1 AND state IN('delivered','failed','cancelled') AND ack IS NULL AND copy_removed=0",[task],|r|r.get(0)).optional()?;
+        let Some(request) = request else {
+            return Ok(());
+        };
+        let request: Value =
+            serde_json::from_str(&request).map_err(|e| Error::Invalid(e.to_string()))?;
+        let input = request["input"]["path"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("交接副本路径缺失".into()))?;
+        let extension = Path::new(input)
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|e| ["jpg", "png", "webp", "bmp"].contains(e))
+            .ok_or_else(|| Error::Invalid("交接副本格式无效".into()))?;
+        let path = safe_path(&self.root, &format!("interop/outgoing/{task}.{extension}"))?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.db
+            .execute("UPDATE synco_tasks SET copy_removed=1 WHERE id=?1", [task])?;
+        Ok(())
+    }
+    pub fn cleanup_synco_copies(&self) -> Result<usize> {
+        let tasks=self.db.prepare("SELECT id FROM synco_tasks WHERE copy_removed=0 AND ack IS NULL AND state IN('delivered','failed','cancelled') ORDER BY created_at LIMIT 100")?.query_map([],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut cleaned = 0;
+        for task in tasks {
+            match self.cleanup_synco_copy(&task) {
+                Ok(()) => cleaned += 1,
+                Err(error) => tracing::warn!(%task,%error,"Synco copy cleanup deferred"),
+            }
+        }
+        Ok(cleaned)
+    }
+    pub fn retry_synco(&mut self, old_task: &str) -> Result<String> {
+        let (asset,version,request):(String,String,String)=self.db.query_row("SELECT t.asset_id,t.sent_version_id,t.request FROM synco_tasks t JOIN assets a ON a.id=t.asset_id WHERE t.id=?1 AND t.state IN('failed','cancelled') AND a.deleted_at IS NULL",[old_task],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let mut request: Value =
+            serde_json::from_str(&request).map_err(|e| Error::Invalid(e.to_string()))?;
+        let (hash, format): (String, String) = self.db.query_row(
+            "SELECT sha256,format FROM asset_versions WHERE id=?1 AND asset_id=?2",
+            params![version, asset],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if !["jpg", "png", "webp", "bmp"].contains(&format.as_str()) {
+            return Err(Error::Invalid("原交接版本格式无效".into()));
+        }
+        let task = Uuid::new_v4().to_string();
+        let relative = format!("interop/outgoing/{task}.{format}");
+        let destination = safe_path(&self.root, &relative)?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(safe_path(&self.root, "interop/outgoing")?)?;
+        std::io::copy(
+            &mut File::open(self.version_path(&version, false)?)?,
+            temporary.as_file_mut(),
+        )?;
+        temporary.as_file().sync_all()?;
+        if organize::hash_file(temporary.path())? != hash {
+            return Err(Error::Invalid("原交接版本内容已变化，不能重试".into()));
+        }
+        temporary
+            .persist_noclobber(&destination)
+            .map_err(|e| Error::Io(e.error))?;
+        request["task_id"] = task.clone().into();
+        request["input"]["path"] = destination
+            .to_str()
+            .ok_or_else(|| Error::Invalid("交接路径不能表示".into()))?
+            .into();
+        request["input"]["sha256"] = hash.into();
+        if let Err(error)=self.db.execute("INSERT INTO synco_tasks(id,asset_id,sent_version_id,request,state,created_at) VALUES(?1,?2,?3,?4,'queued',?5)",params![task,asset,version,request.to_string(),now_ms()?]){let _=fs::remove_file(destination);return Err(error.into())}
+        Ok(task)
     }
     /// Persist receipt and immutable version before the coordinator is allowed to ACK.
     pub fn receive_synco(&mut self, task: &str, response: &Value) -> Result<Option<Value>> {

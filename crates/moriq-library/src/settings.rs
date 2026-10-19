@@ -2,6 +2,8 @@ use super::*;
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Stored {
+    synco: SyncoPreferences,
+    ai: AiPreferences,
     recent: Vec<Recent>,
     english: bool,
     import: ImportPreferences,
@@ -28,6 +30,20 @@ fn location() -> Result<PathBuf> {
 }
 pub fn load() -> Result<UserSettings> {
     load_from(&location()?)
+}
+pub fn synco_preferences(value: SyncoPreferences) -> Result<UserSettings> {
+    let folder = location()?;
+    let mut prefs = load_from(&folder)?;
+    prefs.synco = value;
+    save_to(&folder, &prefs)?;
+    Ok(prefs)
+}
+pub fn ai_preferences(value: AiPreferences) -> Result<UserSettings> {
+    let folder = location()?;
+    let mut prefs = load_from(&folder)?;
+    prefs.ai = value;
+    save_to(&folder, &prefs)?;
+    Ok(prefs)
 }
 pub fn remember(name: String, path: PathBuf) -> Result<UserSettings> {
     let folder = location()?;
@@ -72,6 +88,8 @@ fn load_from(folder: &Path) -> Result<UserSettings> {
         .map(|r| Ok((r.name, organize::decode_path(&r.platform, &r.path)?)))
         .collect::<Result<_>>()?;
     Ok(UserSettings {
+        synco: stored.synco,
+        ai: stored.ai,
         recent,
         english: stored.english,
         import: stored
@@ -95,6 +113,8 @@ fn save_to(folder: &Path, prefs: &UserSettings) -> Result<()> {
         })
         .collect::<Result<_>>()?;
     let stored = Stored {
+        synco: prefs.synco.clone(),
+        ai: prefs.ai,
         recent,
         english: prefs.english,
         import: prefs.import,
@@ -115,6 +135,8 @@ mod tests {
     fn recent_paths_roundtrip_and_corrupt_settings_are_preserved() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = UserSettings {
+            synco: Default::default(),
+            ai: Default::default(),
             recent: vec![("摄影".into(), dir.path().join("中文 库.moriq"))],
             english: true,
             import: ImportPreferences {

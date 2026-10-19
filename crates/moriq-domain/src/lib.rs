@@ -61,6 +61,12 @@ pub struct Asset {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Query {
+    pub metadata: Vec<MetadataPredicate>,
+    pub folder: Option<String>,
+    pub category: String,
+    pub person: Option<String>,
+    pub semantic_ids: Vec<AssetId>,
+    pub semantic_active: bool,
     pub rule: Option<Rule>,
     pub media_kind: MediaKind,
     pub text: String,
@@ -82,6 +88,15 @@ pub struct Query {
     pub tag: String,
     pub color: String,
     pub sort: SortOrder,
+}
+
+/// Bounded, typed conditions. SQL and filesystem paths never enter this tree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataPredicate {
+    pub field: String,
+    pub contains: String,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
 }
 
 /// Bounded, typed conditions. SQL and filesystem paths never enter this tree.
@@ -136,6 +151,7 @@ pub enum MediaKind {
     #[default]
     All,
     Raw,
+    Video,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +165,10 @@ pub enum SortOrder {
 }
 #[derive(Debug, Clone, Default)]
 pub struct AssetDetails {
+    pub ai_caption: String,
+    pub ocr: String,
+    pub category: String,
+    pub faces: Vec<Face>,
     pub manual_location: Option<AssetLocation>,
     pub exif_location: Option<AssetLocation>,
     pub notes: String,
@@ -180,6 +200,13 @@ pub struct Collection {
 }
 #[derive(Debug, Clone, Default)]
 pub struct Organizer {
+    pub quarantined_files: u64,
+    pub quarantined_bytes: u64,
+    pub folders: Vec<VirtualFolder>,
+    pub ai_categories: Vec<(String, u64)>,
+    pub people: Vec<Person>,
+    pub video_count: u64,
+    pub jobs: Vec<BackgroundJob>,
     pub raw_count: u64,
     pub tags: Vec<(String, u64)>,
     pub collections: Vec<Collection>,
@@ -193,12 +220,121 @@ pub struct Organizer {
     pub description: String,
     pub synco: Vec<SyncoTask>,
 }
+#[derive(Debug, Clone)]
+pub struct BackgroundJob {
+    pub id: String,
+    pub kind: String,
+    pub state: String,
+    pub priority: i32,
+    pub completed: u64,
+    pub total: u64,
+    pub failed: u64,
+    pub error: String,
+}
+#[derive(Debug, Clone, Copy)]
+pub enum JobCommand {
+    RetryFailed,
+    Pause,
+    Resume,
+    Cancel,
+    Priority(i32),
+}
+#[derive(Debug, Clone)]
+pub struct JobFailure {
+    pub asset: Option<AssetId>,
+    pub name: String,
+    pub message: String,
+}
+#[derive(Debug, Clone)]
+pub struct SimilarAsset {
+    pub id: AssetId,
+    pub name: String,
+    pub distance: u32,
+}
+#[derive(Debug, Clone)]
+pub struct Person {
+    pub id: String,
+    pub name: String,
+    pub count: u64,
+}
+#[derive(Debug, Clone)]
+pub struct VirtualFolder {
+    pub id: String,
+    pub name: String,
+    pub favorite_group: bool,
+    pub cover: Option<AssetId>,
+    pub count: u64,
+}
+#[derive(Debug, Clone)]
+pub enum FolderEdit {
+    Create(String, bool),
+    Rename(String, String),
+    Delete(String),
+    Members(String, Vec<AssetId>, bool),
+    Cover(String, AssetId),
+}
+#[derive(Debug, Clone)]
+pub struct Face {
+    pub id: String,
+    pub version: AssetVersionId,
+    pub person: Option<String>,
+    pub name: String,
+    pub bounds: [f32; 4],
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct UserSettings {
+    pub synco: SyncoPreferences,
+    pub ai: AiPreferences,
     pub recent: Vec<(String, std::path::PathBuf)>,
     pub english: bool,
     pub import: ImportPreferences,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncoPreferences {
+    pub executable: Option<std::path::PathBuf>,
+    pub auto_start: bool,
+}
+impl Default for SyncoPreferences {
+    fn default() -> Self {
+        Self {
+            executable: None,
+            auto_start: true,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiPreferences {
+    pub on_demand: bool,
+    pub retain_indexes: bool,
+}
+impl Default for AiPreferences {
+    fn default() -> Self {
+        Self {
+            on_demand: true,
+            retain_indexes: true,
+        }
+    }
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedVisit {
+    pub screen: u8,
+    pub query: Query,
+    pub scroll_y: f32,
+    pub selected: Option<AssetId>,
+    pub list: bool,
+    pub masonry: bool,
+    pub card_width: f32,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedNavigation {
+    pub current: SavedVisit,
+    pub back: Vec<SavedVisit>,
+    pub forward: Vec<SavedVisit>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -238,10 +374,46 @@ pub enum Edit {
     Project(ProjectId, bool),
     Notes(String),
 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BatchPatch {
+    pub favorite: Option<bool>,
+    pub rating: Option<u8>,
+    pub notes: Option<String>,
+    pub category: Option<String>,
+    pub add_tags: Vec<String>,
+    pub remove_tags: Vec<String>,
+    pub project: Option<ProjectId>,
+}
+#[derive(Debug, Clone)]
+pub enum BatchScope {
+    Assets(Vec<AssetId>),
+    Query(Query),
+}
 #[derive(Debug, Clone, Default)]
 pub struct PurgeReport {
     pub deleted: usize,
     pub cleanup_pending: bool,
+}
+#[derive(Debug, Clone, Default)]
+pub struct CacheReport {
+    pub removed_files: u64,
+    pub removed_bytes: u64,
+    pub remaining_bytes: u64,
+    pub skipped: u64,
+}
+#[derive(Debug, Clone, Default)]
+pub struct OrphanReport {
+    pub moved: u64,
+    pub bytes: u64,
+    pub skipped: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub level: u32,
 }
 
 /// Frozen, bounded deletion scope shown to the user and revalidated before file moves.
@@ -302,21 +474,48 @@ pub enum ExportFormat {
     Jpeg,
     Png,
     Webp,
+    Tiff,
+    Bmp,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Resampling {
+    #[default]
+    Area,
+    Lanczos3,
+    Bicubic,
+    Nearest,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportLayout {
+    #[default]
+    Flat,
+    Format,
+    ImportDate,
+}
+#[derive(Debug, Clone)]
 pub struct ExportOptions {
+    pub directory_template: String,
+    pub preserve_exif: bool,
     pub format: ExportFormat,
     pub max_edge: u32,
     pub quality: u8,
     pub rotate: u16,
+    pub resampling: Resampling,
+    pub layout: ExportLayout,
+    pub metadata_sidecar: bool,
 }
 impl Default for ExportOptions {
     fn default() -> Self {
         Self {
+            directory_template: String::new(),
+            preserve_exif: false,
             format: ExportFormat::Original,
             max_edge: 0,
             quality: 90,
             rotate: 0,
+            resampling: Resampling::Area,
+            layout: ExportLayout::Flat,
+            metadata_sidecar: false,
         }
     }
 }

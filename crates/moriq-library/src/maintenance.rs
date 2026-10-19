@@ -13,6 +13,7 @@ pub struct Control {
 }
 
 pub struct Plan {
+    readers: Arc<read_pool::ReadPool>,
     root: PathBuf,
     _lease: Arc<File>,
 }
@@ -35,6 +36,7 @@ pub enum Outcome {
 impl Library {
     pub fn maintenance_plan(&self) -> Plan {
         Plan {
+            readers: self.readers.clone(),
             root: self.root.clone(),
             _lease: self._lock.clone(),
         }
@@ -86,10 +88,8 @@ impl Plan {
         if control.cancel.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let db = Connection::open_with_flags(
-            safe_path(&self.root, "catalog.db")?,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
+        let connection = self.readers.checkout()?;
+        let db = connection.connection()?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let integrity: String = db.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         if integrity != "ok" {
@@ -180,7 +180,7 @@ impl Plan {
                         break;
                     }
                     bytes += length as u64;
-                    if bytes > MAX_BYTES {
+                    if bytes > 64 * 1024 * 1024 * 1024 {
                         return Ok(Outcome::Damaged(version.clone()));
                     }
                     hasher.update(&buffer[..length]);

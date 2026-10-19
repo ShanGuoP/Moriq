@@ -1,5 +1,19 @@
 //! Native presentation. All disk, catalog and decoding work belongs to Service.
+mod ai;
 mod assets;
+mod batch;
+mod folders;
+mod lifecycle;
+mod metadata;
+mod region_viewer;
+mod regions;
+mod uploads;
+pub use ai::AiMessage;
+pub use batch::BatchMessage;
+pub use folders::FolderMessage;
+pub use lifecycle::LifecycleMessage;
+pub use metadata::MetadataMessage;
+pub use regions::RegionMessage;
 mod browsing;
 mod compare;
 mod deletion;
@@ -583,6 +597,18 @@ mod tests {
 }
 #[derive(Debug, Clone)]
 pub enum Message {
+    DpiChanged(f32),
+    Regions(RegionMessage),
+    UploadTick,
+    PersistNavigation,
+    NavigationLoaded(LibraryId, u64, Result<Option<SavedNavigation>, String>),
+    NavigationSaved(LibraryId, Result<(), String>),
+    AiPolicySaved(AiPreferences, Result<UserSettings, String>),
+    Lifecycle(LifecycleMessage),
+    Batch(BatchMessage),
+    Metadata(MetadataMessage),
+    Folder(FolderMessage),
+    Ai(AiMessage),
     TagFilter(TagChoice),
     CursorMoved(iced::Point),
     OverlayScrolled(f32, f32),
@@ -647,6 +673,23 @@ pub enum Message {
         Result<(image::Handle, image::Handle), String>,
     ),
     ClosePreview,
+    Jobs(tasks::JobMessage),
+    OriginalPreviewLoaded(
+        LibraryId,
+        AssetId,
+        AssetVersionId,
+        u64,
+        Result<(image::Handle, u32, u32), String>,
+    ),
+    PlaybackStarted(
+        LibraryId,
+        AssetId,
+        AssetVersionId,
+        u64,
+        Result<std::sync::Arc<moriq_app::Playback>, String>,
+    ),
+    VideoBounds(AssetVersionId, iced::Rectangle),
+    VideoPositioned(AssetVersionId, Result<(), String>),
     ExpandPreview,
     Favorite(AssetId, bool),
     Rating(u8),
@@ -717,6 +760,16 @@ struct Tile {
     handle: Option<image::Handle>,
 }
 pub struct App {
+    dpi_scale: f32,
+    regions: regions::Regions,
+    uploads: std::collections::VecDeque<(AssetVersionId, moriq_app::Pixels)>,
+    upload_generation: u64,
+    upload_owner: Option<LibraryId>,
+    lifecycle: lifecycle::LifecycleState,
+    batch: batch::BatchState,
+    metadata: metadata::MetadataState,
+    folders: folders::FolderState,
+    ai: ai::AiState,
     surfaces: surfaces::Surfaces,
     deletion: deletion::Deletion,
     storage: storage::Storage,
@@ -747,6 +800,10 @@ pub struct App {
     preview: Option<image::Handle>,
     preview_background: Option<image::Handle>,
     preview_expanded: bool,
+    original_request: u64,
+    original_size: Option<(u32, u32)>,
+    playback: Option<std::sync::Arc<moriq_app::Playback>>,
+    jobs: tasks::Scheduler,
     compare: compare::Compare,
     tag_input: String,
     project_name: String,
@@ -909,6 +966,20 @@ impl App {
                 preview: None,
                 preview_background: None,
                 preview_expanded: false,
+                original_request: 0,
+                original_size: None,
+                playback: None,
+                dpi_scale: 1.0,
+                regions: Default::default(),
+                uploads: Default::default(),
+                upload_generation: 0,
+                upload_owner: None,
+                lifecycle: Default::default(),
+                batch: Default::default(),
+                metadata: Default::default(),
+                folders: Default::default(),
+                ai: Default::default(),
+                jobs: Default::default(),
                 surfaces: surfaces::Surfaces::default(),
                 deletion: deletion::Deletion::default(),
                 compare: compare::Compare::default(),
@@ -942,7 +1013,14 @@ impl App {
                 model_search: String::new(),
                 model_filter: 2,
             },
-            Task::batch([open, resources, settings]),
+            Task::batch([
+                open,
+                resources,
+                settings,
+                iced::window::oldest()
+                    .and_then(iced::window::scale_factor)
+                    .map(Message::DpiChanged),
+            ]),
         )
     }
     fn tr<'a>(&'a self, key: &'a str) -> &'a str {
@@ -1066,7 +1144,18 @@ impl App {
             iced::window::close_requests().map(|_| Message::WindowClose),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
+            iced::time::every(Duration::from_secs(5)).map(|_| Message::PersistNavigation),
+            iced::time::every(Duration::from_secs(300))
+                .map(|_| Message::Storage(StorageMessage::Trim(false))),
+            if self.uploads.is_empty() {
+                Subscription::none()
+            } else {
+                iced::time::every(Duration::from_millis(16)).map(|_| Message::UploadTick)
+            },
             iced::event::listen_with(|event, status, _| match event {
+                iced::Event::Window(iced::window::Event::Rescaled(scale)) => {
+                    Some(Message::DpiChanged(scale))
+                }
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     Some(Message::CursorMoved(position))
                 }
@@ -1079,6 +1168,41 @@ impl App {
                     ..
                 }) if modifiers.command() && value.eq_ignore_ascii_case("k") => {
                     Some(Message::FocusSearch)
+                }
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if matches!(status, iced::event::Status::Ignored)
+                    && modifiers.command()
+                    && modifiers.shift()
+                    && value.eq_ignore_ascii_case("a") =>
+                {
+                    Some(Message::Shortcut(4))
+                }
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if matches!(status, iced::event::Status::Ignored)
+                    && modifiers.command()
+                    && value.eq_ignore_ascii_case("e") =>
+                {
+                    Some(Message::Shortcut(5))
+                }
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    modifiers,
+                    ..
+                }) if matches!(status, iced::event::Status::Ignored) && modifiers.is_empty() => {
+                    match value.as_str() {
+                        "0" | "1" | "2" | "3" | "4" | "5" => {
+                            Some(Message::Shortcut(10 + value.as_bytes()[0] - b'0'))
+                        }
+                        "f" | "F" => Some(Message::Shortcut(6)),
+                        "b" | "B" => Some(Message::Shortcut(7)),
+                        _ => None,
+                    }
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),
@@ -1100,12 +1224,13 @@ impl App {
                         key,
                         iced::keyboard::key::Named::Delete
                             | iced::keyboard::key::Named::Enter
+                            | iced::keyboard::key::Named::Space
                             | iced::keyboard::key::Named::F1
                     ) =>
                 {
                     Some(Message::Shortcut(match key {
                         iced::keyboard::key::Named::Delete => 1,
-                        iced::keyboard::key::Named::Enter => 2,
+                        iced::keyboard::key::Named::Enter | iced::keyboard::key::Named::Space => 2,
                         _ => 3,
                     }))
                 }
@@ -1267,6 +1392,24 @@ impl App {
                         return self.manage_message(ManageMessage::Edit(Edit::Trash(true)));
                     }
                     2 if self.selected.is_some() => return self.set_viewer(!self.preview_expanded),
+                    4 => {
+                        let task = self.batch_message(batch::BatchMessage::Open);
+                        let all = self.batch_message(batch::BatchMessage::All(true));
+                        return Task::batch([task, all]);
+                    }
+                    5 => return self.manage_message(ManageMessage::ExportMenu),
+                    6 if !self.query.trash => {
+                        if let Some(asset) = &self.selected {
+                            return self.manage_message(ManageMessage::Edit(Edit::Favorite(
+                                !asset.favorite,
+                            )));
+                        }
+                    }
+                    7 => return self.batch_message(batch::BatchMessage::Open),
+                    10..=15 if !self.query.trash => {
+                        return self.manage_message(ManageMessage::Edit(Edit::Rating(which - 10)));
+                    }
+
                     _ => {}
                 }
             }
@@ -1304,7 +1447,18 @@ impl App {
             Message::SettingsLoaded(result) => match result {
                 Ok(prefs) => {
                     self.english = prefs.english;
+                    self.on_demand_models = prefs.ai.on_demand;
+                    self.retain_indexes = prefs.ai.retain_indexes;
+                    let value = prefs.ai;
+                    let service = self.service.clone();
                     self.preferences = prefs;
+                    return Task::perform(
+                        async move { service.ai_policy(value).await },
+                        |r| match r {
+                            Ok(()) => Message::Noop,
+                            Err(e) => Message::Notice(e),
+                        },
+                    );
                 }
                 Err(e) => self.error = Some(e),
             },
@@ -1334,6 +1488,9 @@ impl App {
                 return iced::window::oldest().and_then(iced::window::toggle_maximize);
             }
             Message::WindowClose => {
+                for control in self.ai.downloads.values() {
+                    control.stop.store(true, Ordering::Relaxed);
+                }
                 self.compare.clear();
                 if let Some(control) = &self.storage.control {
                     control.cancel.store(true, Ordering::Relaxed);
@@ -1355,7 +1512,21 @@ impl App {
                 }
                 let service = self.service.clone();
                 self.status = "正在安全关闭资源库…".into();
-                return Task::perform(async move { service.close().await }, Message::ShutdownReady);
+                let navigation = self
+                    .library
+                    .as_ref()
+                    .map(|l| (l.info.id, self.navigation_snapshot()));
+                return Task::perform(
+                    async move {
+                        if let Some((owner, value)) = navigation {
+                            if let Err(error) = service.save_navigation(owner, value).await {
+                                tracing::warn!(%error,"navigation could not be saved on exit");
+                            }
+                        }
+                        service.close().await
+                    },
+                    Message::ShutdownReady,
+                );
             }
             Message::ShutdownReady(result) => match result {
                 Ok(()) => return iced::exit(),
@@ -1390,15 +1561,29 @@ impl App {
                 Err(error) => self.error = Some(error),
             },
             Message::ToggleTagEditor => self.editing_tags = !self.editing_tags,
-            Message::ToggleModelPolicy => self.on_demand_models = !self.on_demand_models,
-            Message::ToggleRetainIndexes => {
-                if self.launch.design_preview {
-                    self.retain_indexes = !self.retain_indexes;
+            Message::ToggleModelPolicy | Message::ToggleRetainIndexes => {
+                if matches!(message, Message::ToggleModelPolicy) {
+                    self.on_demand_models = !self.on_demand_models
                 } else {
-                    self.retain_indexes = true;
-                    self.error = Some("标签、OCR 和索引属于资源库数据，卸载模型时会保留。".into());
+                    self.retain_indexes = !self.retain_indexes
+                }
+                self.preferences.ai = AiPreferences {
+                    on_demand: self.on_demand_models,
+                    retain_indexes: self.retain_indexes,
+                };
+                if !self.launch.design_preview {
+                    let value = self.preferences.ai;
+                    let service = self.service.clone();
+                    return Task::perform(
+                        async move { service.ai_preferences(value).await },
+                        move |r| Message::AiPolicySaved(value, r),
+                    );
                 }
             }
+            Message::AiPolicySaved(value, result) if self.preferences.ai == value => match result {
+                Ok(prefs) => self.preferences = prefs,
+                Err(e) => self.error = Some(e),
+            },
             Message::ShowCreate => {
                 self.name = "我的素材库".into();
                 self.dialog = Some(Dialog::CreateLibrary);
@@ -1658,6 +1843,9 @@ impl App {
                 return self.restore_page();
             }
             Message::Search(value) => {
+                self.ai.request = self.ai.request.wrapping_add(1);
+                self.query.semantic_active = false;
+                self.query.semantic_ids.clear();
                 self.query.text = value;
                 self.screen = Screen::Assets;
                 return self.reset_query();
@@ -1812,7 +2000,44 @@ impl App {
                     self.refresh_organizer(),
                 ]);
             }
+            Message::Jobs(event) => return self.job_message(event),
+            Message::Ai(event) => return self.ai_message(event),
+            Message::Regions(event) => return self.region_message(event),
+            Message::DpiChanged(scale) if scale.is_finite() && (0.5..=8.0).contains(&scale) => {
+                self.dpi_scale = scale;
+                if self.regions.target_scale.is_some() {
+                    self.regions.target_scale = Some(1.0 / scale);
+                    self.regions.zoom_request += 1;
+                }
+            }
+            Message::UploadTick => self.drain_uploads(),
+            Message::PersistNavigation => return self.persist_navigation(),
+            Message::NavigationLoaded(id, generation, result) => {
+                return self.navigation_loaded(id, generation, result);
+            }
+            Message::NavigationSaved(id, Err(e))
+                if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            {
+                if self.error.is_none() {
+                    self.error = Some(e)
+                }
+            }
+            Message::Folder(event) => return self.folder_message(event),
+            Message::Metadata(event) => return self.metadata_message(event),
+            Message::Batch(event) => return self.batch_message(event),
+            Message::Lifecycle(event) => return self.lifecycle_message(event),
             Message::Tick => {
+                if self
+                    .playback
+                    .as_ref()
+                    .is_some_and(|p| !p.running().unwrap_or(false))
+                {
+                    self.playback = None;
+                    self.error = Some("内置播放器已停止。请重新打开视频；原文件保留。".into());
+                }
+                if !self.ai.loaded && !self.ai.loading {
+                    return self.ai_message(AiMessage::Refresh);
+                }
                 if let Some(import) = &self.import {
                     let finished = import.finished.load(Ordering::Relaxed);
                     if finished > self.manager.import_seen && !self.loading {
@@ -1919,7 +2144,7 @@ impl App {
                                 return self.manage_message(ManageMessage::Location);
                             }
                             Some("expanded") => {
-                                self.preview_expanded = true;
+                                return self.set_viewer(true);
                             }
                             Some("compare") => return self.compare_message(CompareMessage::Open),
                             Some("help") => return self.manage_message(ManageMessage::Help),
@@ -1953,12 +2178,43 @@ impl App {
                             .map(Message::Captured);
                     }
                 }
+                return self.job_tick();
             }
             Message::Captured(screenshot) => {
                 if let Some(path) = self.launch.capture.take() {
                     let service = self.service.clone();
+                    let playback = self.playback.clone();
+                    let playback_state = format!(
+                        "expanded={} request={} error={:?}\n",
+                        self.preview_expanded, self.original_request, self.error
+                    );
                     return Task::perform(
                         async move {
+                            let evidence = path.with_extension("playback.txt");
+                            if let Some(playback) = playback {
+                                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                                    std::fs::write(
+                                        evidence,
+                                        format!(
+                                            "{playback_state}{}",
+                                            playback.diagnostics().map_err(|e| e.to_string())?
+                                        ),
+                                    )
+                                    .map_err(|e| e.to_string())
+                                })
+                                .await
+                                .map_err(|e| e.to_string())??;
+                            } else {
+                                tokio::task::spawn_blocking(move || {
+                                    std::fs::write(
+                                        evidence,
+                                        format!("{playback_state}no playback session\n"),
+                                    )
+                                })
+                                .await
+                                .map_err(|e| e.to_string())?
+                                .map_err(|e| e.to_string())?;
+                            }
                             service
                                 .save_capture(
                                     path,
@@ -1986,16 +2242,31 @@ impl App {
                     Ok(page) => {
                         self.total = page.total;
                         self.offset = page.offset;
-                        self.tiles = page
-                            .tiles
+                        let previous = std::mem::take(&mut self.tiles)
                             .into_iter()
-                            .map(|tile| Tile {
-                                asset: tile.asset,
-                                handle: tile
-                                    .thumbnail
-                                    .map(|p| image::Handle::from_rgba(p.width, p.height, p.rgba)),
+                            .filter_map(|tile| {
+                                tile.handle.map(|handle| (tile.asset.version_id, handle))
                             })
-                            .collect();
+                            .collect::<std::collections::HashMap<_, _>>();
+                        self.uploads.clear();
+                        self.upload_generation = generation;
+                        self.upload_owner = self.library.as_ref().map(|l| l.info.id);
+                        let mut tiles = Vec::with_capacity(page.tiles.len());
+                        for tile in page.tiles {
+                            let version = tile.asset.version_id;
+                            let handle = previous.get(&version).cloned();
+                            if handle.is_none()
+                                && let Some(pixels) = tile.thumbnail
+                            {
+                                self.uploads.push_back((version, pixels));
+                            }
+                            tiles.push(Tile {
+                                asset: tile.asset,
+                                handle,
+                            });
+                        }
+                        self.tiles = tiles;
+                        self.drain_uploads();
                         if page.warnings > 0 {
                             self.status = format!("{} 张缩略图不可用，原片仍被保留", page.warnings);
                         }
@@ -2100,9 +2371,73 @@ impl App {
             {
                 match result {
                     Ok((preview, background)) => {
-                        self.preview = Some(preview);
+                        if self.original_size.is_none() || self.regions.session.is_some() {
+                            self.preview = Some(preview);
+                        }
                         self.preview_background = Some(background);
                     }
+                    Err(e) => self.error = Some(e),
+                }
+            }
+            Message::OriginalPreviewLoaded(library, id, version, request, result)
+                if self.preview_expanded
+                    && self.original_request == request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == library)
+                    && self
+                        .selected
+                        .as_ref()
+                        .is_some_and(|a| a.id == id && a.version_id == version) =>
+            {
+                match result {
+                    Ok((image, w, h)) => {
+                        self.preview = Some(image);
+                        self.original_size = Some((w, h));
+                    }
+                    Err(e) => self.error = Some(e),
+                }
+            }
+            Message::VideoBounds(version, bounds)
+                if self.preview_expanded
+                    && self
+                        .selected
+                        .as_ref()
+                        .is_some_and(|a| a.version_id == version) =>
+            {
+                if let Some(playback) = self.playback.clone() {
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                playback
+                                    .viewport(bounds.x, bounds.y, bounds.width, bounds.height)
+                                    .map_err(|e| e.to_string())
+                            })
+                            .await
+                            .map_err(|e| e.to_string())?
+                        },
+                        move |r| Message::VideoPositioned(version, r),
+                    );
+                }
+            }
+            Message::VideoPositioned(version, Err(error))
+                if self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|a| a.version_id == version) =>
+            {
+                tracing::warn!(%error,"video layout update deferred");
+            }
+            Message::PlaybackStarted(library, id, version, request, result)
+                if self.preview_expanded
+                    && !self.surface_open()
+                    && self.original_request == request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == library)
+                    && self
+                        .selected
+                        .as_ref()
+                        .is_some_and(|a| a.id == id && a.version_id == version) =>
+            {
+                match result {
+                    Ok(session) => self.playback = Some(session),
                     Err(e) => self.error = Some(e),
                 }
             }

@@ -26,6 +26,9 @@ pub struct Prepared {
     pub(super) dominant_color: &'static str,
     pub(super) metrics: ImportMetrics,
     pub(super) reference_verified: bool,
+    pub(super) video: Option<crate::video::Metadata>,
+    pub(super) signature: Option<crate::similarity::Signature>,
+    pub(super) metadata: serde_json::Value,
 }
 impl Ticket {
     fn staged(&self) -> Result<PathBuf> {
@@ -48,8 +51,8 @@ impl Ticket {
                     break;
                 }
                 total += count as u64;
-                if total > MAX_BYTES {
-                    return Err(Error::Invalid("读取期间文件超出 256 MiB 限制".into()));
+                if total > native::file_limit(&self.source) {
+                    return Err(Error::Invalid("读取期间媒体文件超出大小预算".into()));
                 }
                 output.write_all(&buffer[..count])?;
             }
@@ -71,7 +74,9 @@ impl Ticket {
         let staged = self.staged()?;
         let mut reader = ImageReader::open(&staged)?.with_guessed_format()?;
         reader.limits(decode_limits());
-        if native::raw_extension(&self.source).is_some() {
+        if native::raw_extension(&self.source).is_some()
+            || crate::video::extension(&self.source).is_some()
+        {
             return Ok(1024);
         }
         let decoder = match reader.into_decoder() {
@@ -130,7 +135,14 @@ pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<P
         Some(ImageFormat::WebP) => "webp",
         Some(ImageFormat::Gif) => "gif",
         Some(ImageFormat::Bmp) => "bmp",
-        _ => native::raw_extension(source)
+        _ if source
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg")) =>
+        {
+            "svg"
+        }
+        _ => crate::video::extension(source)
+            .or_else(|| native::raw_extension(source))
             .or(match format {
                 Some(ImageFormat::Tiff) => Some("tiff"),
                 Some(ImageFormat::Avif) => Some("avif"),
@@ -144,7 +156,15 @@ pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<P
             })
             .ok_or_else(|| Error::Invalid("不支持的媒体格式".into()))?,
     };
-    let decoded = crate::media::raster(File::open(staged)?, source, 256)?;
+    let (decoded, video) = if crate::video::extension(source).is_some() {
+        let (decoded, metadata) = crate::video::decode(staged, 256)?;
+        (decoded, Some(metadata))
+    } else {
+        (
+            crate::media::raster(File::open(staged)?, source, 256)?,
+            None,
+        )
+    };
     let (width, height) = (decoded.width, decoded.height);
     let thumbnail = decoded
         .image
@@ -152,12 +172,20 @@ pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<P
     let decode_ms = clock.elapsed().as_secs_f64() * 1000.0;
     let clock = std::time::Instant::now();
     let dominant_color = organize::dominant_color(&thumbnail);
+    let signature = video
+        .is_none()
+        .then(|| crate::similarity::signature(&thumbnail));
     let thumb_stage = staged.with_file_name(format!("{operation}.thumb"));
     thumbnail.save_with_format(&thumb_stage, ImageFormat::Png)?;
     OpenOptions::new()
         .write(true)
         .open(thumb_stage)?
         .sync_all()?;
+    let metadata = if video.is_none() {
+        crate::metadata::read(File::open(staged)?)?
+    } else {
+        serde_json::json!({})
+    };
     Ok(Prepared {
         hash,
         width,
@@ -165,6 +193,9 @@ pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<P
         extension,
         dominant_color,
         reference_verified: false,
+        video,
+        signature,
+        metadata,
         metrics: ImportMetrics {
             hash_ms,
             decode_ms,
@@ -181,8 +212,8 @@ impl Library {
         referenced: bool,
     ) -> Result<Ticket> {
         let length = fs::metadata(&file.path)?.len();
-        if length == 0 || length > MAX_BYTES {
-            return Err(Error::Invalid("图片超过 256 MiB 或为空文件".into()));
+        if length == 0 || length > native::file_limit(&file.path) {
+            return Err(Error::Invalid("媒体超出文件大小预算或为空文件".into()));
         }
         let source = file.path.canonicalize()?;
         let project = self.resolve_import_project(file, project)?;

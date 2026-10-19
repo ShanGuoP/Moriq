@@ -6,6 +6,7 @@ use iced::widget::{button, column, row, text};
 enum Target {
     Project(ProjectDeletionPlan),
     Assets(Vec<AssetId>),
+    AllTrash(Vec<AssetId>),
 }
 #[derive(Default)]
 pub(super) struct Deletion {
@@ -29,6 +30,8 @@ impl Deletion {
 }
 #[derive(Debug, Clone)]
 pub enum DeletionMessage {
+    EmptyTrash,
+    TrashPlanned(LibraryId, u64, Result<Vec<AssetId>, String>),
     Project(ProjectId),
     Assets(Vec<AssetId>),
     Planned(LibraryId, u64, Result<ProjectDeletionPlan, String>),
@@ -42,6 +45,42 @@ impl App {
     pub(super) fn deletion_message(&mut self, event: DeletionMessage) -> Task<Message> {
         use DeletionMessage::*;
         match event {
+            EmptyTrash => {
+                if self.manager.busy
+                    || self.switching
+                    || self.import.is_some()
+                    || self.launch.design_preview
+                {
+                    return Task::none();
+                }
+                let Some(library) = self.library.as_ref().map(|l| l.info.id) else {
+                    return Task::none();
+                };
+                self.deletion.reset();
+                self.deletion.library = Some(library);
+                self.deletion.previous = self.manager.panel;
+                self.deletion.loading = true;
+                self.manager.panel = Some(Panel::Delete);
+                let request = self.deletion.request;
+                let service = self.service.clone();
+                return Task::perform(
+                    async move { service.trash_snapshot(library).await },
+                    move |r| Message::Deletion(TrashPlanned(library, request, r)),
+                );
+            }
+            TrashPlanned(library, request, result) => {
+                if !self.deletion_matches(library, request) || !self.deletion.loading {
+                    return Task::none();
+                }
+                self.deletion.loading = false;
+                match result {
+                    Ok(ids) if !ids.is_empty() => {
+                        self.deletion.target = Some(Target::AllTrash(ids))
+                    }
+                    Ok(_) => self.deletion.error = Some("回收站已为空".into()),
+                    Err(e) => self.deletion.error = Some(e),
+                }
+            }
             Project(project) => {
                 if self.manager.busy
                     || self.switching
@@ -143,6 +182,7 @@ impl App {
                                 service.delete_project_contents(library, plan).await
                             }
                             Target::Assets(ids) => service.purge(library, ids).await,
+                            Target::AllTrash(ids) => service.empty_trash(library, ids).await,
                         }
                     },
                     move |r| Message::Deletion(Finished(library, request, r)),
@@ -162,7 +202,7 @@ impl App {
                             Some(Target::Project(plan)) => self.manage_message(
                                 ManageMessage::ProjectDeleted(library, plan.projects, Ok(report)),
                             ),
-                            Some(Target::Assets(_)) => {
+                            Some(Target::Assets(_) | Target::AllTrash(_)) => {
                                 self.manage_message(ManageMessage::Purged(library, Ok(report)))
                             }
                             _ => Task::none(),
@@ -208,6 +248,9 @@ impl App {
         }
         if let Some(target) = &self.deletion.target {
             match target {
+                Target::AllTrash(ids) => {
+                    content=content.push(heading("清空整库回收站",18)).push(text(format!("将永久删除确认时回收站中的 {} 项素材及其全部版本，保留库外引用原片。期间被恢复的素材会跳过。",ids.len())).size(14));
+                }
                 Target::Project(plan) => {
                     content = content.push(heading(format!("删除项目「{}」", plan.name), 18));
                     if plan.projects.len() > 1 {

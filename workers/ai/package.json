@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "type": "module",
+  "name": "moriq-ai-worker",
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1",
+    "onnxruntime-node": "1.21.0"
+  }
+}

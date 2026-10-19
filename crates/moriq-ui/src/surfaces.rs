@@ -245,6 +245,10 @@ impl App {
         dismiss: bool,
     ) -> Task<Message> {
         let after = self.surface();
+        if after.panel.is_some() || after.dialog.is_some() {
+            self.playback = None;
+            self.original_request += 1;
+        }
         if dismiss {
             self.surfaces.stack.clear();
             self.surfaces.y = 0.0;
@@ -327,7 +331,31 @@ impl App {
             }
             self.preview_expanded = true;
             self.manager.panel = None;
+            if !self.launch.design_preview
+                && let (Some(library), Some(asset)) = (&self.library, &self.selected)
+            {
+                if !moriq_app::is_video_format(&asset.format) {
+                    self.original_request += 1;
+                    return self.begin_regions();
+                } else {
+                    self.original_request += 1;
+                    self.playback = None;
+                    let request = self.original_request;
+                    let (library, id, version) = (library.info.id, asset.id, asset.version_id);
+                    let service = self.service.clone();
+                    return Task::perform(
+                        async move { service.playback(library, id, version).await },
+                        move |result| {
+                            Message::PlaybackStarted(library, id, version, request, result)
+                        },
+                    );
+                }
+            }
         } else if self.preview_expanded {
+            self.regions.reset();
+            self.original_request += 1;
+            self.original_size = None;
+            self.playback = None;
             self.preview_expanded = false;
             let mut y = self.surfaces.viewer_y.take().unwrap_or(self.scroll_y);
             let height = self.active_masonry().map_or_else(

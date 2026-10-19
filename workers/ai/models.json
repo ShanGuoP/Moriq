@@ -1,0 +1,164 @@
+[
+  {
+    "source": "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16",
+    "revision": "f26904860903e70e050b8f48255e5f48401816e9",
+    "id": "chinese-clip",
+    "minimum_memory_mib": 2048,
+    "files": [
+      {
+        "bytes": 844,
+        "sha256": "19447ad8c20d274f0644a6663af56286be98bd2d0e5f9472fcb318e04fcd6961",
+        "url": "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/f26904860903e70e050b8f48255e5f48401816e9/config.json",
+        "path": "config.json"
+      },
+      {
+        "bytes": 546,
+        "sha256": "61a78fdd2c7ac17b54b6190c0f4cb23423192c535003d52528d01e318a47608b",
+        "url": "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/f26904860903e70e050b8f48255e5f48401816e9/preprocessor_config.json",
+        "path": "preprocessor_config.json"
+      },
+      {
+        "bytes": 439124,
+        "sha256": "7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839",
+        "url": "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/f26904860903e70e050b8f48255e5f48401816e9/tokenizer.json",
+        "path": "tokenizer.json"
+      },
+      {
+        "bytes": 1315,
+        "sha256": "38fbc894183595cc1168e36150251b2fb658197b3a49f6908cce88ae22acd52a",
+        "url": "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/f26904860903e70e050b8f48255e5f48401816e9/tokenizer_config.json",
+        "path": "tokenizer_config.json"
+      },
+      {
+        "bytes": 109540,
+        "sha256": "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c",
+        "url": "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/f26904860903e70e050b8f48255e5f48401816e9/vocab.txt",
+        "path": "vocab.txt"
+      },
+      {
+        "bytes": 190842404,
+        "sha256": "a2c2849329eafb24100acec5a9421a39f8cb445296444c5c98855b69e5e7a751",
+        "url": "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/f26904860903e70e050b8f48255e5f48401816e9/onnx/model_quantized.onnx",
+        "path": "onnx/model_quantized.onnx"
+      }
+    ],
+    "license": "MIT",
+    "name": "Chinese-CLIP"
+  },
+  {
+    "source": "https://huggingface.co/onnx-community/Florence-2-base",
+    "revision": "d59e079711c57174f29265539fb4cc9f0f335916",
+    "id": "florence",
+    "minimum_memory_mib": 4096,
+    "files": [
+      {
+        "bytes": 5447,
+        "sha256": "74efbe2299e13cfcc9e083861eae4a943d76f784ddd595d85e779d189cf0a574",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/config.json",
+        "path": "config.json"
+      },
+      {
+        "bytes": 297,
+        "sha256": "25dc666f44506e0a63f5de2d191e5809b251527b282ff4951fad9840556407b3",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/generation_config.json",
+        "path": "generation_config.json"
+      },
+      {
+        "bytes": 2673,
+        "sha256": "c892857e34a7082284983a7717717d39c9bf7e574f1f41d80d4c918c97502efa",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/preprocessor_config.json",
+        "path": "preprocessor_config.json"
+      },
+      {
+        "bytes": 130,
+        "sha256": "6eb1a2e487fa8b7521691a3382b5afd92a78e8ea34b385f8824fa07563e92245",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/processor_config.json",
+        "path": "processor_config.json"
+      },
+      {
+        "bytes": 2297961,
+        "sha256": "d69dcdb2323e124ac4f800cb9863ddccea0d7bb11e16125e8df3bd60f2f8aeac",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/tokenizer.json",
+        "path": "tokenizer.json"
+      },
+      {
+        "bytes": 197658,
+        "sha256": "d8e64607233cb53b619fb46664f6cad08176c26e0e8735b2d30d888364f19600",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/tokenizer_config.json",
+        "path": "tokenizer_config.json"
+      },
+      {
+        "bytes": 456318,
+        "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/merges.txt",
+        "path": "merges.txt"
+      },
+      {
+        "bytes": 798293,
+        "sha256": "ed19656ea1707df69134c4af35c8ceda2cc9860bf2c3495026153a133670ab5e",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/vocab.json",
+        "path": "vocab.json"
+      },
+      {
+        "bytes": 39390496,
+        "sha256": "8818c58a214e53bf7e22c48bb4674c2fa3112b9539c3ce4075a2eac797b1ef74",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/onnx/embed_tokens_quantized.onnx",
+        "path": "onnx/embed_tokens_quantized.onnx"
+      },
+      {
+        "bytes": 43651493,
+        "sha256": "a0459867dc116e8e49f53073e368e45c21169d0b0dd7dc350abed06926e0d835",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/onnx/encoder_model_quantized.onnx",
+        "path": "onnx/encoder_model_quantized.onnx"
+      },
+      {
+        "bytes": 98177854,
+        "sha256": "7ffecf4dd98784308878fd52a7f95ed64f5ed025b4785f6f105450be8fe2be04",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/onnx/decoder_model_merged_quantized.onnx",
+        "path": "onnx/decoder_model_merged_quantized.onnx"
+      },
+      {
+        "bytes": 93788276,
+        "sha256": "56351a93ecfb61a0384dc63c130cc5bdeea8de1a85f172e109821c7cc956be5a",
+        "url": "https://huggingface.co/onnx-community/Florence-2-base/resolve/d59e079711c57174f29265539fb4cc9f0f335916/onnx/vision_encoder_quantized.onnx",
+        "path": "onnx/vision_encoder_quantized.onnx"
+      }
+    ],
+    "license": "MIT",
+    "name": "Florence-2"
+  },
+  {
+    "source": "https://huggingface.co/opencv/face_detection_yunet",
+    "revision": "3cc26e7f1014a5ee5d74a42acee58bafc9d0a310;3d7082438a6e4551e840c9b2bb60b71e8da4b524",
+    "id": "faces",
+    "minimum_memory_mib": 1024,
+    "files": [
+      {
+        "bytes": 1085,
+        "sha256": "c83b8120c50ccbd4c4f96edf53141bdd566ebb8f8e9227e415326aa1b1aba958",
+        "url": "https://huggingface.co/opencv/face_detection_yunet/resolve/3cc26e7f1014a5ee5d74a42acee58bafc9d0a310/LICENSE",
+        "path": "yunet/LICENSE"
+      },
+      {
+        "bytes": 232589,
+        "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        "url": "https://huggingface.co/opencv/face_detection_yunet/resolve/3cc26e7f1014a5ee5d74a42acee58bafc9d0a310/face_detection_yunet_2023mar.onnx",
+        "path": "yunet/face_detection_yunet_2023mar.onnx"
+      },
+      {
+        "bytes": 11358,
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "url": "https://huggingface.co/opencv/face_recognition_sface/resolve/3d7082438a6e4551e840c9b2bb60b71e8da4b524/LICENSE",
+        "path": "sface/LICENSE"
+      },
+      {
+        "bytes": 38696353,
+        "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+        "url": "https://huggingface.co/opencv/face_recognition_sface/resolve/3d7082438a6e4551e840c9b2bb60b71e8da4b524/face_recognition_sface_2021dec.onnx",
+        "path": "sface/face_recognition_sface_2021dec.onnx"
+      }
+    ],
+    "license": "MIT + Apache-2.0",
+    "name": "YuNet + SFace"
+  }
+]

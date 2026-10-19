@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 [dependencies]
 moriq-domain.workspace = true
+moriq-ai.workspace = true
 moriq-library.workspace = true
 moriq-render.workspace = true
 moriq-synco.workspace = true

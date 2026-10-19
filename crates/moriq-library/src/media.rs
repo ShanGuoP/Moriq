@@ -6,8 +6,12 @@ use std::{
 };
 
 pub struct Source {
+    root: PathBuf,
+    version: AssetVersionId,
+    dimensions: (u32, u32),
     file: File,
     expected: Option<String>,
+    registered_hash: String,
     extension: String,
     _lease: Arc<File>,
 }
@@ -15,6 +19,7 @@ pub struct Thumbnails {
     files: Vec<std::result::Result<Option<File>, String>>,
     _lease: Arc<File>,
 }
+#[derive(Clone)]
 pub struct Preview {
     pub image: Pixels,
     pub background: Pixels,
@@ -33,10 +38,10 @@ impl Library {
         self.version_source(asset, AssetVersionId(parse_id(&version)?))
     }
     pub fn version_source(&self, asset: AssetId, version: AssetVersionId) -> Result<Source> {
-        let (version, hash, extension): (String, String, String) = self.db.query_row(
-            "SELECT id,sha256,format FROM asset_versions WHERE asset_id=?1 AND id=?2",
+        let (version, hash, extension,width,height): (String, String, String,u32,u32) = self.db.query_row(
+            "SELECT id,sha256,format,width,height FROM asset_versions WHERE asset_id=?1 AND id=?2",
             params![asset.to_string(), version.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?,r.get(3)?,r.get(4)?)),
         )?;
         let referenced = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM file_locations WHERE version_id=?1)",
@@ -45,8 +50,12 @@ impl Library {
         )?;
         let file = File::open(self.version_path(&version, false)?)?;
         Ok(Source {
+            root: self.root.clone(),
+            version: AssetVersionId(parse_id(&version)?),
+            dimensions: (width, height),
             file,
-            expected: referenced.then_some(hash),
+            expected: referenced.then_some(hash.clone()),
+            registered_hash: hash,
             extension,
             _lease: self._lock.clone(),
         })
@@ -73,18 +82,116 @@ impl Library {
         })
     }
     pub fn details_plan(&self, id: AssetId) -> Result<Details> {
+        let mut metadata = self.details_metadata(id)?;
+        metadata.faces = self.faces(id)?;
+        metadata.category = self
+            .db
+            .query_row(
+                "SELECT category FROM asset_classification WHERE asset_id=?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        let ai:Option<String>=self.db.query_row("SELECT ar.data FROM ai_results ar JOIN assets a ON a.display_version_id=ar.version_id WHERE a.id=?1 AND ar.model_id='florence' ORDER BY ar.created_at DESC LIMIT 1",[id.to_string()],|r|r.get(0)).optional()?;
+        if let Some(data) = ai {
+            let data: serde_json::Value =
+                serde_json::from_str(&data).map_err(|e| Error::Invalid(e.to_string()))?;
+            metadata.ai_caption = data["caption"].as_str().unwrap_or("").into();
+            metadata.ocr = data["ocr"].as_str().unwrap_or("").into();
+        }
+        let video:Option<String>=self.db.query_row("SELECT m.json FROM video_metadata m JOIN assets a ON a.display_version_id=m.version_id WHERE a.id=?1",[id.to_string()],|r|r.get(0)).optional()?;
+        if let Some(json) = video {
+            let video: crate::video::Metadata =
+                serde_json::from_str(&json).map_err(|e| Error::Invalid(e.to_string()))?;
+            metadata.exif = vec![
+                ("媒体类型".into(), "视频".into()),
+                (
+                    "时长".into(),
+                    format!("{:.2} 秒", video.duration_ms as f64 / 1000.0),
+                ),
+                ("编码".into(), video.codec),
+                ("帧率".into(), video.frame_rate),
+                ("像素格式".into(), video.pixel_format),
+                (
+                    "音轨".into(),
+                    if video.has_audio { "有" } else { "无" }.into(),
+                ),
+                ("色彩空间".into(), video.color_space),
+                ("传递函数".into(), video.color_transfer),
+            ];
+        }
         Ok(Details {
-            metadata: self.details_metadata(id)?,
+            metadata,
             source: self.media_source(id).map_err(|e| e.to_string()),
         })
     }
 }
 impl Source {
+    pub(crate) fn verify_integrity(mut self) -> Result<()> {
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let read = self.file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            bytes += read as u64;
+            if bytes > 64 * 1024 * 1024 * 1024 {
+                return Err(Error::Invalid("源文件超出检查预算".into()));
+            }
+            hash.update(&buffer[..read]);
+        }
+        if format!("{:x}", hash.finalize()) != self.registered_hash {
+            return Err(Error::Invalid("原文件内容与登记哈希不一致".into()));
+        }
+        Ok(())
+    }
+    pub fn regions(self) -> Result<crate::region::Session> {
+        let root = self.root.clone();
+        let version = self.version;
+        let dimensions = self.dimensions;
+        let extension = self.extension.clone();
+        let cacheable = self.cacheable();
+        let lease = self._lease.clone();
+        let (mut file, frozen) = self.frozen_file()?;
+        let path = if let Some(file) = frozen {
+            file.into_temp_path()
+        } else {
+            let mut temporary = tempfile::Builder::new()
+                .suffix(&format!(".{extension}"))
+                .tempfile()?;
+            std::io::copy(&mut file, temporary.as_file_mut())?;
+            temporary.as_file().sync_all()?;
+            temporary.into_temp_path()
+        };
+        crate::region::Session::open(root, version, dimensions, extension, cacheable, path, lease)
+    }
+    pub fn version(&self) -> AssetVersionId {
+        self.version
+    }
+    pub fn cacheable(&self) -> bool {
+        self.expected.is_none()
+    }
+    pub fn metadata_record(self) -> Result<serde_json::Value> {
+        let (file, _frozen) = self.frozen_file()?;
+        crate::metadata::read(file)
+    }
+    pub fn playback(self) -> Result<Arc<crate::video::Playback>> {
+        if crate::video::extension(Path::new(&format!("video.{}", self.extension))).is_none() {
+            return Err(Error::Invalid("所选素材不是视频".into()));
+        }
+        let lease = self._lease.clone();
+        let (file, _frozen) = self.frozen_file()?;
+        crate::video::Playback::start(file, lease)
+    }
     fn frozen_file(mut self) -> Result<(File, Option<tempfile::NamedTempFile>)> {
         if let Some(expected) = self.expected.take() {
             let mut frozen = tempfile::NamedTempFile::new()?;
-            let length = std::io::copy(&mut self.file.take(MAX_BYTES + 1), frozen.as_file_mut())?;
-            if length > MAX_BYTES || organize::hash_file(frozen.path())? != expected {
+            let limit = crate::native::file_limit(Path::new(&format!("image.{}", self.extension)));
+            let length = std::io::copy(&mut self.file.take(limit + 1), frozen.as_file_mut())?;
+            if length > limit || organize::hash_file(frozen.path())? != expected {
                 return Err(Error::Invalid(
                     "外部引用原片已变化，保留登记信息，请重新定位原片".into(),
                 ));
@@ -96,13 +203,59 @@ impl Source {
         }
     }
     pub fn preview(self) -> Result<Preview> {
+        self.preview_edge(1600)
+    }
+    pub fn preview_edge(self, edge: u32) -> Result<Preview> {
         // Hold the lease until all decoding and derivative generation is finished.
         let lease = self._lease.clone();
         let extension = self.extension.clone();
+        let cache = if self.cacheable() && edge == 1600 {
+            Some(safe_path(
+                &self.root,
+                &format!("previews/{}-srgb1-{edge}.png", self.version),
+            )?)
+        } else {
+            None
+        };
+        let cached = cache.as_ref().and_then(|path| {
+            let file = File::open(path).ok()?;
+            if file.metadata().ok()?.len() > 32 * 1024 * 1024 {
+                return None;
+            }
+            let mut reader = ImageReader::new(BufReader::new(file))
+                .with_guessed_format()
+                .ok()?;
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(edge);
+            limits.max_image_height = Some(edge);
+            limits.max_alloc = Some(32 * 1024 * 1024);
+            reader.limits(limits);
+            reader.decode().ok()
+        });
         let (file, _frozen) = self.frozen_file()?;
-        let preview = raster(file, &PathBuf::from(format!("image.{extension}")), 1600)?
-            .image
-            .ok_or_else(|| Error::Invalid("预览解码无像素".into()))?;
+        let preview = if let Some(image) = cached {
+            image
+        } else {
+            let image = raster(file, &PathBuf::from(format!("image.{extension}")), edge)?
+                .image
+                .ok_or_else(|| Error::Invalid("预览解码无像素".into()))?;
+            if let Some(path) = cache {
+                let result = (|| -> Result<()> {
+                    let mut temporary = tempfile::NamedTempFile::new_in(
+                        path.parent()
+                            .ok_or_else(|| Error::Invalid("缓存目录无效".into()))?,
+                    )?;
+                    image.write_to(&mut temporary, ImageFormat::Png)?;
+                    temporary.as_file().sync_all()?;
+                    temporary.persist(path).map_err(|e| Error::Io(e.error))?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    tracing::warn!(%error,"disk preview cache skipped");
+                }
+            }
+            image
+        };
         let small = resize::fit(&preview, 128)?.to_rgba8();
         let background = image::DynamicImage::ImageRgba8(image::imageops::blur(&small, 8.0));
         let result = Preview {
@@ -145,6 +298,9 @@ impl Thumbnails {
 }
 impl Details {
     pub fn read(mut self) -> AssetDetails {
+        if !self.metadata.exif.is_empty() {
+            return self.metadata;
+        }
         let (fields, location) = match self.source {
             Ok(source) => {
                 let lease = source._lease.clone();
@@ -198,6 +354,15 @@ fn read_exif(file: File) -> (Vec<(String, String)>, Option<AssetLocation>) {
 
 /// Decode to a requested edge; large/RAW system codecs scale before pixel transfer.
 pub fn raster(mut file: File, hint: &Path, edge: u32) -> Result<crate::native::Decoded> {
+    if hint
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+    {
+        return crate::vector::svg(file, edge);
+    }
+    if crate::video::extension(hint).is_some() {
+        return crate::video::decode_file(file, edge);
+    }
     let mut reader = ImageReader::new(BufReader::new(file.try_clone()?)).with_guessed_format()?;
     let format = reader.format();
     let raw = crate::native::raw_extension(hint).is_some()
@@ -213,7 +378,7 @@ pub fn raster(mut file: File, hint: &Path, edge: u32) -> Result<crate::native::D
         );
     reader.limits(decode_limits());
     let decoded = if raw {
-        Err(Error::Invalid("RAW 需要系统解码".into()))
+        Err(Error::Invalid("RAW 使用内置 LibRaw 解码".into()))
     } else {
         (|| -> Result<crate::native::Decoded> {
             let mut decoder = reader.into_decoder()?;
@@ -221,7 +386,9 @@ pub fn raster(mut file: File, hint: &Path, edge: u32) -> Result<crate::native::D
                 return Err(Error::Invalid("此图需要系统缩放解码以控制内存".into()));
             }
             let orientation = decoder.orientation()?;
+            let icc = decoder.icc_profile()?;
             let mut image = image::DynamicImage::from_decoder(decoder)?;
+            image = crate::color::to_srgb(image, icc.as_deref())?;
             image.apply_orientation(orientation);
             let (width, height) = image.dimensions();
             let image = if edge > 0 {
@@ -238,13 +405,20 @@ pub fn raster(mut file: File, hint: &Path, edge: u32) -> Result<crate::native::D
     };
     match decoded {
         Ok(image) => Ok(image),
+        Err(e @ Error::Color(_)) => Err(e),
         Err(original) => {
             file.seek(SeekFrom::Start(0))?;
             let extension = hint.extension().and_then(|s| s.to_str()).unwrap_or("image");
-            let result =
-                crate::native::decode_file(file, extension, if edge == 0 { 8192 } else { edge });
+            let system_edge = if raw {
+                edge
+            } else if edge == 0 {
+                8192
+            } else {
+                edge
+            };
+            let result = crate::native::decode_file(file, extension, system_edge);
             match result {
-                Ok(decoded) if edge == 0 && decoded.width.max(decoded.height) > 8192 => {
+                Ok(decoded) if !raw && edge == 0 && decoded.width.max(decoded.height) > 8192 => {
                     Err(Error::Invalid(
                         "此图超出系统原尺寸转换预算，请指定最长边不超过 8192；原文件导出不受影响"
                             .into(),

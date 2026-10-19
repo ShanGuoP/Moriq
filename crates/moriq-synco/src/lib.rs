@@ -15,6 +15,69 @@ pub struct Client {
     base: String,
 }
 impl Client {
+    pub async fn discover_or_start(executable: Option<PathBuf>) -> Result<Self> {
+        if !cfg!(windows) {
+            return Err("当前 Synco v1 协议仅适用于 Windows".into());
+        }
+        if let Ok(client) = Self::discover().await {
+            return Ok(client);
+        }
+        static STARTING: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _guard = STARTING
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        if let Ok(client) = Self::discover().await {
+            return Ok(client);
+        }
+        let path = executable
+            .or_else(|| std::env::var_os("SYNCO_EXECUTABLE").map(PathBuf::from))
+            .or_else(|| {
+                [
+                    std::env::var_os("LOCALAPPDATA")
+                        .map(|p| PathBuf::from(p).join("Programs/Synco/Synco.exe")),
+                    std::env::var_os("ProgramFiles")
+                        .map(|p| PathBuf::from(p).join("Synco/Synco.exe")),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|p| p.is_file())
+            })
+            .ok_or("未找到 Synco 安装位置，请在联动面板选择 Synco 程序")?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let path = path
+                .canonicalize()
+                .map_err(|e| format!("Synco 程序不存在：{e}"))?;
+            if !path.is_file() {
+                return Err("Synco 程序路径无效".into());
+            }
+            let mut command = std::process::Command::new(&path);
+            command.current_dir(path.parent().ok_or("Synco 程序目录无效")?);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            let mut child = command.spawn().map_err(|e| e.to_string())?;
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match Self::discover().await {
+                Ok(client) => return Ok(client),
+                Err(error) if std::time::Instant::now() >= deadline => {
+                    return Err(format!("已启动 Synco，但服务尚未就绪：{error}"));
+                }
+                Err(_) => {}
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
     pub async fn discover() -> Result<Self> {
         if !cfg!(windows) {
             return Err("当前 Synco v1 协议仅适用于 Windows；macOS 尚未定义交接协议".into());

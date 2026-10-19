@@ -33,6 +33,10 @@ pub(super) enum Panel {
     Compare,
     Delete,
     Tasks,
+    Similar,
+    People,
+    Metadata,
+    Batch,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProjectDestination {
@@ -46,6 +50,7 @@ impl std::fmt::Display for ProjectDestination {
 }
 #[derive(Default)]
 pub(super) struct Manager {
+    pub similar: Vec<SimilarAsset>,
     pub panel: Option<Panel>,
     pub selection: HashSet<AssetId>,
     pub multiselect: bool,
@@ -87,6 +92,13 @@ pub(super) struct Manager {
 }
 #[derive(Debug, Clone)]
 pub enum ManageMessage {
+    SyncoExecutable,
+    SyncoExecutablePicked(Option<PathBuf>),
+    SyncoAutoStart(bool),
+    SyncoPreferencesSaved(Result<UserSettings, String>),
+    SyncoRetry(String),
+    Similar,
+    SimilarLoaded(LibraryId, AssetId, Result<Vec<SimilarAsset>, String>),
     Tasks,
     Location,
     LocationInput(u8, String),
@@ -240,11 +252,18 @@ impl App {
         let version = asset.version_id;
         let asset = asset.id;
         let service = self.service.clone();
-        Task::perform(async move { service.details(id, asset).await }, move |r| {
-            Message::Manage(ManageMessage::DetailsLoaded(id, asset, version, r))
-        })
+        let recommendations = self.service.clone();
+        Task::batch([
+            Task::perform(async move { service.details(id, asset).await }, move |r| {
+                Message::Manage(ManageMessage::DetailsLoaded(id, asset, version, r))
+            }),
+            Task::perform(
+                async move { recommendations.recommendations(id, asset, version).await },
+                move |r| Message::Ai(crate::ai::AiMessage::Recommended(id, asset, version, r)),
+            ),
+        ])
     }
-    fn selected_ids(&self) -> Vec<AssetId> {
+    pub(super) fn selected_ids(&self) -> Vec<AssetId> {
         if self.manager.multiselect {
             self.manager.selection.iter().copied().collect()
         } else {
@@ -259,11 +278,77 @@ impl App {
             return Task::none();
         }
         match event {
+            SyncoExecutable => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("选择 Synco 程序")
+                            .add_filter("Synco 程序", &["exe"])
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    |r| Message::Manage(SyncoExecutablePicked(r)),
+                );
+            }
+            SyncoExecutablePicked(Some(path)) => {
+                self.preferences.synco.executable = Some(path);
+                let value = self.preferences.synco.clone();
+                let service = self.service.clone();
+                return Task::perform(async move { service.synco_preferences(value).await }, |r| {
+                    Message::Manage(SyncoPreferencesSaved(r))
+                });
+            }
+            SyncoAutoStart(value) => {
+                self.preferences.synco.auto_start = value;
+                let value = self.preferences.synco.clone();
+                let service = self.service.clone();
+                return Task::perform(async move { service.synco_preferences(value).await }, |r| {
+                    Message::Manage(SyncoPreferencesSaved(r))
+                });
+            }
+            SyncoPreferencesSaved(result) => match result {
+                Ok(prefs) => self.preferences = prefs,
+                Err(e) => self.error = Some(e),
+            },
+            SyncoRetry(task) if !self.manager.synco_running => {
+                if let Some(library) = &self.library {
+                    let id = library.info.id;
+                    let service = self.service.clone();
+                    self.manager.synco_running = true;
+                    return Task::perform(
+                        async move { service.retry_synco(id, task).await },
+                        move |r| Message::Manage(SyncoPrepared(id, None, r)),
+                    );
+                }
+            }
             Tasks => {
                 self.manager.panel = Some(Panel::Tasks);
                 return self.refresh_organizer();
             }
             Help => self.manager.panel = Some(Panel::Help),
+            Similar => {
+                if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+                    let (id, asset) = (library.info.id, asset.id);
+                    let service = self.service.clone();
+                    self.manager.similar.clear();
+                    self.manager.panel = Some(Panel::Similar);
+                    return Task::perform(
+                        async move { service.similar_assets(id, asset).await },
+                        move |r| Message::Manage(SimilarLoaded(id, asset, r)),
+                    );
+                }
+            }
+            SimilarLoaded(id, asset, result)
+                if self.library.as_ref().is_some_and(|l| l.info.id == id)
+                    && self.selected.as_ref().is_some_and(|a| a.id == asset)
+                    && self.manager.panel == Some(Panel::Similar) =>
+            {
+                match result {
+                    Ok(items) => self.manager.similar = items,
+                    Err(e) => self.error = Some(e),
+                }
+            }
             Licenses => self.manager.panel = Some(Panel::Licenses),
             Location => {
                 let location = self.manager.details.manual_location.as_ref().or(self
@@ -541,12 +626,32 @@ impl App {
                             "JPEG" => ExportFormat::Jpeg,
                             "PNG" => ExportFormat::Png,
                             "WebP" => ExportFormat::Webp,
+                            "TIFF" => ExportFormat::Tiff,
+                            "BMP" => ExportFormat::Bmp,
                             _ => ExportFormat::Original,
                         }
                     }
                     1 => options.max_edge = value.parse().unwrap_or(0),
                     2 => options.quality = value.parse().unwrap_or(90),
                     3 => options.rotate = value.parse().unwrap_or(0),
+                    4 => {
+                        options.resampling = match value.as_str() {
+                            "Lanczos3" => Resampling::Lanczos3,
+                            "双三次" => Resampling::Bicubic,
+                            "最近邻" => Resampling::Nearest,
+                            _ => Resampling::Area,
+                        }
+                    }
+                    5 => {
+                        options.layout = match value.as_str() {
+                            "按格式" => ExportLayout::Format,
+                            "按导入日期" => ExportLayout::ImportDate,
+                            _ => ExportLayout::Flat,
+                        }
+                    }
+                    6 => options.metadata_sidecar = value == "附带整理信息 JSON",
+                    7 => options.preserve_exif = value == "true",
+                    8 => options.directory_template = value,
                     _ => {}
                 }
             }
@@ -892,7 +997,9 @@ impl App {
             OrganizerLoaded(id, Ok(result))
                 if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
-                self.manager.organizer = result
+                self.manager.organizer = result;
+                self.refresh_people_choices();
+                return self.folder_message(FolderMessage::Covers);
             }
             DetailsLoaded(id, asset, version, Ok(result))
                 if self.library.as_ref().is_some_and(|l| l.info.id == id)
@@ -903,6 +1010,10 @@ impl App {
             {
                 if !self.manager.notes_dirty {
                     self.manager.notes = result.notes.clone();
+                }
+                if self.ai.category_version != Some(version) {
+                    self.ai.category = result.category.clone();
+                    self.ai.category_version = Some(version);
                 }
                 self.manager.details = result;
             }
@@ -917,10 +1028,13 @@ impl App {
                     0 => {
                         q.media_kind = if value == "RAW" {
                             MediaKind::Raw
+                        } else if value == "视频" {
+                            MediaKind::Video
                         } else {
                             MediaKind::All
                         };
-                        q.format = if value == "全部类型" || value == "RAW" {
+                        q.format = if value == "全部类型" || value == "RAW" || value == "视频"
+                        {
                             String::new()
                         } else {
                             value.to_lowercase()
@@ -1048,6 +1162,7 @@ impl App {
                     3 => self.query.trash = true,
                     4 => self.query.unassigned = true,
                     6 => self.query.media_kind = MediaKind::Raw,
+                    7 => self.query.media_kind = MediaKind::Video,
                     5 => {
                         self.query.edited_since = (chrono::Utc::now().timestamp_millis().max(0)
                             as u64)
@@ -1300,7 +1415,7 @@ impl App {
                     PickedDestination(_, backup, Some(parent)) if !self.manager.busy => {
                         self.manager.busy = true;
                         let ids = self.selected_ids();
-                        let options = self.manager.export_options;
+                        let options = self.manager.export_options.clone();
                         return Task::perform(
                             async move {
                                 if backup {
@@ -1355,6 +1470,10 @@ impl App {
                 }
             }
             Some(Panel::Menu) => "资源库工具",
+            Some(Panel::Similar) => "视觉近似图片",
+            Some(Panel::People) => "人物管理与人工纠正",
+            Some(Panel::Metadata) => "EXIF 与 GPS 检索",
+            Some(Panel::Batch) => "批量编辑多个字段",
             Some(Panel::AssetMenu) => "素材操作",
             Some(Panel::AssetProjects) => "素材所属项目",
             Some(Panel::Versions) => "素材版本",
@@ -1425,6 +1544,9 @@ impl App {
         };
         use ManageMessage::*;
         match self.manager.panel {
+            Some(Panel::People) => content = content.push(self.people_panel()),
+            Some(Panel::Metadata) => content = content.push(self.metadata_panel()),
+            Some(Panel::Batch) => content = content.push(self.batch_panel()),
             Some(Panel::Tasks) => content = content.push(self.tasks_panel()),
             Some(Panel::Delete) => content = content.push(self.deletion_panel()),
             Some(Panel::Compare) => content = content.push(self.compare_panel()),
@@ -1438,11 +1560,28 @@ impl App {
                     "精确标签、RAW、日期与评分请在筛选中选择；复杂条件使用组合规则。",
                     "Alt+← / →：后退与前进。← / →：按当前排序浏览相邻素材。",
                     "Ctrl+A：选择当前已加载的素材（最多 128 张）。Shift+单击：范围选择。",
-                    "Enter：放大选中图片。Delete：将选中范围移入回收站。",
+                    "Ctrl+Shift+A：对全部查询结果进行批量编辑。B：打开多字段批量编辑。",
+                    "0～5：给选中范围评分。F：切换收藏。Ctrl+E：导出所选素材。",
+                    "Enter / 空格：放大选中图片。Delete：将选中范围移入回收站。",
                     "Esc：先关闭放大查看，再关闭面板或详情。编辑文字时不触发选择、删除或相邻浏览。",
-                    "内容识别、OCR、语义搜索和人物搜索尚未接通，名称相同不代表识别结果。",
+                    "AI 分析需先在模型管理中安装模型，再建立索引；自然语言搜索使用语义搜索入口。",
                 ] {
                     content = content.push(muted(line));
+                }
+            }
+            Some(Panel::Similar) => {
+                content=content.push(muted("根据画面指纹、比例和颜色查找尺寸/压缩变体，最多显示100项；结果供人工判断，不自动合并或删除。"))
+                    .push(crate::components::action("建立/更新全库近似索引",Message::Jobs(crate::tasks::JobMessage::Queue("fingerprints".into()))));
+                if self.manager.similar.is_empty() {
+                    content = content.push(muted(
+                        "没有找到已索引的近似图片。旧图片可先建立索引，再重新查询。",
+                    ));
+                }
+                for item in &self.manager.similar {
+                    content = content.push(crate::components::action(
+                        &format!("{} · 差异 {}", item.name, item.distance),
+                        Message::Journal(crate::journal::JournalMessage::OpenAsset(item.id)),
+                    ));
                 }
             }
             Some(Panel::Storage) => content = content.push(self.storage_panel()),
@@ -1531,7 +1670,10 @@ impl App {
                 }
             }
             Some(Panel::Synco) => {
-                content=content.push(muted("启动 Synco 0.4.1 或更新版本后发送。每张图片使用独立任务；精修结果保留为新版本，原片不会被覆盖。"))
+                content=content.push(checkbox(self.preferences.synco.auto_start).label("发送时自动启动 Synco").on_toggle(|v|Message::Manage(SyncoAutoStart(v))))
+                    .push(action("选择 Synco 程序",SyncoExecutable))
+                    .push(muted(self.preferences.synco.executable.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"自动查找安装位置".into())))
+                    .push(muted("需要 Synco 0.4.1 或更新版本。每张图片使用独立任务；精修结果保留为新版本，完成交接后自动回收发送副本。"))
                     .push(row![action("发送选中图片",SendSynco),action("立即检查 / 重试连接",SyncoPoll(true))].spacing(8));
                 if self.manager.synco_running {
                     content = content.push(muted("正在与 Synco 交接…"));
@@ -1544,9 +1686,19 @@ impl App {
                     if !task.error.is_empty() {
                         content = content.push(text(&task.error).size(12));
                     }
+                    if matches!(task.state.as_str(), "failed" | "cancelled") {
+                        content = content.push(action(
+                            "使用原交接版本创建新任务重试",
+                            SyncoRetry(task.id.clone()),
+                        ));
+                    }
                 }
             }
             Some(Panel::Filters) => {
+                content = content.push(crate::components::action(
+                    "EXIF 与 GPS 高级检索",
+                    Message::Metadata(MetadataMessage::Open),
+                ));
                 let q = &self.manager.filter;
                 for (field, label, values, selected) in [
                     (
@@ -1564,9 +1716,17 @@ impl App {
                             "HEIF",
                             "AVIF",
                             "RAW",
+                            "视频",
+                            "MP4",
+                            "MOV",
+                            "MKV",
+                            "WEBM",
+                            "AVI",
                         ],
                         if q.media_kind == MediaKind::Raw {
                             "RAW"
+                        } else if q.media_kind == MediaKind::Video {
+                            "视频"
                         } else if q.format.is_empty() {
                             "全部类型"
                         } else {
@@ -1579,6 +1739,11 @@ impl App {
                                 "heic" => "HEIC",
                                 "heif" => "HEIF",
                                 "avif" => "AVIF",
+                                "mp4" => "MP4",
+                                "mov" => "MOV",
+                                "mkv" => "MKV",
+                                "webm" => "WEBM",
+                                "avi" => "AVI",
                                 _ => "BMP",
                             }
                         },
@@ -1731,6 +1896,10 @@ impl App {
                     );
             }
             Some(Panel::Organize) => {
+                content = content.push(crate::components::action(
+                    "多字段编辑 / 选择全部查询结果",
+                    Message::Batch(BatchMessage::Open),
+                ));
                 content = content
                     .push(muted(format!(
                         "已选择 {} 张。多选模式中，点击图片可加入或移除选择。",
@@ -1813,6 +1982,10 @@ impl App {
                     );
                 if self.query.trash {
                     content = content.push(action("永久删除所选素材…", Purge));
+                    content = content.push(crate::components::action(
+                        "清空整库回收站…",
+                        Message::Deletion(DeletionMessage::EmptyTrash),
+                    ));
                 }
             }
             Some(Panel::Tags) => {
@@ -1829,17 +2002,19 @@ impl App {
                     .push(row![action("重命名 / 合并",RenameTag),action("删除标签及归类",DeleteTag)].spacing(8));
             }
             Some(Panel::ExportOptions) => {
-                let options = self.manager.export_options;
+                let options = self.manager.export_options.clone();
                 for (field, label, values, selected) in [
                     (
                         0,
                         "格式",
-                        vec!["原文件", "JPEG", "PNG", "WebP"],
+                        vec!["原文件", "JPEG", "PNG", "WebP", "TIFF", "BMP"],
                         match options.format {
                             ExportFormat::Original => "原文件",
                             ExportFormat::Jpeg => "JPEG",
                             ExportFormat::Png => "PNG",
                             ExportFormat::Webp => "WebP",
+                            ExportFormat::Tiff => "TIFF",
+                            ExportFormat::Bmp => "BMP",
                         }
                         .to_string(),
                     ),
@@ -1861,6 +2036,40 @@ impl App {
                         vec!["0", "90", "180", "270"],
                         options.rotate.to_string(),
                     ),
+                    (
+                        4,
+                        "重采样",
+                        vec!["面积平均", "Lanczos3", "双三次", "最近邻"],
+                        match options.resampling {
+                            Resampling::Area => "面积平均",
+                            Resampling::Lanczos3 => "Lanczos3",
+                            Resampling::Bicubic => "双三次",
+                            Resampling::Nearest => "最近邻",
+                        }
+                        .into(),
+                    ),
+                    (
+                        5,
+                        "目录布局",
+                        vec!["平铺", "按格式", "按导入日期"],
+                        match options.layout {
+                            ExportLayout::Flat => "平铺",
+                            ExportLayout::Format => "按格式",
+                            ExportLayout::ImportDate => "按导入日期",
+                        }
+                        .into(),
+                    ),
+                    (
+                        6,
+                        "整理信息",
+                        vec!["不附带", "附带整理信息 JSON"],
+                        if options.metadata_sidecar {
+                            "附带整理信息 JSON"
+                        } else {
+                            "不附带"
+                        }
+                        .into(),
+                    ),
                 ] {
                     content = content.push(row![
                         text(label).width(160).size(13),
@@ -1871,10 +2080,14 @@ impl App {
                         )
                     ]);
                 }
-                content=content.push(muted("最长边 0 表示不缩放；原文件配合缩放或旋转时输出 PNG。JPEG 透明区域使用白色背景，WebP 为无损编码。"))
+                content=content.push(checkbox(options.preserve_exif).label("保留 EXIF（JPEG / PNG / WebP 嵌入，其他格式附带 .exif）").on_toggle(|v|Message::Manage(ExportOption(7,v.to_string()))))
+                    .push(text_input("目录模板，例如 {year}/{month}/{camera}",&self.manager.export_options.directory_template).on_input(|v|Message::Manage(ExportOption(8,v))))
+                    .push(muted("留空使用上方目录选择。变量：{date}、{year}、{month}、{day} 为导入日期，{format}、{camera}、{project}。转换图统一嵌入 sRGB；不复制私有 MakerNote 和旧缩略图。"))
+                    .push(muted("最长边 0 表示不缩放；原文件配合缩放或旋转时输出 PNG。JPEG 透明区域使用白色背景，WebP 为无损编码。"))
                     .push(action("选择位置并导出",Export));
             }
             Some(Panel::Collections) => {
+                content = content.push(self.folders_panel());
                 content = content.push(
                     button("编辑组合条件…")
                         .style(secondary)
@@ -1908,6 +2121,11 @@ impl App {
             }
             Some(Panel::Project) => content = content.push(self.project_form()),
             Some(Panel::Maintenance) => {
+                content = content.push(crate::components::action(
+                    "清空整库回收站…",
+                    Message::Deletion(DeletionMessage::EmptyTrash),
+                ));
+                content = content.push(self.lifecycle_panel());
                 content = content.push(action("恢复中断的导入（每次最多 100 项）", Recover));
                 content=content.push(muted("备份包含托管原片、版本、项目、标签和 AI 数据，不包含可再生缓存及外部引用原片。引用文件需要另行备份。备份库可直接打开。"))
                     .push(action("选择库外位置备份",Backup))

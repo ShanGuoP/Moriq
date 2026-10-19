@@ -8,6 +8,9 @@ use iced::widget::{
 use iced::{Alignment, Border, Color, Length};
 impl App {
     pub(super) fn models(&self) -> Element<'_, Message> {
+        if !self.launch.design_preview {
+            return self.real_models();
+        }
         let categories = [
             ("人像", "category-portrait", 1842, Icon::Person),
             ("风景", "category-landscape", 2163, Icon::Landscape),

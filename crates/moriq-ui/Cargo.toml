@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 [dependencies]
+tracing.workspace = true
 moriq-domain.workspace = true
 moriq-app.workspace = true
 moriq-render.workspace = true

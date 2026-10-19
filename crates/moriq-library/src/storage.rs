@@ -12,6 +12,7 @@ pub struct Control {
     pub files: Arc<AtomicU64>,
 }
 pub struct Plan {
+    readers: Arc<read_pool::ReadPool>,
     root: PathBuf,
     id: LibraryId,
     _lease: Arc<File>,
@@ -19,6 +20,7 @@ pub struct Plan {
 impl Library {
     pub fn storage_plan(&self) -> Result<Plan> {
         Ok(Plan {
+            readers: self.readers.clone(),
             root: self.root.clone(),
             id: self.id(),
             _lease: self._lock.clone(),
@@ -96,17 +98,15 @@ impl Plan {
     }
     pub fn scan(self, control: &Control) -> Result<StorageStats> {
         let (volume_total, volume_available) = self.volume()?;
-        let source = Connection::open_with_flags(
-            self.root.join("catalog.db"),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
+        let connection = self.readers.checkout()?;
+        let source = connection.connection()?;
         let identity: String =
             source.query_row("SELECT id FROM library_identity", [], |r| r.get(0))?;
         if identity != self.id.to_string() {
             return Err(Error::Invalid("资源库身份已改变".into()));
         }
         let (managed,referenced)=source.query_row("SELECT coalesce(sum(CASE WHEN f.version_id IS NULL THEN v.bytes ELSE 0 END),0),coalesce(sum(CASE WHEN f.version_id IS NOT NULL THEN v.bytes ELSE 0 END),0) FROM asset_versions v LEFT JOIN file_locations f ON f.version_id=v.id",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        drop(source);
+        drop(connection);
         let mut result = StorageStats {
             managed_registered: managed,
             referenced_registered: referenced,

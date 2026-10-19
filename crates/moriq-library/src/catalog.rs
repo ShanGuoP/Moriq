@@ -500,6 +500,7 @@ mod tests {
                 max_edge: 30,
                 quality: 90,
                 rotate: 90,
+                ..Default::default()
             },
         )
         .unwrap();

@@ -1,12 +1,14 @@
 //! Bounded single-writer coordinator. UI never owns a DB connection or performs media I/O.
 use futures::{Stream, StreamExt, stream};
+mod cache;
 mod scan;
 use moriq_domain::*;
+use moriq_library::Library;
+pub use moriq_library::Pixels;
 pub use moriq_library::maintenance::Control as MaintenanceControl;
 use moriq_library::maintenance::Outcome as MaintenanceOutcome;
 pub use moriq_library::native::IMPORT_EXTENSIONS;
 pub use moriq_library::storage::Control as StorageControl;
-use moriq_library::{Library, Pixels};
 use std::{
     path::PathBuf,
     sync::{
@@ -18,6 +20,13 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const SOURCE_REPOSITORY_URL: &str = "https://github.com/ShanGuoP/Moriq";
+pub fn is_video_format(format: &str) -> bool {
+    moriq_library::video::EXTENSIONS.contains(&format)
+}
+pub use moriq_ai::{DownloadControl, Hardware, ModelInfo};
+pub use moriq_library::orphans::Plan as OrphanPlan;
+pub use moriq_library::region::Session as RegionSession;
+pub use moriq_library::video::Playback;
 
 pub async fn open_source_repository() -> Result<()> {
     tokio::task::spawn_blocking(|| {
@@ -40,6 +49,7 @@ type Job = Box<dyn FnOnce(&mut Option<Library>) + Send>;
 
 #[derive(Clone)]
 pub struct Service {
+    media_cache: Arc<cache::MediaCache>,
     queue: mpsc::Sender<Job>,
     import_slots: Arc<Semaphore>,
     import_memory: Arc<Semaphore>,
@@ -128,6 +138,500 @@ impl ImportControl {
     }
 }
 impl Service {
+    pub async fn orphan_plan(&self, id: LibraryId) -> Result<Arc<OrphanPlan>> {
+        self.read_plan(
+            128,
+            move |active| Ok(check(active, id)?.orphan_scan()),
+            |scan| scan.run().map(Arc::new).map_err(|e| e.to_string()),
+        )
+        .await
+    }
+    pub async fn quarantine_orphans(
+        &self,
+        id: LibraryId,
+        plan: Arc<OrphanPlan>,
+    ) -> Result<OrphanReport> {
+        let mut report = OrphanReport::default();
+        let mut cursor = String::new();
+        loop {
+            let source = plan.clone();
+            let after = cursor.clone();
+            let candidates =
+                tokio::task::spawn_blocking(move || source.page(&after).map_err(|e| e.to_string()))
+                    .await
+                    .map_err(|e| e.to_string())??;
+            let Some(last) = candidates.last() else { break };
+            cursor = last.cursor().to_string();
+            let source = plan.clone();
+            let current = self
+                .call(move |active| {
+                    check(active, id)?
+                        .quarantine_orphans(&source, candidates)
+                        .map_err(|e| e.to_string())
+                })
+                .await?;
+            report.moved += current.moved;
+            report.bytes += current.bytes;
+            report.skipped += current.skipped;
+        }
+        Ok(report)
+    }
+    pub async fn restore_orphans(&self, id: LibraryId, purge: bool) -> Result<OrphanReport> {
+        let mut report = OrphanReport::default();
+        let mut cursor = String::new();
+        loop {
+            let after = cursor.clone();
+            let (next, current) = self
+                .call(move |active| {
+                    check(active, id)?
+                        .restore_orphans_page(purge, &after)
+                        .map_err(|e| e.to_string())
+                })
+                .await?;
+            report.moved += current.moved;
+            report.bytes += current.bytes;
+            report.skipped += current.skipped;
+            if next == cursor {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(report)
+    }
+    pub async fn region_session(
+        &self,
+        id: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<Arc<RegionSession>> {
+        self.read_plan(
+            2048,
+            move |active| {
+                check(active, id)?
+                    .version_source(asset, version)
+                    .map_err(|e| e.to_string())
+            },
+            |source| source.regions().map(Arc::new).map_err(|e| e.to_string()),
+        )
+        .await
+    }
+    pub async fn region_tile(
+        &self,
+        id: LibraryId,
+        session: Arc<RegionSession>,
+        region: ImageRegion,
+    ) -> Result<Pixels> {
+        self.read_plan(
+            1024,
+            move |active| {
+                check(active, id)?;
+                Ok(session)
+            },
+            move |session| session.tile(region).map_err(|e| e.to_string()),
+        )
+        .await
+    }
+    pub async fn trim_cache(&self, id: LibraryId, clear: bool) -> Result<CacheReport> {
+        self.media_cache.clear();
+        self.read_plan(
+            128,
+            move |active| Ok(check(active, id)?.cache_plan()),
+            move |plan| {
+                plan.trim(if clear { 0 } else { 4 * 1024 * 1024 * 1024 })
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .await
+    }
+    pub async fn trash_snapshot(&self, id: LibraryId) -> Result<Vec<AssetId>> {
+        self.call(move |active| {
+            check(active, id)?
+                .trash_snapshot()
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn empty_trash(&self, id: LibraryId, assets: Vec<AssetId>) -> Result<PurgeReport> {
+        let mut report = PurgeReport::default();
+        for chunk in assets.chunks(1000) {
+            let ids = chunk.to_vec();
+            let current = self
+                .call(move |active| {
+                    check(active, id)?
+                        .purge_trash_chunk(&ids)
+                        .map_err(|e| e.to_string())
+                })
+                .await?;
+            report.deleted += current.deleted;
+            report.cleanup_pending |= current.cleanup_pending;
+        }
+        Ok(report)
+    }
+    pub async fn synco_preferences(&self, value: SyncoPreferences) -> Result<UserSettings> {
+        self.call(move |_| {
+            moriq_library::settings::synco_preferences(value).map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn retry_synco(&self, id: LibraryId, task: String) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .retry_synco(&task)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn saved_navigation(&self, id: LibraryId) -> Result<Option<SavedNavigation>> {
+        self.call(move |active| {
+            check(active, id)?
+                .saved_navigation()
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn save_navigation(&self, id: LibraryId, value: SavedNavigation) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .save_navigation(&value)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn ai_preferences(&self, value: AiPreferences) -> Result<UserSettings> {
+        let preferences = self
+            .call(move |_| {
+                moriq_library::settings::ai_preferences(value).map_err(|e| e.to_string())
+            })
+            .await?;
+        self.ai_policy(value).await?;
+        Ok(preferences)
+    }
+    pub async fn ai_policy(&self, value: AiPreferences) -> Result<()> {
+        tokio::task::spawn_blocking(move || moriq_ai::set_keep_loaded(!value.on_demand))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    pub async fn clone_library(&self, id: LibraryId, parent: PathBuf) -> Result<PathBuf> {
+        self.call(move |active| {
+            check(active, id)?
+                .clone_library(&parent)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn reconnect_root(
+        &self,
+        id: LibraryId,
+        old: PathBuf,
+        new: PathBuf,
+    ) -> Result<(u64, u64)> {
+        let mut cursor = String::new();
+        let mut connected = 0;
+        let mut skipped = 0;
+        loop {
+            let old = old.clone();
+            let new = new.clone();
+            let after = cursor.clone();
+            let (next, candidates) = self
+                .call(move |active| {
+                    check(active, id)?
+                        .reconnect_page(&old, &new, &after)
+                        .map_err(|e| e.to_string())
+                })
+                .await?;
+            if next == cursor {
+                break;
+            }
+            cursor = next;
+            for candidate in candidates {
+                let checked = tokio::task::spawn_blocking(move || candidate.verify())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                match checked {
+                    Ok(candidate) => {
+                        if self
+                            .call(move |active| {
+                                check(active, id)?
+                                    .apply_reconnect(candidate)
+                                    .map_err(|e| e.to_string())
+                            })
+                            .await?
+                        {
+                            connected += 1
+                        } else {
+                            skipped += 1
+                        }
+                    }
+                    Err(_) => skipped += 1,
+                }
+            }
+        }
+        Ok((connected, skipped))
+    }
+    pub async fn batch_edit(
+        &self,
+        id: LibraryId,
+        scope: BatchScope,
+        patch: BatchPatch,
+    ) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .enqueue_batch(scope, patch)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn folder_edit(&self, id: LibraryId, edit: FolderEdit) -> Result<()> {
+        self.call(move |active| {
+            let library = check(active, id)?;
+            match edit {
+                FolderEdit::Create(name, favorite) => {
+                    library.create_virtual_folder(&name, favorite).map(|_| ())
+                }
+                FolderEdit::Rename(folder, name) => library.rename_virtual_folder(&folder, &name),
+                FolderEdit::Delete(folder) => library.delete_virtual_folder(&folder),
+                FolderEdit::Members(folder, assets, add) => {
+                    library.virtual_folder_members(&folder, &assets, add)
+                }
+                FolderEdit::Cover(folder, asset) => library.virtual_folder_cover(&folder, asset),
+            }
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn semantic_search(&self, id: LibraryId, text: String) -> Result<Vec<AssetId>> {
+        if text.trim().is_empty() || text.len() > 4096 {
+            return Err("请输入1～4096字节的自然语言描述".into());
+        }
+        let result = tokio::task::spawn_blocking(move || {
+            moriq_ai::infer("chinese-clip", serde_json::json!({"text":text}))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let query: Vec<f32> =
+            serde_json::from_value(result["text_vector"].clone()).map_err(|e| e.to_string())?;
+        self.read_plan(
+            128,
+            move |active| {
+                check(active, id)?
+                    .semantic_plan()
+                    .map_err(|e| e.to_string())
+            },
+            move |plan| plan.search(&query, None).map_err(|e| e.to_string()),
+        )
+        .await
+    }
+    pub async fn search_by_image(&self, id: LibraryId, asset: AssetId) -> Result<Vec<AssetId>> {
+        let result = self
+            .read_plan(
+                2048,
+                move |active| {
+                    check(active, id)?
+                        .media_source(asset)
+                        .map_err(|e| e.to_string())
+                },
+                |source| moriq_library::analysis::run(source, "chinese-clip"),
+            )
+            .await?;
+        let query: Vec<f32> =
+            serde_json::from_value(result["image_vector"].clone()).map_err(|e| e.to_string())?;
+        self.read_plan(
+            128,
+            move |active| {
+                check(active, id)?
+                    .semantic_plan()
+                    .map_err(|e| e.to_string())
+            },
+            move |plan| plan.search(&query, Some(asset)).map_err(|e| e.to_string()),
+        )
+        .await
+    }
+    pub async fn recommendations(
+        &self,
+        id: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<Vec<(AssetId, String)>> {
+        self.read_plan(
+            64,
+            move |active| {
+                check(active, id)?
+                    .semantic_plan()
+                    .map_err(|e| e.to_string())
+            },
+            move |plan| {
+                plan.recommendations(asset, version)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .await
+    }
+    pub async fn models(&self) -> Result<(Vec<ModelInfo>, Hardware)> {
+        tokio::task::spawn_blocking(|| Ok((moriq_ai::inventory()?, moriq_ai::hardware())))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    pub async fn install_model(&self, model: String, control: DownloadControl) -> Result<()> {
+        tokio::task::spawn_blocking(move || moriq_ai::install(&model, &control))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    pub async fn uninstall_model(&self, model: String) -> Result<()> {
+        tokio::task::spawn_blocking(move || moriq_ai::uninstall(&model))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    pub async fn set_category(
+        &self,
+        id: LibraryId,
+        assets: Vec<AssetId>,
+        category: String,
+    ) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .set_category(&assets, &category)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn rename_person(&self, id: LibraryId, person: String, name: String) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .rename_person(&person, &name)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn merge_people(&self, id: LibraryId, source: String, target: String) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .merge_people(&source, &target)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn faces(&self, id: LibraryId, asset: AssetId) -> Result<Vec<Face>> {
+        self.call(move |active| check(active, id)?.faces(asset).map_err(|e| e.to_string()))
+            .await
+    }
+    pub async fn assign_face(
+        &self,
+        id: LibraryId,
+        face: String,
+        person: Option<String>,
+    ) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .assign_face(&face, person.as_deref())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn clear_ai_indexes(&self, id: LibraryId, model: String) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .clear_ai_indexes(&model)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn queue_media_job(&self, id: LibraryId, kind: String) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .enqueue_media_job(&kind, 0)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn control_job(&self, id: LibraryId, job: String, command: JobCommand) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .control_job(&job, command)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn job_failures(&self, id: LibraryId, job: String) -> Result<Vec<JobFailure>> {
+        self.call(move |active| {
+            check(active, id)?
+                .job_failures(&job)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn similar_assets(&self, id: LibraryId, asset: AssetId) -> Result<Vec<SimilarAsset>> {
+        self.read_plan(
+            64,
+            move |active| {
+                check(active, id)?
+                    .similarity_plan()
+                    .map_err(|e| e.to_string())
+            },
+            move |plan| plan.search(asset).map_err(|e| e.to_string()),
+        )
+        .await
+    }
+    pub async fn drive_job_step(&self, id: LibraryId) -> Result<()> {
+        let service = self.clone();
+        // A dropped UI future must not strand an in-flight checkpoint in an open library.
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            for _ in 0..64 {
+                let work = service
+                    .call(move |active| {
+                        check(active, id)?
+                            .claim_job_step()
+                            .map_err(|e| e.to_string())
+                    })
+                    .await?;
+                let Some(work) = work else { return Ok(()) };
+                let budget = work.memory_mib();
+                let (job, generation) = work.abort_token();
+                let memory = service
+                    .import_memory
+                    .clone()
+                    .acquire_many_owned(budget)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let outcome = tokio::task::spawn_blocking(move || {
+                    let _permit = memory;
+                    work.run()
+                })
+                .await;
+                let outcome = match outcome {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        let message = error.to_string();
+                        let detail = message.clone();
+                        let _ = service
+                            .call(move |active| {
+                                check(active, id)?
+                                    .abort_job(&job, generation, &detail)
+                                    .map_err(|e| e.to_string())
+                            })
+                            .await;
+                        return Err(message);
+                    }
+                };
+                service
+                    .call(move |active| {
+                        check(active, id)?
+                            .finish_job_step(outcome)
+                            .map_err(|e| e.to_string())
+                    })
+                    .await?;
+                if started.elapsed() >= std::time::Duration::from_millis(250) {
+                    break;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
     pub async fn import_preferences(&self, value: ImportPreferences) -> Result<UserSettings> {
         self.call(move |_| {
             moriq_library::settings::import_preferences(value).map_err(|e| e.to_string())
@@ -208,6 +712,12 @@ impl Service {
         .await
     }
     pub async fn synco_poll(&self, id: LibraryId) -> Result<usize> {
+        self.call(move |active| {
+            check(active, id)?
+                .cleanup_synco_copies()
+                .map_err(|e| e.to_string())
+        })
+        .await?;
         let tasks = self
             .call(move |active| {
                 check(active, id)?
@@ -218,7 +728,12 @@ impl Service {
         if tasks.is_empty() {
             return Ok(0);
         }
-        let client = moriq_synco::Client::discover().await?;
+        let settings = self.settings().await?;
+        let client = if settings.synco.auto_start {
+            moriq_synco::Client::discover_or_start(settings.synco.executable).await?
+        } else {
+            moriq_synco::Client::discover().await?
+        };
         let mut finished = 0;
         let mut failure = None;
         for task in tasks {
@@ -745,6 +1260,7 @@ impl Service {
         .await
     }
     pub async fn close(&self) -> Result<()> {
+        self.media_cache.clear();
         self.call(|active| {
             *active = None;
             Ok(())
@@ -847,6 +1363,7 @@ impl Service {
             import_memory: Arc::new(Semaphore::new(4096)),
             maintenance_slot: Arc::new(Semaphore::new(1)),
             read_slots: Arc::new(Semaphore::new(4)),
+            media_cache: Arc::new(Default::default()),
         })
     }
     async fn call<T: Send + 'static>(
@@ -888,7 +1405,7 @@ impl Service {
             }
             let library = Library::open(&path).map_err(|e| e.to_string())?;
             if active.as_ref().is_some_and(|current|current.id()==library.id()) {
-                return Err("检测到与当前库身份相同的副本。请关闭应用后打开迁移后的库；独立克隆功能尚未实现。".into());
+                return Err("检测到与当前库身份相同的副本。请关闭应用后打开迁移后的库；需要独立使用时请选择创建独立克隆。".into());
             }
             let opened = Opened {
                 info: library.info().map_err(|e| e.to_string())?,
@@ -1115,6 +1632,15 @@ impl Service {
         prepare: impl FnOnce(&mut Option<Library>) -> Result<P> + Send + 'static,
         work: impl FnOnce(P) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.read_plan_sized(move |_| memory_mib, prepare, work)
+            .await
+    }
+    async fn read_plan_sized<P: Send + 'static, T: Send + 'static>(
+        &self,
+        budget: impl FnOnce(&P) -> u32 + Send + 'static,
+        prepare: impl FnOnce(&mut Option<Library>) -> Result<P> + Send + 'static,
+        work: impl FnOnce(P) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         // Admit before freezing any handles: active and waiting media plans share four slots.
         let slots = self
             .read_slots
@@ -1123,6 +1649,7 @@ impl Service {
             .await
             .map_err(|e| e.to_string())?;
         let plan = self.dispatch(true, prepare).await?;
+        let memory_mib = budget(&plan);
         let memory = self
             .import_memory
             .clone()
@@ -1141,19 +1668,81 @@ impl Service {
         library: LibraryId,
         asset: AssetId,
     ) -> Result<moriq_library::media::Preview> {
-        self.read_plan(
-            1024,
-            move |active| {
-                check(active, library)?
-                    .media_source(asset)
-                    .map_err(|e| e.to_string())
+        let cache = self.media_cache.clone();
+        let prepare_cache = cache.clone();
+        self.read_plan_sized(
+            |(_, _, cached): &(_, _, Option<moriq_library::media::Preview>)| {
+                if cached.is_some() { 0 } else { 1024 }
             },
-            move |source| source.preview().map_err(|e| e.to_string()),
+            move |active| {
+                let source = check(active, library)?
+                    .media_source(asset)
+                    .map_err(|e| e.to_string())?;
+                let cached = source
+                    .cacheable()
+                    .then(|| prepare_cache.get((library, source.version(), 1600)))
+                    .flatten();
+                Ok((source.version(), source, cached))
+            },
+            move |(version, source, cached)| {
+                if let Some(value) = cached {
+                    return Ok(value);
+                }
+                let key = (library, version, 1600);
+                let cacheable = source.cacheable();
+                if cacheable && let Some(value) = cache.get(key) {
+                    return Ok(value);
+                }
+                let value = source.preview().map_err(|e| e.to_string())?;
+                if cacheable {
+                    cache.put(key, value.clone());
+                }
+                Ok(value)
+            },
         )
         .await
     }
     pub async fn preview(&self, library: LibraryId, asset: AssetId) -> Result<Pixels> {
         self.preview_full(library, asset).await.map(|p| p.image)
+    }
+    pub async fn preview_original(
+        &self,
+        library: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<Pixels> {
+        self.read_plan(
+            2048,
+            move |active| {
+                check(active, library)?
+                    .version_source(asset, version)
+                    .map_err(|e| e.to_string())
+            },
+            |source| {
+                source
+                    .preview_edge(0)
+                    .map(|p| p.image)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .await
+    }
+    pub async fn playback(
+        &self,
+        library: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<Arc<Playback>> {
+        self.read_plan(
+            64,
+            move |active| {
+                check(active, library)?
+                    .version_source(asset, version)
+                    .map_err(|e| e.to_string())
+            },
+            |s| s.playback().map_err(|e| e.to_string()),
+        )
+        .await
     }
     pub async fn compare_versions(
         &self,

@@ -2,6 +2,10 @@ use super::*;
 
 impl App {
     pub(super) fn clear_browsing(&mut self) {
+        self.regions.reset();
+        self.original_request += 1;
+        self.original_size = None;
+        self.playback = None;
         self.surfaces.viewer_y = None;
         self.surfaces.restoring_gallery = None;
         self.compare.clear();
@@ -44,6 +48,9 @@ impl App {
         task
     }
     pub(super) fn focus_tile(&mut self, tile: Tile) -> Task<Message> {
+        self.original_request += 1;
+        self.original_size = None;
+        self.playback = None;
         if let Some(handle) = self.preview_task.take() {
             handle.abort();
         }
@@ -113,7 +120,12 @@ impl App {
         )
         .abortable();
         self.preview_task = Some(handle);
-        Task::batch([task, self.refresh_details()])
+        let enlarged = if self.preview_expanded {
+            self.set_viewer(true)
+        } else {
+            Task::none()
+        };
+        Task::batch([task, self.refresh_details(), enlarged])
     }
     pub(super) fn browse_message(
         &mut self,
