@@ -59,7 +59,7 @@ impl Scan {
     pub fn run(self) -> Result<Plan> {
         let reader = self.readers.checkout()?;
         let source = reader.connection()?;
-        source.execute_batch("CREATE TEMP TABLE orphan_registered AS SELECT path FROM asset_versions UNION SELECT path FROM operation_journal UNION SELECT source FROM purge_files;CREATE UNIQUE INDEX orphan_registered_path ON orphan_registered(path);")?;
+        source.execute_batch("CREATE TEMP TABLE orphan_registered AS SELECT path FROM asset_versions UNION SELECT path FROM project_files UNION SELECT path FROM operation_journal UNION SELECT source FROM purge_files;CREATE UNIQUE INDEX orphan_registered_path ON orphan_registered(path);")?;
         let temporary = tempfile::NamedTempFile::new()?;
         let mut db = Connection::open(temporary.path())?;
         db.execute_batch("PRAGMA journal_mode=OFF;PRAGMA synchronous=OFF;PRAGMA cache_size=-2048;CREATE TABLE candidates(path TEXT PRIMARY KEY,bytes INTEGER,modified INTEGER,identity TEXT);")?;
@@ -155,7 +155,7 @@ impl Library {
         fs::create_dir_all(safe_path(&self.root, "recovery/orphans")?)?;
         let mut report = OrphanReport::default();
         for candidate in candidates {
-            let exists:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM asset_versions WHERE path=?1 UNION ALL SELECT 1 FROM operation_journal WHERE path=?1 UNION ALL SELECT 1 FROM purge_files WHERE source=?1)",[&candidate.path],|r|r.get(0))?;
+            let exists:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM asset_versions WHERE path=?1 UNION ALL SELECT 1 FROM project_files WHERE path=?1 UNION ALL SELECT 1 FROM operation_journal WHERE path=?1 UNION ALL SELECT 1 FROM purge_files WHERE source=?1)",[&candidate.path],|r|r.get(0))?;
             if exists {
                 report.skipped += 1;
                 continue;
@@ -274,7 +274,7 @@ impl Library {
                 }
             } else {
                 let source = safe_path(&self.root, &original)?;
-                let registered:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM asset_versions WHERE path=?1 UNION ALL SELECT 1 FROM operation_journal WHERE path=?1)",[&original],|r|r.get(0))?;
+                let registered:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM asset_versions WHERE path=?1 UNION ALL SELECT 1 FROM project_files WHERE path=?1 UNION ALL SELECT 1 FROM operation_journal WHERE path=?1 UNION ALL SELECT 1 FROM purge_files WHERE source=?1)",[&original],|r|r.get(0))?;
                 if source.exists() || registered || !target.is_file() {
                     report.skipped += 1;
                     continue;

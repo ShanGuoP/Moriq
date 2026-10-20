@@ -7,6 +7,7 @@ struct Stored {
     recent: Vec<Recent>,
     english: bool,
     import: ImportPreferences,
+    diagnostic_logging: bool,
 }
 #[derive(Serialize, Deserialize)]
 struct Recent {
@@ -60,6 +61,13 @@ pub fn language(english: bool) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+pub fn diagnostic_logging(enabled: bool) -> Result<UserSettings> {
+    let folder = location()?;
+    let mut prefs = load_from(&folder)?;
+    prefs.diagnostic_logging = enabled;
+    save_to(&folder, &prefs)?;
+    Ok(prefs)
+}
 pub fn import_preferences(value: ImportPreferences) -> Result<UserSettings> {
     let value = value
         .validated()
@@ -90,6 +98,7 @@ fn load_from(folder: &Path) -> Result<UserSettings> {
         ai: stored.ai,
         recent,
         english: stored.english,
+        diagnostic_logging: stored.diagnostic_logging,
         import: stored
             .import
             .validated()
@@ -115,6 +124,7 @@ fn save_to(folder: &Path, prefs: &UserSettings) -> Result<()> {
         ai: prefs.ai,
         recent,
         english: prefs.english,
+        diagnostic_logging: prefs.diagnostic_logging,
         import: prefs.import,
     };
     let serialized = toml::to_string_pretty(&stored).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -231,6 +241,7 @@ mod tests {
             ai: Default::default(),
             recent: vec![("摄影".into(), dir.path().join("中文 库.moriq"))],
             english: true,
+            diagnostic_logging: true,
             import: ImportPreferences {
                 workers: 12,
                 memory_mib: 2048,
@@ -240,6 +251,7 @@ mod tests {
         let loaded = load_from(dir.path()).unwrap();
         assert_eq!(loaded.recent, prefs.recent);
         assert!(loaded.english);
+        assert!(loaded.diagnostic_logging);
         assert_eq!(loaded.import, prefs.import);
         fs::write(dir.path().join("settings.toml"), "[broken").unwrap();
         assert!(load_from(dir.path()).is_err());

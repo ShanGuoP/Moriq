@@ -18,6 +18,10 @@ pub struct Outcome {
     analysis: Option<std::result::Result<serde_json::Value, String>>,
 }
 impl Work {
+    pub fn run_cancelable(self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Outcome {
+        let _scope = crate::cancel::Scope::enter(flag.clone());
+        self.run_controlled(&flag)
+    }
     pub fn abort_token(&self) -> (String, i64) {
         (self.job.clone(), self.generation)
     }
@@ -30,7 +34,17 @@ impl Work {
             1024
         }
     }
-    pub fn run(mut self) -> Outcome {
+    pub fn run(self) -> Outcome {
+        self.run_controlled(&std::sync::atomic::AtomicBool::new(false))
+    }
+    pub fn run_controlled(mut self, cancel: &std::sync::atomic::AtomicBool) -> Outcome {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Outcome {
+                work: self,
+                image: Err("任务已停止".into()),
+                analysis: None,
+            };
+        }
         if self.kind == "integrity" {
             let result = match std::mem::replace(&mut self.source, Ok(None)) {
                 Err(e) => Err(e),
@@ -70,13 +84,18 @@ impl Work {
             let analysis = match std::mem::replace(&mut self.source, Ok(None)) {
                 Err(e) => Err(e),
                 Ok(None) => Ok(serde_json::json!({})),
-                Ok(Some(source)) => crate::analysis::run(source, &model).and_then(|mut result| {
-                    if model == "faces" {
-                        crate::analysis::suggest_people(&self.readers, &self.version, &mut result)
+                Ok(Some(source)) => crate::analysis::run_controlled(source, &model, cancel)
+                    .and_then(|mut result| {
+                        if model == "faces" {
+                            crate::analysis::suggest_people(
+                                &self.readers,
+                                &self.version,
+                                &mut result,
+                            )
                             .map_err(|e| e.to_string())?;
-                    }
-                    Ok(result)
-                }),
+                        }
+                        Ok(result)
+                    }),
             };
             return Outcome {
                 work: self,
@@ -103,6 +122,11 @@ impl Work {
     }
 }
 impl Library {
+    pub fn pause_jobs_after_error(&mut self, error: &str) -> Result<()> {
+        let error = error.chars().take(4096).collect::<String>();
+        self.db.execute("UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1,error=?1 WHERE state IN('queued','running')",[error])?;
+        Ok(())
+    }
     pub fn job_failures(&self, job: &str) -> Result<Vec<JobFailure>> {
         let mut stmt=self.db.prepare("SELECT a.id,coalesce(a.name,e.version_id),e.message FROM background_job_errors e LEFT JOIN asset_versions v ON v.id=e.version_id LEFT JOIN assets a ON a.id=v.asset_id WHERE e.job_id=?1 ORDER BY e.seq LIMIT 100")?;
         let rows = stmt

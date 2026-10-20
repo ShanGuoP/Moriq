@@ -15,8 +15,12 @@ use uuid::Uuid;
 
 const SCHEMA: u32 = 22;
 pub mod analysis;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod audit_round2;
 mod batch;
 pub mod cache;
+mod cancel;
 mod catalog;
 mod color;
 pub mod export;
@@ -33,6 +37,7 @@ pub mod media;
 pub mod metadata;
 pub mod native;
 pub mod orphans;
+pub mod portraits;
 #[cfg(target_os = "macos")]
 mod raw_portable;
 mod read_pool;
@@ -156,6 +161,7 @@ pub fn safe_path(root: &Path, relative: &str) -> Result<PathBuf> {
 impl Library {
     pub fn rename(&mut self, name: &str) -> Result<()> {
         let name = name.trim().trim_end_matches(".moriq").trim();
+        import::validate_component(name)?;
         if name.is_empty()
             || name.len() > 120
             || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
@@ -228,10 +234,13 @@ impl Library {
             )?;
         }
         fs::rename(staging.path(), &destination)?;
-        Self::open(&destination)
+        Self::open_inner(&destination, true)
     }
 
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_inner(root, false)
+    }
+    fn open_inner(root: &Path, fresh: bool) -> Result<Self> {
         let root = root.canonicalize()?;
         let manifest_file = safe_path(&root, "library.toml")?;
         if fs::metadata(&manifest_file)?.len() > 64 * 1024 {
@@ -239,12 +248,13 @@ impl Library {
         }
         let mut manifest: Manifest = toml::from_str(&fs::read_to_string(manifest_file)?)
             .map_err(|_| Error::Invalid("资源库清单损坏，请从备份恢复".into()))?;
+        import::validate_component(&manifest.name)?;
         if manifest.format != "moriq"
             || !(1..=SCHEMA).contains(&manifest.schema_version)
             || manifest.min_reader_version > SCHEMA
         {
             return Err(Error::Invalid(
-                "资源库格式不兼容，请使用对应版本的 MORIQ".into(),
+                "资源库格式不兼容，请使用对应版本的 Moriq Space".into(),
             ));
         }
         let lock = OpenOptions::new()
@@ -268,116 +278,135 @@ impl Library {
                 "资源库清单与数据库身份不一致，已停止打开".into(),
             ));
         }
-        if version == 1 {
+        let migration_backup = if version < SCHEMA && !fresh {
             // Retain a consistent pre-migration database before changing the schema.
             let backup = safe_path(&root, "backups")?;
             fs::create_dir_all(&backup)?;
-            let backup = backup.join(format!("schema-1-{}.db", Uuid::new_v4()));
+            let backup = backup.join(format!("schema-{version}-{}.db", Uuid::new_v4()));
             db.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_2.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 2 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_3.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 3 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_4.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 4 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_5.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 5 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_6.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 6 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_7.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 7 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_8.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 8 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_9.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 9 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_10.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 10 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_11.sql"))?;
-            tx.commit()?;
-        }
-        // Older readers ignore unknown Query fields and would broaden saved rules.
-        if version <= 11 {
-            db.execute_batch("PRAGMA user_version=12;")?;
-        }
-        if version <= 12 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_13.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 13 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_14.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 14 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_15.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 15 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_16.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 16 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_17.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 17 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_18.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 18 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_19.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 19 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_20.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 20 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_21.sql"))?;
-            tx.commit()?;
-        }
-        if version <= 21 {
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("migration_22.sql"))?;
-            tx.commit()?;
-        }
+            tracing::info!(path = %backup.display(), "pre-migration database snapshot saved");
+            Some(backup)
+        } else {
+            None
+        };
+        let migrations = (|| -> Result<()> {
+            if version == 1 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_2.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 2 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_3.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 3 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_4.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 4 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_5.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 5 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_6.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 6 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_7.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 7 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_8.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 8 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_9.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 9 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_10.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 10 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_11.sql"))?;
+                tx.commit()?;
+            }
+            // Older readers ignore unknown Query fields and would broaden saved rules.
+            if version <= 11 {
+                db.execute_batch("PRAGMA user_version=12;")?;
+            }
+            if version <= 12 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_13.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 13 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_14.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 14 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_15.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 15 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_16.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 16 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_17.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 17 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_18.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 18 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_19.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 19 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_20.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 20 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_21.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 21 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_22.sql"))?;
+                tx.commit()?;
+            }
+            Ok(())
+        })();
+        migrations.map_err(|error| {
+            Error::Invalid(match &migration_backup {
+                Some(path) => format!(
+                    "数据库升级未完成：{error}。升级前备份保留在 {}",
+                    path.display()
+                ),
+                None => error.to_string(),
+            })
+        })?;
         db.execute("UPDATE background_jobs SET inflight=0,state=CASE WHEN state='running' THEN 'queued' ELSE state END WHERE inflight=1 OR state='running'",[])?;
+        db.execute("UPDATE background_jobs SET state='paused',error='库中含外部引用，后台读取已暂停；请核对来源后在任务中继续' WHERE state='queued' AND kind<>'batch' AND EXISTS(SELECT 1 FROM file_locations)",[])?;
         if manifest.schema_version < SCHEMA {
             manifest.schema_version = SCHEMA;
             manifest.min_reader_version = SCHEMA;
@@ -411,8 +440,28 @@ impl Library {
             snapshot: None,
             last_import: Default::default(),
         };
-        library.recover_purges()?;
+        if let Some(path) = migration_backup {
+            library.notice(&Notice {
+                title: "升级前数据库已备份".into(),
+                detail: format!("数据库升级前的完整快照：{}", path.display()),
+                level: 0,
+                asset: None,
+                retry: String::new(),
+            })?;
+        }
+        if let Err(error) = library.recover_purges() {
+            library.notice(&Notice {
+                title: "删除恢复需要检查".into(),
+                detail: format!(
+                    "{error}。恢复记录及现存文件均保留；请检查空间维护或从备份恢复后再永久删除。"
+                ),
+                level: 2,
+                asset: None,
+                retry: "maintenance".into(),
+            })?;
+        }
         library.recover_orphans()?;
+        library.clean_import_staging()?;
         Ok(library)
     }
 
@@ -552,7 +601,9 @@ impl Library {
         .iter()
         .map(|p| {
             p.to_sql().and_then(|v| match v {
-                rusqlite::types::ToSqlOutput::Borrowed(value) => Ok(value.into()),
+                rusqlite::types::ToSqlOutput::Borrowed(value) => value
+                    .try_into()
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error))),
                 rusqlite::types::ToSqlOutput::Owned(value) => Ok(value),
                 _ => Err(rusqlite::Error::InvalidParameterName(
                     "unsupported rule parameter".into(),
@@ -724,9 +775,10 @@ impl Library {
         let copied = std::io::copy(&mut input.take(limit + 1), &mut output)?;
         output.sync_all()?;
         drop(output);
-        if copied > limit {
+        if copied > limit || copied != length {
             return Err(Error::Invalid("读取期间媒体超出文件大小预算".into()));
         }
+        ingest::staged_receipt(&self.root, &operation, copied)?;
         self.last_import.copy_ms = stage_started.elapsed().as_secs_f64() * 1000.0;
         let result = self.install(
             &staged,
@@ -741,6 +793,10 @@ impl Library {
         );
         match result {
             Ok(imported) => {
+                let _ = fs::remove_file(safe_path(
+                    &self.root,
+                    &format!("staging/{operation}.ready"),
+                )?);
                 if let Err(error) = fs::remove_file(&staged) {
                     tracing::warn!(%error,operation,"committed import staging cleanup deferred");
                 }
@@ -751,6 +807,7 @@ impl Library {
                         [&operation],
                     )?;
                 }
+                self.forget_import(&operation)?;
                 Ok(imported)
             }
             Err(error) => {
@@ -828,16 +885,20 @@ impl Library {
         let duplicate: Option<String> = self
             .db
             .query_row(
-                "SELECT asset_id FROM asset_versions WHERE sha256=?1 LIMIT 1",
-                [&hash],
+                "SELECT v.asset_id FROM asset_versions v JOIN assets a ON a.id=v.asset_id WHERE v.sha256=?1 AND v.bytes=?2 ORDER BY a.deleted_at IS NOT NULL LIMIT 1",
+                params![hash, fs::metadata(staged)?.len()],
                 |r| r.get(0),
             )
             .optional()?;
         if let Some(existing) = duplicate {
+            let asset = AssetId(parse_id(&existing)?);
+            if self.asset_trash_state(asset)? == Some(true) {
+                self.edit(&[asset], &Edit::Trash(false))?;
+            }
             if !referenced && let Some(project) = project {
                 let existing_version: String = self.db.query_row(
-                    "SELECT id FROM asset_versions WHERE sha256=?1 LIMIT 1",
-                    [&hash],
+                    "SELECT id FROM asset_versions WHERE sha256=?1 AND bytes=?2 LIMIT 1",
+                    params![hash, fs::metadata(staged)?.len()],
                     |r| r.get(0),
                 )?;
                 self.duplicate_project_file(
@@ -990,6 +1051,7 @@ impl Library {
         Ok(())
     }
     pub fn create_project(&self, name: &str) -> Result<ProjectId> {
+        import::validate_component(name.trim())?;
         if name.trim().is_empty() || name.len() > 1024 {
             return Err(Error::Invalid("项目名不能为空且最多 1024 字节".into()));
         }

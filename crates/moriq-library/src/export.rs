@@ -26,12 +26,14 @@ impl Library {
     }
 }
 pub fn run(items: Vec<Item>, parent: &Path, options: ExportOptions) -> Result<PathBuf> {
-    if options.max_edge > 30000
+    if options.max_edge > native::MAX_OUTPUT_EDGE
         || options.quality == 0
         || options.quality > 100
         || ![0, 90, 180, 270].contains(&options.rotate)
     {
-        return Err(Error::Invalid("导出尺寸、质量或旋转角度无效".into()));
+        return Err(Error::Invalid(
+            "导出尺寸应为 0～8192 像素，质量为 1～100，旋转为 0/90/180/270 度".into(),
+        ));
     }
     let parent = parent.canonicalize()?;
     // Reject writing inside a library even when the plan comes from another source library.
@@ -96,7 +98,11 @@ pub fn run(items: Vec<Item>, parent: &Path, options: ExportOptions) -> Result<Pa
             })
             .collect();
         let stem = stem.trim_end_matches([' ', '.']);
-        let stem = if stem.is_empty() { "图片" } else { stem };
+        let stem = if stem.is_empty() || import::reserved_component(stem) {
+            "图片"
+        } else {
+            stem
+        };
         let folder = if !options.directory_template.trim().is_empty() {
             export_metadata::directory(
                 &options.directory_template,
@@ -247,7 +253,7 @@ pub fn run(items: Vec<Item>, parent: &Path, options: ExportOptions) -> Result<Pa
         }
         fs::remove_file(frozen)?;
     }
-    let destination = parent.join(format!("MORIQ-导出-{}", Uuid::new_v4()));
+    let destination = parent.join(format!("Moriq Space-导出-{}", Uuid::new_v4()));
     fs::rename(stage.path(), &destination)?;
     Ok(destination)
 }

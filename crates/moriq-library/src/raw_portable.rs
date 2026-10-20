@@ -53,6 +53,11 @@ pub fn decode(path: &Path, edge: u32) -> Result<native::Decoded> {
         .spawn()?;
     let start = Instant::now();
     loop {
+        if crate::cancel::stopped() {
+            let _ = child.kill();
+            let _ = child.wait();
+            crate::cancel::check()?;
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {

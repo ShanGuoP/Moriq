@@ -35,6 +35,10 @@ impl App {
             "回收站".into()
         } else if self.query.favorites_only {
             "收藏夹".into()
+        } else if !self.query.category.is_empty() {
+            self.query.category.clone()
+        } else if self.query.person.is_some() {
+            "人物素材".into()
         } else if let Some(project) = self.query.project {
             self.library
                 .as_ref()
@@ -1000,9 +1004,20 @@ impl App {
             .spacing(20)
             .align_y(Alignment::Center),
             row![
-                muted(match self.original_size {
-                    Some((w, h)) => format!("原尺寸 {w} × {h} · 滚轮缩放 · 拖动平移"),
-                    None => "预览 · 滚轮缩放 · 拖动平移".into(),
+                muted(
+                    match self.original_size.or_else(|| self
+                        .selected
+                        .as_ref()
+                        .map(|asset| (asset.width, asset.height)))
+                    {
+                        Some((w, h)) => format!("原尺寸 {w} × {h} · 滚轮缩放 · 拖动平移"),
+                        None => "预览 · 滚轮缩放 · 拖动平移".into(),
+                    }
+                ),
+                muted(if self.preview_task.is_some() {
+                    "正在读取清晰预览…"
+                } else {
+                    ""
                 }),
                 Space::new().width(Length::Fill),
                 button(text("100%").size(13))

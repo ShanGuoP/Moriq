@@ -1,5 +1,19 @@
 use std::{env, path::PathBuf};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let codec_runtime =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/codecs/runtime");
+    let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR missing")?);
+    let checksum = codec_runtime.join("checksums.json");
+    println!("cargo:rerun-if-changed={}", checksum.display());
+    println!(
+        "cargo:rustc-env=MORIQ_DEV_CODECS_ROOT={}",
+        codec_runtime.display()
+    );
+    if checksum.is_file() {
+        std::fs::copy(&checksum, output.join("codecs-checksums.json"))?;
+    } else {
+        std::fs::write(output.join("codecs-checksums.json"), "{}")?;
+    }
     println!("cargo:rerun-if-changed=native/wic-worker.cpp");
     println!("cargo:rerun-if-changed=native/raw-worker.cpp");
     println!("cargo:rerun-if-changed=native/raw-budget.h");
@@ -101,6 +115,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::copy(source.join("bin/libraw.dll"), runtime.join("libraw.dll"))?;
         println!("cargo:rustc-cfg=bundled_libraw");
     } else {
+        if env::var("PROFILE").as_deref() == Ok("release") {
+            return Err("Release requires bundled LibRaw; run scripts/prepare-codecs.ps1".into());
+        }
         println!(
             "cargo:warning=LibRaw missing: run scripts/prepare-codecs.ps1 before a release build"
         );
@@ -132,6 +149,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("Video worker build failed".into());
         }
         println!("cargo:rustc-cfg=bundled_video");
+    } else if env::var("PROFILE").as_deref() == Ok("release") {
+        return Err("Release requires bundled video codecs; run scripts/prepare-codecs.ps1".into());
     }
     Ok(())
 }

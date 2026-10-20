@@ -14,6 +14,9 @@ pub use folders::FolderMessage;
 pub use lifecycle::LifecycleMessage;
 pub use metadata::MetadataMessage;
 pub use regions::RegionMessage;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod audit_round2;
 mod browsing;
 mod compare;
 mod deletion;
@@ -194,16 +197,19 @@ mod tests {
         };
         drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
             LibraryId::default(),
+            app.projection_request,
             Ok(loaded()),
         ))));
         assert!(app.manager.category_covers.is_empty());
         drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
             owner,
+            app.projection_request,
             Ok(loaded()),
         ))));
         assert!(app.manager.category_covers.contains_key("风景"));
         drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
             owner,
+            app.projection_request,
             Ok(LoadedOverview::default()),
         ))));
         assert!(app.manager.category_covers.is_empty());
@@ -722,6 +728,7 @@ mod tests {
         assert!(app.manager.notes_dirty);
         drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
             LibraryId::default(),
+            app.projection_request,
             Ok(Organizer {
                 trash_count: 100,
                 ..Default::default()
@@ -839,6 +846,7 @@ pub enum Message {
     ProjectCreated(LibraryId, Result<ProjectId, String>),
     Dismiss,
     Language,
+    DiagnosticLogging(bool),
     Captured(iced::window::Screenshot),
     CaptureSaved(Result<(), String>),
     ResourcesLoaded(Result<assets::Artwork, String>),
@@ -867,6 +875,7 @@ pub enum Message {
     ToggleRetainIndexes,
     PlatformDone(&'static str, Result<(), String>),
     OpenSourceRepository,
+    OpenModelsDirectory,
     ShutdownReady(Result<(), String>),
     ShowRenameLibrary,
     ShowRenameAsset,
@@ -958,6 +967,8 @@ pub struct App {
     english: bool,
     launch: LaunchOptions,
     capture_ticks: u8,
+    projection_request: u64,
+    navigation_request: u64,
     page_task: Option<iced::task::Handle>,
     preview_task: Option<iced::task::Handle>,
     locale: std::sync::Arc<i18n::Locale>,
@@ -992,6 +1003,9 @@ fn native_window_style() -> iced::window::settings::PlatformSpecific {
     }
 }
 
+pub fn diagnostic_logging_enabled() -> bool {
+    moriq_app::diagnostic_logging_enabled()
+}
 pub fn run(launch: LaunchOptions) -> iced::Result {
     let initial_size = Size::new(1660.0, 940.0);
     let window_icon = launch.window_icon.clone();
@@ -1007,7 +1021,7 @@ pub fn run(launch: LaunchOptions) -> iced::Result {
         App::update,
         App::view,
     )
-    .title("MORIQ 墨屿")
+    .title("Moriq Space")
     .theme(|_: &App| theme::application_theme())
     .default_font(Font {
         family: iced::font::Family::Name("Microsoft YaHei UI"),
@@ -1139,6 +1153,8 @@ impl App {
                 english: false,
                 launch,
                 capture_ticks: 0,
+                projection_request: 0,
+                navigation_request: 0,
                 page_task: None,
                 preview_task: None,
                 locale,
@@ -1241,6 +1257,8 @@ impl App {
     }
     fn reset_query(&mut self) -> Task<Message> {
         self.clear_browsing();
+        self.pending_scroll = None;
+        self.surfaces.restoring_gallery = None;
         self.layout_generation += 1;
         if let Some(handle) = self.masonry_task.take() {
             handle.abort();
@@ -1634,6 +1652,7 @@ impl App {
             }
             Message::LibraryCardsLoaded(Err(error)) => self.error = Some(error),
             Message::ShowLibraries if !self.manager.busy => {
+                self.stop_viewer();
                 self.library_picker = true;
                 self.screen = Screen::Overview;
                 self.preview_expanded = false;
@@ -1737,6 +1756,11 @@ impl App {
             Message::OpenSourceRepository => {
                 return Task::perform(moriq_app::open_source_repository(), |r| {
                     Message::PlatformDone("已请求在浏览器中打开项目开源地址", r)
+                });
+            }
+            Message::OpenModelsDirectory => {
+                return Task::perform(moriq_app::open_models_directory(), |r| {
+                    Message::PlatformDone("已请求打开模型文件夹", r)
                 });
             }
             Message::PlatformDone(success, result) => match result {
@@ -1996,6 +2020,9 @@ impl App {
                             _ => Screen::Overview,
                         };
                         self.manager = Default::default();
+                        self.stop_people_portraits();
+                        self.ai.portraits.clear();
+                        self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
                         self.query = Query::default();
                         self.error = None;
                         self.status = self.tr("text_001").into();
@@ -2016,6 +2043,9 @@ impl App {
                 }
             }
             Message::Navigate(screen) => {
+                if screen != 1 {
+                    self.stop_viewer();
+                }
                 self.library_picker = false;
                 self.manager.panel = None;
                 self.dialog = None;
@@ -2144,7 +2174,11 @@ impl App {
             }
             Message::ImportPreference(field, value) => match field {
                 0 => self.preferences.import.workers = value.parse().unwrap_or(0),
-                1 => self.preferences.import.memory_mib = value.parse().unwrap_or(1024),
+                1 => {
+                    self.preferences.import.memory_mib = value
+                        .parse()
+                        .unwrap_or(ImportPreferences::default().memory_mib)
+                }
                 _ => {}
             },
             Message::SaveImportPreferences => {
@@ -2237,6 +2271,18 @@ impl App {
             Message::Batch(event) => return self.batch_message(event),
             Message::Lifecycle(event) => return self.lifecycle_message(event),
             Message::Tick => {
+                if self.manager.panel != Some(manage::Panel::People) {
+                    self.stop_people_portraits();
+                } else if self.ai.portrait_cancel.load(Ordering::Acquire) {
+                    return self.refresh_people_portraits();
+                }
+                if (self.screen != Screen::Assets || self.library_picker)
+                    && (self.preview_expanded
+                        || self.playback.is_some()
+                        || self.regions.session.is_some())
+                {
+                    self.stop_viewer();
+                }
                 if self
                     .playback
                     .as_ref()
@@ -2250,8 +2296,15 @@ impl App {
                 }
                 if let Some(import) = &self.import {
                     let finished = import.finished.load(Ordering::Relaxed);
-                    if finished > self.manager.import_seen && !self.loading {
+                    if finished > self.manager.import_seen
+                        && !self.loading
+                        && self
+                            .manager
+                            .import_refreshed
+                            .is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
+                    {
                         self.manager.import_seen = finished;
+                        self.manager.import_refreshed = Some(std::time::Instant::now());
                         return Task::batch([self.refresh(), self.refresh_info()]);
                     }
                 }
@@ -2321,8 +2374,37 @@ impl App {
                     {
                         return self.deletion_message(DeletionMessage::Next);
                     }
+                    if self.capture_ticks == 8
+                        && self.launch.panel.as_deref() == Some("actual-regions")
+                    {
+                        return self.region_message(RegionMessage::Actual);
+                    }
+                    if self.capture_ticks == 8
+                        && self.launch.panel.as_deref() == Some("viewer-leave")
+                    {
+                        return self.commit_navigation(Message::Navigate(2));
+                    }
                     if self.capture_ticks == 2 {
                         match self.launch.panel.as_deref() {
+                            Some("ai-refresh") => {
+                                return self.job_message(tasks::JobMessage::Queue(
+                                    "analysis:chinese-clip".into(),
+                                ));
+                            }
+                            Some("people") => {
+                                return self.ai_message(AiMessage::People);
+                            }
+                            Some("category-gallery") => {
+                                if let Some((category, _)) =
+                                    self.manager.organizer.ai_categories.first()
+                                {
+                                    return self.update(Message::Ai(AiMessage::Category(
+                                        category.clone(),
+                                    )));
+                                }
+                                self.capture_ticks = 1;
+                                return self.job_tick();
+                            }
                             Some("model-switch") if self.screen == Screen::Models => {
                                 if let Some((_, path)) = self.preferences.recent.get(1) {
                                     return self.update(Message::Ai(AiMessage::SwitchLibrary(
@@ -2368,7 +2450,7 @@ impl App {
                             Some("location") => {
                                 return self.manage_message(ManageMessage::Location);
                             }
-                            Some("expanded") => {
+                            Some("expanded" | "actual-regions" | "viewer-leave") => {
                                 return self.set_viewer(true);
                             }
                             Some("compare") => return self.compare_message(CompareMessage::Open),
@@ -2398,6 +2480,27 @@ impl App {
                         };
                     }
                     if self.capture_ticks == 12 {
+                        if self.launch.panel.as_deref() == Some("people")
+                            && (self.manager.organizer.people.is_empty()
+                                || self
+                                    .manager
+                                    .organizer
+                                    .people
+                                    .iter()
+                                    .filter(|p| p.count > 0)
+                                    .any(|p| !self.ai.portraits.contains_key(&p.id)))
+                        {
+                            self.capture_ticks = 11;
+                            return self.job_tick();
+                        }
+                        if self.launch.panel.as_deref() == Some("ai-refresh")
+                            && (!self.manager.organizer.jobs.iter().any(|job| {
+                                job.kind == "analysis:chinese-clip" && job.state == "completed"
+                            }) || self.manager.organizer.ai_categories.is_empty())
+                        {
+                            self.capture_ticks = 11;
+                            return self.job_tick();
+                        }
                         return iced::window::oldest()
                             .and_then(iced::window::screenshot)
                             .map(Message::Captured);
@@ -2594,6 +2697,7 @@ impl App {
                         .as_ref()
                         .is_some_and(|a| a.id == id && a.version_id == version) =>
             {
+                self.preview_task = None;
                 match result {
                     Ok((preview, background)) => {
                         if self.original_size.is_none() || self.regions.session.is_some() {
@@ -2815,6 +2919,14 @@ impl App {
             }
             Message::Dismiss => self.error = None,
             Message::Language => self.english = !self.english,
+            Message::DiagnosticLogging(enabled) => {
+                self.preferences.diagnostic_logging = enabled;
+                let service = self.service.clone();
+                return Task::perform(
+                    async move { service.diagnostic_logging(enabled).await },
+                    Message::SettingsLoaded,
+                );
+            }
             _ => {}
         }
         Task::none()

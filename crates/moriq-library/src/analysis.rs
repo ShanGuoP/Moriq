@@ -112,6 +112,13 @@ pub fn model_revision(id: &str) -> Result<String> {
         .ok_or_else(|| Error::Invalid("模型未登记".into()))
 }
 pub fn run(source: media::Source, model: &str) -> std::result::Result<serde_json::Value, String> {
+    run_controlled(source, model, &std::sync::atomic::AtomicBool::new(false))
+}
+pub fn run_controlled(
+    source: media::Source,
+    model: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> std::result::Result<serde_json::Value, String> {
     let preview = source.preview_edge(1024).map_err(|e| e.to_string())?.image;
     let temp = tempfile::Builder::new()
         .suffix(".png")
@@ -125,7 +132,7 @@ pub fn run(source: media::Source, model: &str) -> std::result::Result<serde_json
         image::ColorType::Rgba8,
     )
     .map_err(|e| e.to_string())?;
-    moriq_ai::infer(model, serde_json::json!({"image":temp.path()}))
+    moriq_ai::infer_controlled(model, serde_json::json!({"image":temp.path()}), cancel)
 }
 pub(crate) fn store(
     tx: &Connection,

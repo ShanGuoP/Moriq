@@ -7,6 +7,7 @@
 
 # Local plans, design references, generated media and runtime data are not source uploads.
 /docs/
+/crates/moriq-ui/assets/*.png
 *.exe
 *.dll
 *.pdb

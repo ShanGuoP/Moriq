@@ -161,10 +161,10 @@ impl App {
         if self.library.as_ref().is_none_or(|l| l.info.id != id) {
             return Task::none();
         }
-        self.history.restoring = false;
-        if self.generation != generation {
+        if self.navigation_request != generation {
             return Task::none();
         }
+        self.history.restoring = false;
         match result {
             Ok(Some(value)) => {
                 self.history.back = value
@@ -270,6 +270,10 @@ impl App {
                             | ManageMessage::Purged(_, Ok(_))
                     )
             );
+        if navigating {
+            self.navigation_request = self.navigation_request.wrapping_add(1);
+            self.history.restoring = false;
+        }
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.update_inner(message);
         if library != self.library.as_ref().map(|l| l.info.id) {
@@ -298,7 +302,8 @@ impl App {
             if let Some(library) = &self.library {
                 self.history.restoring = true;
                 let owner = library.info.id;
-                let generation = self.generation;
+                self.navigation_request = self.navigation_request.wrapping_add(1);
+                let generation = self.navigation_request;
                 let service = self.service.clone();
                 Task::perform(
                     async move { service.saved_navigation(owner).await },

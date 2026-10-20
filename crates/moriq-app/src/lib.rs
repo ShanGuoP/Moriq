@@ -1,5 +1,8 @@
 //! Bounded single-writer coordinator. UI never owns a DB connection or performs media I/O.
 use futures::{Stream, StreamExt, stream};
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod audit_round2;
 mod cache;
 mod scan;
 mod scheduler;
@@ -21,6 +24,31 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const SOURCE_REPOSITORY_URL: &str = "https://github.com/ShanGuoP/Moriq";
+pub fn model_directory() -> Result<PathBuf> {
+    moriq_ai::model_root()
+}
+pub async fn open_models_directory() -> Result<()> {
+    tokio::task::spawn_blocking(|| {
+        let directory = model_directory()?;
+        std::fs::create_dir_all(&directory).map_err(|e| format!("无法创建模型文件夹：{e}"))?;
+        #[cfg(windows)]
+        let mut command = std::process::Command::new("explorer.exe");
+        #[cfg(target_os = "macos")]
+        let mut command = std::process::Command::new("open");
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let mut command = std::process::Command::new("xdg-open");
+        command
+            .arg(directory)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("无法打开模型文件夹：{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+pub fn diagnostic_logging_enabled() -> bool {
+    moriq_library::settings::load().is_ok_and(|settings| settings.diagnostic_logging)
+}
 pub fn is_video_format(format: &str) -> bool {
     moriq_library::video::EXTENSIONS.contains(&format)
 }
@@ -57,6 +85,7 @@ pub struct Service {
     maintenance_slot: Arc<Semaphore>,
     read_slots: Arc<Semaphore>,
     job_slot: Arc<Semaphore>,
+    job_cancel: Arc<scheduler::Cancellation>,
 }
 #[derive(Debug, Clone)]
 pub struct Opened {
@@ -115,7 +144,7 @@ impl Default for ImportControl {
                     .map(usize::from)
                     .unwrap_or(4),
             ),
-            memory_mib: 1024,
+            memory_mib: ImportPreferences::default().memory_mib,
             discovered: Arc::default(),
             scanning: Arc::default(),
             active: Arc::default(),
@@ -145,6 +174,12 @@ impl ImportControl {
     }
 }
 impl Service {
+    pub async fn diagnostic_logging(&self, enabled: bool) -> Result<UserSettings> {
+        self.call(move |_| {
+            moriq_library::settings::diagnostic_logging(enabled).map_err(|e| e.to_string())
+        })
+        .await
+    }
     pub async fn library_cards(
         &self,
         paths: Vec<PathBuf>,
@@ -555,6 +590,32 @@ impl Service {
         self.call(move |active| check(active, id)?.faces(asset).map_err(|e| e.to_string()))
             .await
     }
+    pub async fn person_portrait(
+        &self,
+        library: LibraryId,
+        person: String,
+    ) -> Result<Option<Pixels>> {
+        let source = self
+            .call(move |active| {
+                check(active, library)?
+                    .person_portrait_source(&person)
+                    .map_err(|e| e.to_string())
+            })
+            .await?;
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        let preview = self
+            .preview_version(library, source.asset, source.version)
+            .await?;
+        tokio::task::spawn_blocking(move || {
+            moriq_library::portraits::crop(&preview.image, source.bounds)
+                .map(Some)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
     pub async fn assign_face(
         &self,
         id: LibraryId,
@@ -586,10 +647,15 @@ impl Service {
         .await
     }
     pub async fn control_job(&self, id: LibraryId, job: String, command: JobCommand) -> Result<()> {
+        let cancellation = self.job_cancel.clone();
         self.call(move |active| {
             check(active, id)?
                 .control_job(&job, command)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            if matches!(command, JobCommand::Pause | JobCommand::Cancel) {
+                cancellation.stop(Some((id, &job)));
+            }
+            Ok(())
         })
         .await
     }
@@ -625,25 +691,40 @@ impl Service {
                 .map_err(|e| e.to_string())?;
             let started = std::time::Instant::now();
             for _ in 0..64 {
+                let cancellation = service.job_cancel.clone();
                 let work = service
                     .call(move |active| {
-                        check(active, id)?
+                        let work = check(active, id)?
                             .claim_job_step()
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| e.to_string())?;
+                        Ok(work.map(|work| {
+                            let cancel = cancellation.register(id, work.abort_token().0);
+                            (work, cancel)
+                        }))
                     })
                     .await?;
-                let Some(work) = work else { return Ok(()) };
+                let Some((work, cancel)) = work else {
+                    return Ok(());
+                };
                 let budget = work.memory_mib();
                 let (job, generation) = work.abort_token();
-                let memory = service
-                    .import_memory
-                    .clone()
-                    .acquire_many_owned(budget)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let mut waiting =
+                    Box::pin(service.import_memory.clone().acquire_many_owned(budget));
+                let memory = loop {
+                    if cancel.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    if let Ok(result) =
+                        tokio::time::timeout(std::time::Duration::from_millis(25), &mut waiting)
+                            .await
+                    {
+                        break result.map_err(|e| e.to_string())?;
+                    }
+                };
+                let execution_cancel = cancel.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
                     let _permit = memory;
-                    work.run()
+                    work.run_cancelable(execution_cancel)
                 })
                 .await;
                 let outcome = match outcome {
@@ -661,6 +742,9 @@ impl Service {
                         return Err(message);
                     }
                 };
+                if cancel.load(Ordering::Acquire) {
+                    return Ok(());
+                }
                 service
                     .call(move |active| {
                         check(active, id)?
@@ -1025,18 +1109,21 @@ impl Service {
         parent: PathBuf,
         options: ExportOptions,
     ) -> Result<PathBuf> {
-        let plan = self
-            .call(move |active| {
+        let original = options.format == ExportFormat::Original
+            && options.max_edge == 0
+            && options.rotate == 0;
+        self.read_plan(
+            if original { 64 } else { 4096 },
+            move |active| {
                 check(active, id)?
                     .export_plan(&assets)
                     .map_err(|e| e.to_string())
-            })
-            .await?;
-        tokio::task::spawn_blocking(move || {
-            moriq_library::export::run(plan, &parent, options).map_err(|e| e.to_string())
-        })
+            },
+            move |plan| {
+                moriq_library::export::run(plan, &parent, options).map_err(|e| e.to_string())
+            },
+        )
         .await
-        .map_err(|e| e.to_string())?
     }
     pub async fn selection_range(
         &self,
@@ -1330,6 +1417,7 @@ impl Service {
         .await
     }
     pub async fn close(&self) -> Result<()> {
+        self.job_cancel.stop(None);
         self.media_cache.clear();
         self.call(|active| {
             *active = None;
@@ -1435,6 +1523,7 @@ impl Service {
             read_slots: Arc::new(Semaphore::new(4)),
             media_cache: Arc::new(Default::default()),
             job_slot: Arc::new(Semaphore::new(1)),
+            job_cancel: Arc::new(Default::default()),
         };
         scheduler::start(&service)?;
         Ok(service)
@@ -1469,41 +1558,52 @@ impl Service {
                 }
             }))
             .await
-            .map_err(|_| "后台服务已关闭，请重新打开 MORIQ".to_string())?;
+            .map_err(|_| "后台服务已关闭，请重新打开 Moriq Space".to_string())?;
         receiver
             .await
-            .map_err(|_| "后台服务中断，请重新打开 MORIQ".to_string())?
+            .map_err(|_| "后台服务中断，请重新打开 Moriq Space".to_string())?
     }
     pub async fn open(&self, path: PathBuf) -> Result<Opened> {
-        self.call(move |active| {
-            if let Some(lib) = active.as_ref()
-                && lib.root() == path.canonicalize().map_err(|e| e.to_string())?
-            {
-                return Ok(Opened {
-                    info: lib.info().map_err(|e| e.to_string())?,
-                    root: lib.root().into(),
-                });
+        for attempt in 0..=20 {
+            let cancellation = self.job_cancel.clone();
+            let candidate = path.clone();
+            let result = self.call(move |active| {
+                if let Some(lib) = active.as_ref()
+                    && lib.root() == candidate.canonicalize().map_err(|e| e.to_string())?
+                {
+                    return Ok(Some(Opened { info: lib.info().map_err(|e|e.to_string())?, root:lib.root().into() }));
+                }
+                let library = match Library::open(&candidate) {
+                    Ok(library) => library,
+                    Err(moriq_library::Error::Locked) => return Ok(None),
+                    Err(error) => return Err(error.to_string()),
+                };
+                if active.as_ref().is_some_and(|current|current.id()==library.id()) {
+                    return Err("检测到与当前库身份相同的副本。请关闭应用后打开迁移后的库；需要独立使用时请选择创建独立克隆。".into());
+                }
+                let opened = Opened { info:library.info().map_err(|e|e.to_string())?, root:library.root().into() };
+                cancellation.stop(None);
+                *active=Some(library);
+                Ok(Some(opened))
+            }).await?;
+            if let Some(opened) = result {
+                return Ok(opened);
             }
-            let library = Library::open(&path).map_err(|e| e.to_string())?;
-            if active.as_ref().is_some_and(|current|current.id()==library.id()) {
-                return Err("检测到与当前库身份相同的副本。请关闭应用后打开迁移后的库；需要独立使用时请选择创建独立克隆。".into());
+            if attempt < 20 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            let opened = Opened {
-                info: library.info().map_err(|e| e.to_string())?,
-                root: library.root().into(),
-            };
-            *active = Some(library);
-            Ok(opened)
-        })
-        .await
+        }
+        Err("资源库仍在使用中；后台任务可能正在收尾，也请检查其他打开此库的窗口。".into())
     }
     pub async fn create(&self, parent: PathBuf, name: String) -> Result<Opened> {
+        let cancellation = self.job_cancel.clone();
         self.call(move |active| {
             let library = Library::create(&parent, &name).map_err(|e| e.to_string())?;
             let opened = Opened {
                 info: library.info().map_err(|e| e.to_string())?,
                 root: library.root().into(),
             };
+            cancellation.stop(None);
             *active = Some(library);
             Ok(opened)
         })
@@ -1749,26 +1849,66 @@ impl Service {
         library: LibraryId,
         asset: AssetId,
     ) -> Result<moriq_library::media::Preview> {
+        self.preview_for(library, asset, None).await
+    }
+    pub async fn preview_version(
+        &self,
+        library: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<moriq_library::media::Preview> {
+        self.preview_for(library, asset, Some(version)).await
+    }
+    async fn preview_for(
+        &self,
+        library: LibraryId,
+        asset: AssetId,
+        version: Option<AssetVersionId>,
+    ) -> Result<moriq_library::media::Preview> {
         let cache = self.media_cache.clone();
         let prepare_cache = cache.clone();
-        self.read_plan_sized(
-            |(_, _, cached): &(_, _, Option<moriq_library::media::Preview>)| {
-                if cached.is_some() { 0 } else { 1024 }
-            },
-            move |active| {
-                let source = check(active, library)?
-                    .media_source(asset)
+        // A disk derivative needs at most 64 MiB and must not queue behind a
+        // full decoder's 1 GiB admission. Corrupt/missing caches escalate separately.
+        let (version, cacheable, cached) = self
+            .read_plan(
+                64,
+                move |active| {
+                    let lib = check(active, library)?;
+                    let source = match version {
+                        Some(version) => lib.version_source(asset, version),
+                        None => lib.media_source(asset),
+                    }
                     .map_err(|e| e.to_string())?;
-                let cached = source
-                    .cacheable()
-                    .then(|| prepare_cache.get((library, source.version(), 1600)))
-                    .flatten();
-                Ok((source.version(), source, cached))
+                    let cached = source
+                        .cacheable()
+                        .then(|| prepare_cache.get((library, source.version(), 1600)))
+                        .flatten();
+                    Ok((source, cached))
+                },
+                move |(source, cached)| {
+                    Ok((
+                        source.version(),
+                        source.cacheable(),
+                        cached.or_else(|| source.cached_preview()),
+                    ))
+                },
+            )
+            .await?;
+        let key = (library, version, 1600);
+        if let Some(value) = cached {
+            if cacheable {
+                cache.put(key, value.clone());
+            }
+            return Ok(value);
+        }
+        self.read_plan(
+            1024,
+            move |active| {
+                check(active, library)?
+                    .version_source(asset, version)
+                    .map_err(|e| e.to_string())
             },
-            move |(version, source, cached)| {
-                if let Some(value) = cached {
-                    return Ok(value);
-                }
+            move |source| {
                 let key = (library, version, 1600);
                 let cacheable = source.cacheable();
                 if cacheable && let Some(value) = cache.get(key) {
@@ -2106,6 +2246,77 @@ fn check(active: &mut Option<Library>, expected: LibraryId) -> Result<&mut Libra
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_preview_uses_small_budget_and_corrupt_cache_escalates_before_decoding() {
+        use std::time::Duration;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let input = dir.path().join("preview.png");
+            image::RgbaImage::from_pixel(1200, 800, image::Rgba([30, 70, 120, 160]))
+                .save(&input)
+                .unwrap();
+            let service = Service::start().unwrap();
+            let library = service
+                .create(dir.path().into(), "cache".into())
+                .await
+                .unwrap();
+            let owner = library.info.id;
+            let report = service
+                .import_sources(owner, vec![input], None, ImportControl::default())
+                .await;
+            assert_eq!(report.imported, 1);
+            let asset = service
+                .page(owner, Query::default(), 0, 1)
+                .await
+                .unwrap()
+                .tiles
+                .remove(0)
+                .asset;
+            let first = service
+                .preview_version(owner, asset.id, asset.version_id)
+                .await
+                .unwrap();
+            assert_eq!(&first.image.rgba[..4], &[30, 70, 120, 160]);
+            service.media_cache.clear();
+            let occupied = service
+                .import_memory
+                .clone()
+                .acquire_many_owned(4000)
+                .await
+                .unwrap();
+            let disk = tokio::time::timeout(
+                Duration::from_secs(3),
+                service.preview_version(owner, asset.id, asset.version_id),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(disk.image.rgba, first.image.rgba);
+            service.media_cache.clear();
+            std::fs::write(
+                library
+                    .root
+                    .join(format!("previews/{}-srgb1-1600.png", asset.version_id)),
+                b"corrupt",
+            )
+            .unwrap();
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(100),
+                    service.preview_version(owner, asset.id, asset.version_id)
+                )
+                .await
+                .is_err()
+            );
+            drop(occupied);
+            let repaired = service
+                .preview_version(owner, asset.id, asset.version_id)
+                .await
+                .unwrap();
+            assert_eq!(repaired.image.rgba, first.image.rgba);
+            service.close().await.unwrap();
+        });
+    }
     #[test]
     fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {

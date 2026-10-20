@@ -10,6 +10,8 @@ pub struct Source {
     version: AssetVersionId,
     dimensions: (u32, u32),
     file: File,
+    path: PathBuf,
+    identity: file_id::FileId,
     expected: Option<String>,
     registered_hash: String,
     extension: String,
@@ -48,12 +50,16 @@ impl Library {
             [&version],
             |r| r.get::<_, bool>(0),
         )?;
-        let file = File::open(self.version_path(&version, false)?)?;
+        let path = self.version_path(&version, false)?;
+        let file = File::open(&path)?;
+        let identity = file_id::get_file_id(&path)?;
         Ok(Source {
             root: self.root.clone(),
             version: AssetVersionId(parse_id(&version)?),
             dimensions: (width, height),
             file,
+            path,
+            identity,
             expected: referenced.then_some(hash.clone()),
             registered_hash: hash,
             extension,
@@ -133,6 +139,7 @@ impl Source {
         let mut bytes = 0u64;
         let mut buffer = [0u8; 65536];
         loop {
+            crate::cancel::check()?;
             let read = self.file.read(&mut buffer)?;
             if read == 0 {
                 break;
@@ -183,14 +190,31 @@ impl Source {
             return Err(Error::Invalid("所选素材不是视频".into()));
         }
         let lease = self._lease.clone();
-        let (file, _frozen) = self.frozen_file()?;
-        crate::video::Playback::start(file, lease)
+        if self.cacheable()
+            && let Ok(snapshot) =
+                crate::video::linked_snapshot(&self.path, &self.root, self.identity)
+        {
+            return crate::video::Playback::start(snapshot, lease);
+        }
+        let (file, frozen) = self.frozen_file()?;
+        let snapshot = match frozen {
+            Some(frozen) => frozen.into_temp_path(),
+            None => crate::video::copied_snapshot(file)?,
+        };
+        crate::video::Playback::start(snapshot, lease)
     }
     fn frozen_file(mut self) -> Result<(File, Option<tempfile::NamedTempFile>)> {
         if let Some(expected) = self.expected.take() {
+            if fs2::available_space(std::env::temp_dir())
+                .is_ok_and(|available| self.file.metadata().is_ok_and(|m| m.len() > available))
+            {
+                return Err(Error::Invalid(
+                    "临时磁盘空间不足以冻结外部引用，请释放空间后重试".into(),
+                ));
+            }
             let mut frozen = tempfile::NamedTempFile::new()?;
             let limit = crate::native::file_limit(Path::new(&format!("image.{}", self.extension)));
-            let length = std::io::copy(&mut self.file.take(limit + 1), frozen.as_file_mut())?;
+            let length = crate::cancel::copy(&mut self.file.take(limit + 1), frozen.as_file_mut())?;
             if length > limit || organize::hash_file(frozen.path())? != expected {
                 return Err(Error::Invalid(
                     "外部引用原片已变化，保留登记信息，请重新定位原片".into(),
@@ -205,7 +229,36 @@ impl Source {
     pub fn preview(self) -> Result<Preview> {
         self.preview_edge(1600)
     }
+    /// Read only the bounded, managed 1600px derivative. Never fall back to source decoding.
+    pub fn cached_preview(&self) -> Option<Preview> {
+        if !self.cacheable() {
+            return None;
+        }
+        let path = safe_path(
+            &self.root,
+            &format!("previews/{}-srgb1-1600.png", self.version),
+        )
+        .ok()?;
+        let file = File::open(path).ok()?;
+        if file.metadata().ok()?.len() > 32 * 1024 * 1024 {
+            return None;
+        }
+        let mut reader = ImageReader::new(BufReader::new(file))
+            .with_guessed_format()
+            .ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(1600);
+        limits.max_image_height = Some(1600);
+        limits.max_alloc = Some(32 * 1024 * 1024);
+        reader.limits(limits);
+        preview_pixels(reader.decode().ok()?).ok()
+    }
     pub fn preview_edge(self, edge: u32) -> Result<Preview> {
+        if edge == 1600
+            && let Some(preview) = self.cached_preview()
+        {
+            return Ok(preview);
+        }
         // Hold the lease until all decoding and derivative generation is finished.
         let lease = self._lease.clone();
         let extension = self.extension.clone();
@@ -217,25 +270,8 @@ impl Source {
         } else {
             None
         };
-        let cached = cache.as_ref().and_then(|path| {
-            let file = File::open(path).ok()?;
-            if file.metadata().ok()?.len() > 32 * 1024 * 1024 {
-                return None;
-            }
-            let mut reader = ImageReader::new(BufReader::new(file))
-                .with_guessed_format()
-                .ok()?;
-            let mut limits = image::Limits::default();
-            limits.max_image_width = Some(edge);
-            limits.max_image_height = Some(edge);
-            limits.max_alloc = Some(32 * 1024 * 1024);
-            reader.limits(limits);
-            reader.decode().ok()
-        });
         let (file, _frozen) = self.frozen_file()?;
-        let preview = if let Some(image) = cached {
-            image
-        } else {
+        let preview = {
             let image = raster(file, &PathBuf::from(format!("image.{extension}")), edge)?
                 .image
                 .ok_or_else(|| Error::Invalid("预览解码无像素".into()))?;
@@ -245,7 +281,11 @@ impl Source {
                         path.parent()
                             .ok_or_else(|| Error::Invalid("缓存目录无效".into()))?,
                     )?;
-                    image.write_to(&mut temporary, ImageFormat::Png)?;
+                    image.write_with_encoder(image::codecs::png::PngEncoder::new_with_quality(
+                        &mut temporary,
+                        image::codecs::png::CompressionType::Fast,
+                        image::codecs::png::FilterType::Adaptive,
+                    ))?;
                     temporary.as_file().sync_all()?;
                     temporary.persist(path).map_err(|e| Error::Io(e.error))?;
                     Ok(())
@@ -256,15 +296,18 @@ impl Source {
             }
             image
         };
-        let small = resize::fit(&preview, 128)?.to_rgba8();
-        let background = image::DynamicImage::ImageRgba8(image::imageops::blur(&small, 8.0));
-        let result = Preview {
-            image: pixels(preview),
-            background: pixels(background),
-        };
+        let result = preview_pixels(preview)?;
         drop(lease);
         Ok(result)
     }
+}
+fn preview_pixels(preview: image::DynamicImage) -> Result<Preview> {
+    let small = resize::fit(&preview, 128)?.to_rgba8();
+    let background = image::DynamicImage::ImageRgba8(image::imageops::blur(&small, 8.0));
+    Ok(Preview {
+        image: pixels(preview),
+        background: pixels(background),
+    })
 }
 impl Thumbnails {
     pub fn read(self) -> (Vec<Option<Pixels>>, usize) {

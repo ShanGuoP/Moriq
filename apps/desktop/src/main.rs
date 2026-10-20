@@ -2,13 +2,14 @@
 fn main() {
     if let Err(error) = run() {
         rfd::MessageDialog::new()
-            .set_title("MORIQ 无法启动")
+            .set_title("Moriq Space 无法启动")
             .set_description(error.to_string())
             .set_level(rfd::MessageLevel::Error)
             .show();
     }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let diagnostic_logging = moriq_ui::diagnostic_logging_enabled();
     let log_root = if cfg!(target_os = "windows") {
         std::env::var_os("LOCALAPPDATA")
             .map(std::path::PathBuf::from)
@@ -18,20 +19,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(std::path::PathBuf::from)
             .map(|path| path.join(".local/state/moriq"))
     };
-    let writer: Box<dyn std::io::Write + Send> = match log_root.and_then(|root| {
-        std::fs::create_dir_all(&root).ok().and_then(|()| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(root.join("desktop.log"))
-                .ok()
-        })
-    }) {
-        Some(file) => Box::new(file),
-        None => Box::new(std::io::stderr()),
-    };
+    let writer: Box<dyn std::io::Write + Send> =
+        match log_root.filter(|_| diagnostic_logging).and_then(|root| {
+            std::fs::create_dir_all(&root).ok().and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(root.join("desktop.log"))
+                    .ok()
+            })
+        }) {
+            Some(file) => Box::new(file),
+            None => Box::new(std::io::stderr()),
+        };
     tracing_subscriber::fmt()
-        .with_env_filter("moriq=info,wgpu=warn")
+        .with_env_filter(if diagnostic_logging {
+            "moriq=info,wgpu=warn"
+        } else {
+            "off"
+        })
         .with_target(false)
         .with_ansi(false)
         .with_writer(std::sync::Mutex::new(writer))

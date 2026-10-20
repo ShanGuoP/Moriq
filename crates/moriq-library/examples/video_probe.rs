@@ -55,6 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(preview.width > 0);
     let details = lib.details_plan(asset.id)?.read();
     assert!(details.exif.iter().any(|(k, _)| k == "时长"));
+    // Playback needs the desktop's native owner window. Validate its lifecycle
+    // with --panel viewer-leave in the desktop, rather than this headless probe.
     let exported = moriq_library::export::run(
         lib.export_plan(&[asset.id])?,
         &parent,

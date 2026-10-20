@@ -2,7 +2,7 @@ use crate::{Result, hardware, installed_path, registry};
 use serde_json::Value;
 use std::{
     io::{BufRead, BufReader, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{Mutex, OnceLock, mpsc},
     time::Duration,
@@ -12,6 +12,16 @@ struct Worker {
     input: ChildStdin,
     output: mpsc::Receiver<Result<Value>>,
     model_lease: Option<(String, std::fs::File)>,
+    diagnostics: tempfile::NamedTempFile,
+}
+impl Worker {
+    fn error_detail(&self) -> String {
+        let mut bytes = Vec::new();
+        if let Ok(file) = self.diagnostics.reopen() {
+            let _ = file.take(8192).read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).trim().to_string()
+    }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -32,24 +42,35 @@ pub(crate) fn provider_name() -> String {
 static KEEP_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn set_keep_loaded(value: bool) -> Result<()> {
     if KEEP_LOADED.swap(value, std::sync::atomic::Ordering::Relaxed) != value {
-        unload()?;
+        // A preference change takes effect at the request boundary. It must not
+        // wait for, or interrupt, an inference already using the worker.
+        let mutex = WORKER.get_or_init(|| Mutex::new(None));
+        match mutex.try_lock() {
+            Ok(mut worker) => *worker = None,
+            Err(std::sync::TryLockError::WouldBlock) => {}
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                *error.into_inner() = None;
+                mutex.clear_poison();
+            }
+        }
     }
     Ok(())
 }
 fn runtime_root() -> Result<PathBuf> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    for parent in exe.ancestors().skip(1).take(4) {
-        for folder in [parent.join("ai"), parent.join("ai-runtime")] {
-            if folder.join("worker.mjs").is_file()
-                && folder
-                    .join(format!("node{}", std::env::consts::EXE_SUFFIX))
-                    .is_file()
-            {
-                return Ok(folder);
-            }
-        }
-    }
-    Err("发行包缺少本地 AI 运行组件，请重新解压完整发行包".into())
+    let parent = exe.parent().ok_or("程序目录不可用")?;
+    let root = parent.join("ai");
+    #[cfg(debug_assertions)]
+    let root = if root.is_dir() {
+        root
+    } else {
+        PathBuf::from(env!("MORIQ_DEV_AI_ROOT"))
+    };
+    crate::verify_runtime(
+        &root,
+        include_str!(concat!(env!("OUT_DIR"), "/ai-checksums.json")),
+        &[],
+    )
 }
 fn start() -> Result<Worker> {
     let root = runtime_root()?;
@@ -81,13 +102,36 @@ fn start() -> Result<Worker> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
+    command.env_clear();
+    for name in [
+        "SystemRoot",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    #[cfg(windows)]
+    if let Some(system) = std::env::var_os("SystemRoot") {
+        command.env("PATH", PathBuf::from(system).join("System32"));
+    }
+    #[cfg(not(windows))]
+    command.env("PATH", "/usr/bin:/bin");
+    let diagnostics = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     let mut child = command
         .arg("--max-old-space-size=4096")
-        .arg(root.join("worker.mjs"))
-        .current_dir(&root)
+        .arg(worker_model_path(&root.join("worker.mjs")))
+        .current_dir(worker_model_path(&root))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(diagnostics.reopen().map_err(|e| e.to_string())?)
         .env("HF_HUB_OFFLINE", "1")
         .env("TRANSFORMERS_OFFLINE", "1")
         .spawn()
@@ -122,16 +166,35 @@ fn start() -> Result<Worker> {
         child,
         input,
         output: receiver,
+        diagnostics,
     })
 }
 pub fn unload() -> Result<()> {
-    *WORKER
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .map_err(|_| "AI 运行锁失效")? = None;
+    let mutex = WORKER.get_or_init(|| Mutex::new(None));
+    match mutex.try_lock() {
+        Ok(mut worker) => *worker = None,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err("模型正在使用，请停止分析后再试".into());
+        }
+        Err(std::sync::TryLockError::Poisoned(error)) => {
+            *error.into_inner() = None;
+            mutex.clear_poison();
+        }
+    }
     Ok(())
 }
-pub fn infer(id: &str, mut request: Value) -> Result<Value> {
+pub fn infer(id: &str, request: Value) -> Result<Value> {
+    infer_controlled(id, request, &std::sync::atomic::AtomicBool::new(false))
+}
+pub fn infer_controlled(
+    id: &str,
+    mut request: Value,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Value> {
+    let cancelled = || cancel.load(std::sync::atomic::Ordering::Acquire);
+    if cancelled() {
+        return Err("AI 任务已停止".into());
+    }
     request["keep_loaded"] = Value::Bool(KEEP_LOADED.load(std::sync::atomic::Ordering::Relaxed));
     let spec = registry()?
         .into_iter()
@@ -146,7 +209,7 @@ pub fn infer(id: &str, mut request: Value) -> Result<Value> {
             spec.name
         ));
     }
-    request["model_root"] = Value::String(path.to_string_lossy().into_owned());
+    request["model_root"] = Value::String(worker_model_path(&path));
     request["operation"] = Value::String(
         match id {
             "chinese-clip" => "clip",
@@ -158,10 +221,24 @@ pub fn infer(id: &str, mut request: Value) -> Result<Value> {
     );
     let ticket = uuid::Uuid::new_v4().to_string();
     request["id"] = Value::String(ticket.clone());
-    let mut worker = WORKER
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .map_err(|_| "AI 运行锁失效")?;
+    let mutex = WORKER.get_or_init(|| Mutex::new(None));
+    let mut worker = loop {
+        if cancelled() {
+            return Err("AI 任务已停止".into());
+        }
+        match mutex.try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let mut guard = error.into_inner();
+                *guard = None;
+                mutex.clear_poison();
+                break guard;
+            }
+        }
+    };
     if worker
         .as_mut()
         .is_some_and(|w| w.child.try_wait().ok().flatten().is_some())
@@ -187,15 +264,29 @@ pub fn infer(id: &str, mut request: Value) -> Result<Value> {
         .and_then(|_| active.input.write_all(b"\n"))
         .and_then(|_| active.input.flush())
     {
+        let detail = active.error_detail();
         *worker = None;
-        return Err(format!("AI 进程已退出：{error}"));
+        return Err(format!("AI 进程已退出：{error} {detail}"));
     }
-    let result = active.output.recv_timeout(Duration::from_secs(600));
+    let deadline = std::time::Instant::now() + Duration::from_secs(600);
+    let result = loop {
+        if cancelled() {
+            *worker = None;
+            return Err("AI 任务已停止".into());
+        }
+        match active.output.recv_timeout(Duration::from_millis(50)) {
+            Err(mpsc::RecvTimeoutError::Timeout) if std::time::Instant::now() < deadline => {
+                continue;
+            }
+            result => break result,
+        }
+    };
     let result = match result {
         Ok(result) => result,
         Err(error) => {
+            let detail = active.error_detail();
             *worker = None;
-            return Err(format!("AI 任务超时或进程退出：{error}"));
+            return Err(format!("AI 任务超时或进程退出：{error} {detail}"));
         }
     }?;
     if result["id"].as_str() != Some(ticket.as_str()) {
@@ -225,5 +316,59 @@ pub fn infer(id: &str, mut request: Value) -> Result<Value> {
     {
         return Err("AI 分析结果超出预算".into());
     }
+    if request["keep_loaded"].as_bool()
+        != Some(KEEP_LOADED.load(std::sync::atomic::Ordering::Relaxed))
+    {
+        *worker = None;
+    }
     Ok(result)
+}
+
+// Transformers.js appends POSIX separators before passing model filenames to ORT.
+// Windows verbatim paths forbid mixed separators, unlike ordinary drive/UNC paths.
+// Keep canonical paths for leases and integrity checks; convert only at the JS boundary.
+fn worker_model_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        windows_model_path(&value)
+    }
+    #[cfg(not(windows))]
+    {
+        value.into_owned()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_model_path(value: &str) -> String {
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", unc.replace('\\', "/"));
+    }
+    let ordinary = value
+        .strip_prefix(r"\\?\")
+        .filter(|v| v.as_bytes().get(1) == Some(&b':'))
+        .unwrap_or(value);
+    ordinary.replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn model_bridge_uses_appendable_drive_and_unc_paths() {
+        assert_eq!(
+            windows_model_path(r"\\?\C:\Users\测试 用户\models\clip"),
+            "C:/Users/测试 用户/models/clip"
+        );
+        assert_eq!(
+            windows_model_path(r"\\?\UNC\server\共享 目录\clip"),
+            "//server/共享 目录/clip"
+        );
+        assert_eq!(
+            windows_model_path(r"\\server\共享\clip"),
+            "//server/共享/clip"
+        );
+        assert_eq!(windows_model_path(r"C:\models\clip"), "C:/models/clip");
+        assert_eq!(windows_model_path("C:/models/clip"), "C:/models/clip");
+    }
 }

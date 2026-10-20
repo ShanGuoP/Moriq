@@ -1,4 +1,56 @@
 use super::*;
+
+#[cfg(test)]
+#[test]
+#[allow(clippy::unwrap_used)]
+fn fit_view_does_not_decode_original_and_repeated_zoom_does_not_restart_it() {
+    let mut app = crate::tests::app();
+    let mut asset = crate::tests::selected_asset();
+    asset.width = 6000;
+    asset.height = 4000;
+    let version = asset.version_id;
+    app.selected = Some(asset);
+    assert_eq!(app.set_viewer(true).units(), 0);
+    let viewport = Viewport {
+        x: 0,
+        y: 0,
+        width: 6000,
+        height: 4000,
+        scale: 0.1,
+    };
+    assert_eq!(
+        app.region_message(RegionMessage::Viewport(version, viewport))
+            .units(),
+        0
+    );
+    assert!(!app.regions.loading);
+    let zoomed = Viewport {
+        scale: 1.0,
+        ..viewport
+    };
+    assert!(
+        app.region_message(RegionMessage::Viewport(version, zoomed))
+            .units()
+            > 0
+    );
+    let request = app.regions.request;
+    assert!(app.regions.loading);
+    assert_eq!(
+        app.region_message(RegionMessage::Viewport(version, zoomed))
+            .units(),
+        0
+    );
+    assert_eq!(app.regions.request, request);
+    assert_eq!(app.regions.viewport, Some(zoomed));
+    drop(app.set_viewer(false));
+    assert!(!app.regions.loading);
+
+    drop(app.set_viewer(true));
+    drop(app.region_message(RegionMessage::Actual));
+    assert!(app.regions.loading);
+    assert_eq!(app.regions.target_scale, Some(1.0 / app.dpi_scale));
+    assert!(app.regions.zoom_request > 0);
+}
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -16,6 +68,8 @@ pub(super) struct Regions {
     pub zoom_request: u64,
     pub target_scale: Option<f32>,
     pub session: Option<Arc<moriq_app::RegionSession>>,
+    loading: bool,
+    session_failed: bool,
     owner: Option<LibraryId>,
     version: Option<AssetVersionId>,
     request: u64,
@@ -68,11 +122,20 @@ impl App {
         let (owner, id, version) = (library.info.id, asset.id, asset.version_id);
         if self.regions.owner == Some(owner)
             && self.regions.version == Some(version)
-            && self.regions.session.is_some()
+            && (self.regions.session.is_some()
+                || self.regions.loading
+                || self.regions.session_failed)
         {
             return Task::none();
         }
+        let viewport = self.regions.viewport;
+        let target_scale = self.regions.target_scale;
+        let zoom_request = self.regions.zoom_request;
         self.regions.reset();
+        self.regions.viewport = viewport;
+        self.regions.target_scale = target_scale;
+        self.regions.zoom_request = zoom_request;
+        self.regions.loading = true;
         self.original_size = None;
         self.regions.owner = Some(owner);
         self.regions.version = Some(version);
@@ -86,8 +149,16 @@ impl App {
     pub(super) fn region_message(&mut self, event: RegionMessage) -> Task<Message> {
         match event {
             RegionMessage::Actual => {
+                self.regions.session_failed = false;
                 self.regions.target_scale = Some(1. / self.dpi_scale);
                 self.regions.zoom_request += 1;
+                if self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|asset| asset.width.max(asset.height) > 1600)
+                {
+                    return self.begin_regions();
+                }
                 return Task::none();
             }
             RegionMessage::Fit => {
@@ -104,12 +175,14 @@ impl App {
                         .is_some_and(|a| a.id == asset && a.version_id == version)
                     && self.regions.request == request =>
             {
+                self.regions.loading = false;
                 match result {
                     Ok(session) => {
                         self.original_size = Some((session.width, session.height));
                         self.regions.session = Some(session)
                     }
                     Err(e) => {
+                        self.regions.session_failed = true;
                         self.error = Some(e);
                         return Task::none();
                     }
@@ -123,6 +196,14 @@ impl App {
                         .is_some_and(|a| a.version_id == version) =>
             {
                 self.regions.viewport = Some(viewport);
+                if let Some(asset) = &self.selected
+                    && viewport.scale.is_finite()
+                    && viewport.scale * self.dpi_scale * asset.width.max(asset.height) as f32
+                        > 1600.0
+                    && self.regions.session.is_none()
+                {
+                    return self.begin_regions();
+                }
             }
             RegionMessage::Tile(owner, version, request, region, result)
                 if self.preview_expanded

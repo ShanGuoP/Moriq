@@ -26,19 +26,37 @@ pub fn tool(name: &str) -> Result<PathBuf> {
         return Err(Error::Invalid("媒体工具名称无效".into()));
     }
     let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let path = runtime_root()?.join(name);
+    if !path.is_file() {
+        return Err(Error::Invalid("发行包缺少视频工具".into()));
+    }
+    Ok(path)
+}
+pub(crate) fn runtime_root() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let folder = exe
         .parent()
         .ok_or_else(|| Error::Invalid("程序目录不可用".into()))?;
-    let mut candidates = folder.ancestors().take(3).flat_map(|p| {
-        [
-            p.join("codecs").join(&name),
-            p.join("codecs/runtime").join(&name),
-        ]
-    });
-    candidates
-        .find(|p| p.is_file())
-        .ok_or_else(|| Error::Invalid("发行包缺少内置视频组件，请重新解压完整发行包".into()))
+    let root = folder.join("codecs");
+    #[cfg(debug_assertions)]
+    let root = if root.is_dir() {
+        root
+    } else {
+        PathBuf::from(env!("MORIQ_DEV_CODECS_ROOT"))
+    };
+    static VERIFIED: std::sync::OnceLock<std::result::Result<PathBuf, String>> =
+        std::sync::OnceLock::new();
+    let root = VERIFIED
+        .get_or_init(|| {
+            moriq_ai::verify_runtime(
+                &root,
+                include_str!(concat!(env!("OUT_DIR"), "/codecs-checksums.json")),
+                &["libraw.dll"],
+            )
+        })
+        .as_ref()
+        .map_err(|e| Error::Invalid(e.clone()))?;
+    Ok(root.clone())
 }
 #[cfg(all(windows, bundled_video))]
 fn playback_worker() -> Result<PathBuf> {
@@ -73,6 +91,45 @@ pub struct Playback {
     _source: tempfile::TempPath,
     _lease: Arc<File>,
     diagnostics: tempfile::NamedTempFile,
+}
+pub(crate) fn linked_snapshot(
+    source: &Path,
+    root: &Path,
+    identity: file_id::FileId,
+) -> Result<tempfile::TempPath> {
+    let staging = safe_path(root, "staging")?;
+    fs::create_dir_all(&staging)?;
+    let snapshot = tempfile::Builder::new()
+        .prefix(".moriq-playback-")
+        .tempfile_in(staging)?
+        .into_temp_path();
+    fs::remove_file(&snapshot)?;
+    fs::hard_link(source, &snapshot)?;
+    if file_id::get_file_id(&snapshot)? != identity {
+        return Err(Error::Invalid(
+            "播放前原片路径发生变化，已停止链接快照".into(),
+        ));
+    }
+    Ok(snapshot)
+}
+pub(crate) fn copied_snapshot(file: File) -> Result<tempfile::TempPath> {
+    if fs2::available_space(std::env::temp_dir())
+        .is_ok_and(|available| file.metadata().is_ok_and(|m| m.len() > available))
+    {
+        return Err(Error::Invalid(
+            "临时磁盘空间不足以播放此视频，请释放空间后重试".into(),
+        ));
+    }
+    let mut snapshot = tempfile::NamedTempFile::new()?;
+    if std::io::copy(
+        &mut file.take(64 * 1024 * 1024 * 1024 + 1),
+        snapshot.as_file_mut(),
+    )? > 64 * 1024 * 1024 * 1024
+    {
+        return Err(Error::Invalid("视频文件超出64 GiB预算".into()));
+    }
+    snapshot.as_file().sync_all()?;
+    Ok(snapshot.into_temp_path())
 }
 impl std::fmt::Debug for Playback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -119,17 +176,7 @@ impl Playback {
             .read_to_string(&mut text)?;
         Ok(text)
     }
-    pub(crate) fn start(file: File, lease: Arc<File>) -> Result<Arc<Self>> {
-        let mut snapshot = tempfile::NamedTempFile::new()?;
-        if std::io::copy(
-            &mut file.take(64 * 1024 * 1024 * 1024 + 1),
-            snapshot.as_file_mut(),
-        )? > 64 * 1024 * 1024 * 1024
-        {
-            return Err(Error::Invalid("视频文件超出64 GiB预算".into()));
-        }
-        snapshot.as_file().sync_all()?;
-        let snapshot = snapshot.into_temp_path();
+    pub(crate) fn start(snapshot: tempfile::TempPath, lease: Arc<File>) -> Result<Arc<Self>> {
         let diagnostics = tempfile::NamedTempFile::new()?;
         let mut cmd = Command::new(playback_worker()?);
         #[cfg(windows)]
@@ -223,6 +270,7 @@ fn run(mut cmd: Command, timeout: Duration, output: Option<(&Path, u64)>) -> Res
     let mut child = Running(cmd.spawn()?);
     let started = Instant::now();
     loop {
+        crate::cancel::check()?;
         if let Some(status) = child.0.try_wait()? {
             if status.success() {
                 return Ok(());

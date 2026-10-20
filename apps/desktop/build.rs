@@ -1,6 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-env-changed=MORIQ_BUILD_ID");
     let source = "../../assets/branding/moriq.svg";
     println!("cargo:rerun-if-changed={source}");
     let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("Missing OUT_DIR")?);
@@ -26,11 +27,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let icon = output.join("moriq.ico");
     image::codecs::ico::IcoEncoder::new(fs::File::create(&icon)?).encode_images(&frames)?;
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let version = env::var("CARGO_PKG_VERSION")?;
+        let mut parts = version.split('.').take(3).collect::<Vec<_>>();
+        while parts.len() < 3 {
+            parts.push("0");
+        }
+        let numeric = format!("{},0", parts.join(","));
+        let identity = env::var("MORIQ_BUILD_ID").unwrap_or_else(|_| "development".into());
+        let identity = identity.replace(['\"', '\\', '\n', '\r'], "_");
         let resource = output.join("moriq.rc");
         fs::write(
             &resource,
             format!(
-                "#pragma code_page(65001)\n1 ICON \"{}\"\n",
+                "#pragma code_page(65001)\n1 ICON \"{}\"\n1 VERSIONINFO\nFILEVERSION {numeric}\nPRODUCTVERSION {numeric}\nFILEOS 0x40004\nFILETYPE 1\nBEGIN\n BLOCK \"StringFileInfo\"\n BEGIN\n  BLOCK \"040904b0\"\n  BEGIN\n   VALUE \"CompanyName\", \"杉果派\\0\"\n   VALUE \"ProductName\", \"Moriq Space\\0\"\n   VALUE \"FileDescription\", \"Moriq Space 本地素材管理器\\0\"\n   VALUE \"FileVersion\", \"{version}\\0\"\n   VALUE \"ProductVersion\", \"{version} ({identity})\\0\"\n   VALUE \"OriginalFilename\", \"Moriq Space.exe\\0\"\n  END\n END\n BLOCK \"VarFileInfo\"\n BEGIN\n  VALUE \"Translation\", 0x0409, 1200\n END\nEND\n",
                 icon.to_string_lossy().replace('\\', "/")
             ),
         )?;

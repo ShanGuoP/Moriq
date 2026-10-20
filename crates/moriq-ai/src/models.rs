@@ -129,7 +129,7 @@ pub fn inventory() -> Result<Vec<ModelInfo>> {
                 .is_some_and(|m| m.id == model.id && m.revision == model.revision)
                 && model.files.iter().all(|f| {
                     safe_file(&root.join(key(&model)), &f.path)
-                        .is_ok_and(|p| fs::metadata(p).is_ok_and(|m| m.len() == f.bytes))
+                        .is_ok_and(|p| valid_installed_file(&p, f))
                 });
             let resumable = root.join(format!(".download-{}", key(&model))).is_dir();
             let bytes = model.files.iter().map(|f| f.bytes).sum();
@@ -158,11 +158,50 @@ pub fn installed_path(id: &str) -> Result<PathBuf> {
     }
     for artifact in &model.files {
         let file = safe_file(&path, &artifact.path)?;
-        if !fs::metadata(&file).is_ok_and(|m| m.is_file() && m.len() == artifact.bytes) {
+        if !valid_installed_file(&file, artifact) {
             return Err(format!("模型文件 {} 缺失或损坏，请重新安装", artifact.path));
         }
     }
     Ok(path)
+}
+fn valid_installed_file(path: &Path, artifact: &ModelFile) -> bool {
+    type Stamp = (
+        u64,
+        Option<std::time::SystemTime>,
+        Option<std::time::SystemTime>,
+    );
+    type Cache = std::collections::HashMap<PathBuf, (Stamp, String)>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() != artifact.bytes {
+        return false;
+    }
+    let stamp = (
+        metadata.len(),
+        metadata.modified().ok(),
+        metadata.created().ok(),
+    );
+    let cache = CACHE.get_or_init(Default::default);
+    if let Ok(entries) = cache.lock()
+        && entries
+            .get(path)
+            .is_some_and(|(known, hash)| known == &stamp && hash == &artifact.sha256)
+    {
+        return true;
+    }
+    if digest(path).is_ok_and(|hash| hash == artifact.sha256) {
+        if let Ok(mut entries) = cache.lock() {
+            if entries.len() >= 128 {
+                entries.clear();
+            }
+            entries.insert(path.into(), (stamp, artifact.sha256.clone()));
+        }
+        true
+    } else {
+        false
+    }
 }
 pub(crate) fn verified_lease(id: &str) -> Result<File> {
     let model = spec(id)?;
@@ -221,9 +260,24 @@ pub fn install_with_mirror(id: &str, control: &DownloadControl, use_mirror: bool
         .store(model.files.iter().map(|f| f.bytes).sum(), Ordering::Relaxed);
     control.downloaded.store(0, Ordering::Relaxed);
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("MORIQ/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Moriq-Space/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let url = attempt.url();
+            let allowed = url.host_str().is_some_and(|host| {
+                host == "huggingface.co"
+                    || host == "hf-mirror.com"
+                    || host.ends_with(".huggingface.co")
+                    || host.ends_with(".hf.co")
+                    || host.ends_with(".xethub.hf.co")
+            });
+            if attempt.previous().len() >= 5 || url.scheme() != "https" || !allowed {
+                attempt.error("模型下载重定向目标不受信任")
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .map_err(|e| e.to_string())?;
     for artifact in &model.files {
@@ -400,8 +454,8 @@ fn download_error(path: &str, use_mirror: bool, error: &impl std::fmt::Display) 
     )
 }
 pub fn uninstall(id: &str) -> Result<()> {
-    crate::unload()?;
     let model = spec(id)?;
+    crate::unload()?;
     let root = model_folder(&model)?;
     if !root.exists() {
         return Ok(());
@@ -426,6 +480,11 @@ pub fn uninstall(id: &str) -> Result<()> {
     for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name != key(&model) && name != format!(".download-{}", key(&model)) {
+                continue;
+            }
             let path = entry.path().canonicalize().map_err(|e| e.to_string())?;
             if path.parent() != Some(root.as_path()) {
                 return Err("模型卸载目录不是预期子目录".into());
@@ -439,6 +498,28 @@ pub fn uninstall(id: &str) -> Result<()> {
 #[cfg(test)]
 mod source_tests {
     use super::*;
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn installation_state_detects_same_size_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("weights.onnx");
+        fs::write(&path, b"good").unwrap();
+        let artifact = ModelFile {
+            path: "weights.onnx".into(),
+            url: String::new(),
+            sha256: format!("{:x}", Sha256::digest(b"good")),
+            bytes: 4,
+        };
+        assert!(valid_installed_file(&path, &artifact));
+        fs::write(&path, b"evil").unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(!valid_installed_file(&path, &artifact));
+    }
     #[test]
     #[allow(clippy::unwrap_used)]
     fn throttled_source_retries_the_same_range_and_pause_makes_no_request() {

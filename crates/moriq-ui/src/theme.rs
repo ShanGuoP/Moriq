@@ -12,7 +12,7 @@ pub const PURPLE: Color = Color::from_rgb8(126, 83, 255);
 pub fn application_theme() -> Theme {
     static THEME: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
         Theme::custom(
-            "MORIQ",
+            "Moriq Space",
             iced::theme::Palette {
                 background: Color::WHITE,
                 text: TEXT,

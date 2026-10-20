@@ -7,6 +7,7 @@ pub(super) struct TaskState {
     pub error: Option<String>,
     pub request: u64,
     pub ticks: u8,
+    pub(super) analysis_progress: std::collections::HashMap<String, (u64, u64, String)>,
     pub(super) failures: Option<(LibraryId, String, Vec<JobFailure>)>,
 }
 
@@ -46,6 +47,57 @@ mod tests {
         drop(app.job_tick());
         drop(app.job_message(JobMessage::Refreshed(id, app.jobs.request, Ok(vec![]))));
         assert!(app.jobs.error.is_none());
+    }
+    #[test]
+    fn analysis_progress_refreshes_categories_and_filtered_layout_without_polling_loops() {
+        let mut app = crate::tests::app();
+        let owner = app.library.as_ref().unwrap().info.id;
+        app.screen = Screen::Assets;
+        app.query.category = "风景".into();
+        app.scroll_y = 500.0;
+        app.jobs.request = 7;
+        let mut job = BackgroundJob {
+            id: "analysis-job".into(),
+            kind: "analysis:chinese-clip".into(),
+            state: "running".into(),
+            priority: 0,
+            completed: 0,
+            total: 15,
+            failed: 0,
+            error: String::new(),
+        };
+        assert_eq!(
+            app.job_message(JobMessage::Refreshed(owner, 7, Ok(vec![job.clone()])))
+                .units(),
+            0
+        );
+        let generation = app.layout_generation;
+        job.completed = 4;
+        assert!(
+            app.job_message(JobMessage::Refreshed(owner, 7, Ok(vec![job.clone()])))
+                .units()
+                > 0
+        );
+        assert!(app.layout_generation > generation);
+        assert_eq!(app.query.category, "风景");
+        assert_eq!(app.scroll_y, 500.0);
+        assert_eq!(
+            app.job_message(JobMessage::Refreshed(owner, 7, Ok(vec![job.clone()])))
+                .units(),
+            0
+        );
+        job.completed = 15;
+        job.state = "completed".into();
+        assert!(
+            app.job_message(JobMessage::Refreshed(owner, 7, Ok(vec![job.clone()])))
+                .units()
+                > 0
+        );
+        assert_eq!(
+            app.job_message(JobMessage::Refreshed(owner, 7, Ok(vec![job])))
+                .units(),
+            0
+        );
     }
 }
 #[derive(Debug, Clone)]
@@ -131,12 +183,43 @@ impl App {
                 self.jobs.loading = false;
                 match result {
                     Ok(jobs) => {
+                        let progress = jobs
+                            .iter()
+                            .filter(|job| job.kind.starts_with("analysis:"))
+                            .map(|job| {
+                                (
+                                    job.id.clone(),
+                                    (job.completed, job.failed, job.state.clone()),
+                                )
+                            })
+                            .collect::<std::collections::HashMap<_, _>>();
+                        let changed = progress.iter().any(|(id, value)| {
+                            self.jobs.analysis_progress.get(id) != Some(value)
+                                && (value.0 > 0
+                                    || matches!(value.2.as_str(), "completed" | "cancelled"))
+                        });
+                        self.jobs.analysis_progress = progress;
                         self.manager.organizer.jobs = jobs;
                         self.jobs.error = None;
                         self.manager
                             .organizer
                             .errors
                             .retain(|(section, _)| *section != OrganizerSection::Jobs);
+                        if changed {
+                            let gallery = if self.screen == Screen::Assets
+                                && (!self.query.category.is_empty() || self.query.person.is_some())
+                            {
+                                self.masonry = None;
+                                Task::batch([self.refresh(), self.rebuild_masonry()])
+                            } else {
+                                Task::none()
+                            };
+                            return Task::batch([
+                                self.refresh_organizer(),
+                                self.refresh_details(),
+                                gallery,
+                            ]);
+                        }
                     }
                     Err(e) => {
                         if self.jobs.error.as_ref() != Some(&e) {

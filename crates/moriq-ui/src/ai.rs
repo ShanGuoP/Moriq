@@ -1,5 +1,6 @@
 use super::*;
 use crate::components::*;
+use iced::futures::{StreamExt, stream};
 use iced::widget::{column, text_input};
 use std::collections::HashMap;
 
@@ -18,6 +19,10 @@ pub(super) struct AiState {
     pub person: Option<PersonChoice>,
     pub target: Option<PersonChoice>,
     pub recommendations: Option<(AssetVersionId, Vec<(AssetId, String)>)>,
+    pub portraits: HashMap<String, image::Handle>,
+    pub portrait_request: u64,
+    pub portrait_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub portrait_task: Option<iced::task::Handle>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersonChoice {
@@ -74,6 +79,12 @@ pub enum AiMessage {
     Merge,
     Assign(String, Option<String>),
     PersonFilter(String),
+    PortraitLoaded(
+        LibraryId,
+        u64,
+        String,
+        Result<Option<moriq_app::Pixels>, String>,
+    ),
     Stored(LibraryId, Result<(), String>),
     Recommended(
         LibraryId,
@@ -113,6 +124,20 @@ impl App {
     pub(super) fn ai_message(&mut self, event: AiMessage) -> Task<Message> {
         let service = self.service.clone();
         match event {
+            AiMessage::PortraitLoaded(owner, request, person, result)
+                if self.library.as_ref().is_some_and(|l| l.info.id == owner)
+                    && request == self.ai.portrait_request
+                    && !self.ai.portrait_cancel.load(Ordering::Acquire) =>
+            {
+                if let Ok(Some(pixels)) = result {
+                    self.ai.portraits.insert(
+                        person,
+                        image::Handle::from_rgba(pixels.width, pixels.height, pixels.rgba),
+                    );
+                } else {
+                    self.ai.portraits.remove(&person);
+                }
+            }
             AiMessage::SwitchLibrary(path)
                 if self.import.is_none() && !self.switching && !self.manager.busy =>
             {
@@ -391,6 +416,74 @@ impl App {
             .and_then(|old| people.iter().find(|p| p.id == old.id))
             .map(PersonChoice::person);
     }
+    pub(super) fn sidebar_categories(&self) -> Vec<(String, u64)> {
+        self.manager
+            .organizer
+            .ai_categories
+            .iter()
+            .filter(|(name, count)| *count > 0 && !name.trim().is_empty())
+            .cloned()
+            .collect()
+    }
+    pub(super) fn refresh_people_portraits(&mut self) -> Task<Message> {
+        self.stop_people_portraits();
+        if self.manager.panel != Some(manage::Panel::People) {
+            return Task::none();
+        }
+        let Some(owner) = self.library.as_ref().map(|l| l.info.id) else {
+            return Task::none();
+        };
+        self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
+        let request = self.ai.portrait_request;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.ai.portrait_cancel = cancel.clone();
+        self.ai.portraits.retain(|id, _| {
+            self.manager
+                .organizer
+                .people
+                .iter()
+                .any(|p| p.id == *id && p.count > 0)
+        });
+        let people = self
+            .manager
+            .organizer
+            .people
+            .iter()
+            .filter(|p| p.count > 0)
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>();
+        let service = self.service.clone();
+        let (task, handle) = Task::run(
+            stream::iter(people)
+                .map(move |person| {
+                    let service = service.clone();
+                    let cancel = cancel.clone();
+                    async move {
+                        let result = if cancel.load(Ordering::Acquire) {
+                            Ok(None)
+                        } else {
+                            service.person_portrait(owner, person.clone()).await
+                        };
+                        (person, result)
+                    }
+                })
+                .buffer_unordered(2),
+            move |(person, result)| {
+                Message::Ai(AiMessage::PortraitLoaded(owner, request, person, result))
+            },
+        )
+        .abortable();
+        self.ai.portrait_task = Some(handle.abort_on_drop());
+        task
+    }
+    pub(super) fn stop_people_portraits(&mut self) {
+        self.ai.portrait_cancel.store(true, Ordering::Release);
+        if let Some(task) = self.ai.portrait_task.take() {
+            // Drop pending read plans as well as rejecting late images. Otherwise
+            // waiting for decoder memory could retain the previous library lease.
+            task.abort();
+        }
+    }
     pub(super) fn people_panel(&self) -> Element<'_, Message> {
         let choices: Vec<_> = self
             .manager
@@ -400,7 +493,7 @@ impl App {
             .map(PersonChoice::person)
             .collect();
         let mut view = column![
-            muted("选择人物命名或合并；图片详情内可纠正单个人脸的归属。"),
+            muted("点击人物查看对应素材；在上方选择人物后可命名或合并，图片详情内可纠正单个人脸的归属。"),
             choice(choices.clone(), self.ai.person.clone(), |p| Message::Ai(
                 AiMessage::Person(p)
             )),
@@ -414,11 +507,40 @@ impl App {
             action("合并到所选人物", Message::Ai(AiMessage::Merge))
         ]
         .spacing(10);
-        for person in &self.manager.organizer.people {
-            view = view.push(action(
-                &PersonChoice::person(person).to_string(),
-                Message::Ai(AiMessage::PersonFilter(person.id.clone())),
+        if self.manager.organizer.people.is_empty() {
+            view = view.push(muted(
+                "尚未识别到人物。请先在 AI 模型页安装人脸模型，并运行人脸分析。",
             ));
+        }
+        for person in &self.manager.organizer.people {
+            let thumbnail: Element<'_, Message> =
+                if let Some(handle) = self.ai.portraits.get(&person.id) {
+                    photo(Some(handle), iced::Length::Fixed(42.), 42.)
+                } else {
+                    iced::widget::container(crate::icons::icon(
+                        crate::icons::Icon::Person,
+                        22.,
+                        crate::theme::MUTED,
+                    ))
+                    .center_x(42)
+                    .center_y(42)
+                    .style(crate::theme::pale)
+                    .into()
+                };
+            view = view.push(
+                iced::widget::button(
+                    iced::widget::row![
+                        thumbnail,
+                        iced::widget::text(PersonChoice::person(person).to_string()).size(13),
+                    ]
+                    .spacing(12)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding([6, 10])
+                .width(iced::Length::Fill)
+                .style(crate::theme::secondary)
+                .on_press(Message::Ai(AiMessage::PersonFilter(person.id.clone()))),
+            );
         }
         view.into()
     }

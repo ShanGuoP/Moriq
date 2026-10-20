@@ -5,6 +5,7 @@ pub struct Decoded {
     pub height: u32,
     pub image: Option<image::DynamicImage>,
 }
+pub const MAX_OUTPUT_EDGE: u32 = 8192;
 pub const RAW_EXTENSIONS: &[&str] = &[
     "raw", "dng", "crw", "cr2", "cr3", "nef", "nrw", "arw", "sr2", "srf", "rw2", "orf", "raf",
     "pef", "srw", "rwl", "3fr", "fff", "iiq", "kdc", "dcr", "mos", "mrw", "erf", "x3f",
@@ -82,6 +83,11 @@ pub fn raw_memory_mib(path: &Path) -> Result<u32> {
         let mut child = command.spawn()?;
         let start = Instant::now();
         loop {
+            if crate::cancel::stopped() {
+                let _ = child.kill();
+                let _ = child.wait();
+                crate::cancel::check()?;
+            }
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if !status.success() {
@@ -106,10 +112,10 @@ pub fn raw_memory_mib(path: &Path) -> Result<u32> {
             }
             std::thread::sleep(Duration::from_millis(15));
         }
-        if fs::metadata(&output)?.len() != 12 {
+        let bytes = fs::read(output)?;
+        if bytes.len() != 12 {
             return Err(Error::Invalid("RAW 内存回执长度无效".into()));
         }
-        let bytes = fs::read(output)?;
         let value = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
         if &bytes[..8] != b"MORIQMEM" || !(128..=1600).contains(&value) {
             return Err(Error::Invalid("RAW 内存回执无效".into()));
@@ -125,10 +131,19 @@ pub fn raw_memory_mib(path: &Path) -> Result<u32> {
 #[cfg(all(windows, bundled_libraw))]
 pub(crate) fn raw_worker() -> Result<PathBuf> {
     let exe = include_bytes!(concat!(env!("OUT_DIR"), "/raw-runtime/raw-worker.exe"));
-    let dll = include_bytes!(concat!(env!("OUT_DIR"), "/raw-runtime/libraw.dll"));
+    // LGPL users may replace this DLL in the application directory. Freeze the
+    // selected DLL beside our verified helper without pinning it to a vendor hash.
+    let source = crate::video::runtime_root()?.join("libraw.dll");
+    let mut dll = Vec::new();
+    File::open(source)?
+        .take(32 * 1024 * 1024 + 1)
+        .read_to_end(&mut dll)?;
+    if dll.len() > 32 * 1024 * 1024 {
+        return Err(Error::Invalid("RAW 运行库过大".into()));
+    }
     let mut digest = Sha256::new();
     digest.update(exe);
-    digest.update(dll);
+    digest.update(&dll);
     let root = std::env::temp_dir()
         .join("MORIQ-codecs")
         .join(format!("{:x}", digest.finalize()));
@@ -168,7 +183,7 @@ fn decode_worker(path: &Path, edge: u32, raw: bool) -> Result<Decoded> {
             process::{Command, Stdio},
             time::{Duration, Instant},
         };
-        if edge > if raw { 65535 } else { 8192 } {
+        if edge > if raw { 65535 } else { MAX_OUTPUT_EDGE } {
             return Err(Error::Invalid("系统解码输出尺寸超出预算".into()));
         }
         let output = tempfile::NamedTempFile::new()?;
@@ -187,6 +202,11 @@ fn decode_worker(path: &Path, edge: u32, raw: bool) -> Result<Decoded> {
             .spawn()?;
         let start = Instant::now();
         let status = loop {
+            if crate::cancel::stopped() {
+                let _ = child.kill();
+                let _ = child.wait();
+                crate::cancel::check()?;
+            }
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) => {}
@@ -283,7 +303,7 @@ pub fn decode_file(file: File, extension: &str, edge: u32) -> Result<Decoded> {
     };
     let mut input = tempfile::Builder::new().suffix(&suffix).tempfile()?;
     let limit = file_limit(Path::new(&format!("image.{extension}")));
-    if std::io::copy(&mut file.take(limit + 1), input.as_file_mut())? > limit {
+    if crate::cancel::copy(&mut file.take(limit + 1), input.as_file_mut())? > limit {
         return Err(Error::Invalid("媒体文件超出大小预算".into()));
     }
     input.as_file().sync_all()?;

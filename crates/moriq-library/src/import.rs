@@ -169,8 +169,14 @@ impl Library {
     ) -> Result<()> {
         let path = self.managed_location(source, Some(project), relative, Some(version))?;
         let destination = safe_path(&self.root, &path)?;
-        if !destination.exists() {
-            fs::hard_link(staged, &destination)?;
+        match fs::hard_link(staged, &destination) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if organize::hash_file(&destination)? != organize::hash_file(staged)? {
+                    return Err(Error::Invalid("项目同名副本已改变，请重新导入".into()));
+                }
+            }
+            Err(e) => return Err(e.into()),
         }
         self.db.execute(
             "INSERT OR IGNORE INTO project_files VALUES(?1,?2,?3)",
@@ -179,13 +185,32 @@ impl Library {
         Ok(())
     }
 }
-fn validate_component(value: &str) -> Result<()> {
+pub(crate) fn reserved_component(value: &str) -> bool {
+    let base = value
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_uppercase();
+    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            base.strip_prefix(prefix).is_some_and(|n| {
+                matches!(
+                    n,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
+}
+pub(crate) fn validate_component(value: &str) -> Result<()> {
     if value.is_empty()
         || value == "."
         || value == ".."
         || value.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
         || value.ends_with([' ', '.'])
         || value.chars().any(char::is_control)
+        || value.encode_utf16().count() > 255
+        || reserved_component(value)
     {
         return Err(Error::Invalid(
             "文件夹或文件名称包含无法安全保存的字符，请先重命名".into(),

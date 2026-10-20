@@ -194,7 +194,7 @@ int wmain(int argc,wchar_t** argv) {
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_BAR_CLASSES};InitCommonControlsEx(&controls);
     WNDCLASSW cls{};cls.lpfnWndProc=procedure;cls.hInstance=GetModuleHandleW(nullptr);cls.lpszClassName=L"MORIQVideoSurface";cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);RegisterClassW(&cls);
-    surface=CreateWindowExW(0,cls.lpszClassName,L"MORIQ 内置播放器",WS_CHILD|WS_CLIPCHILDREN,0,0,1,1,owner,nullptr,cls.hInstance,nullptr);if(!surface)return 3;
+    surface=CreateWindowExW(0,cls.lpszClassName,L"Moriq Space 内置播放器",WS_CHILD|WS_CLIPCHILDREN,0,0,1,1,owner,nullptr,cls.hInstance,nullptr);if(!surface)return 3;
     std::thread([]{std::string line;while(std::getline(std::cin,line)){if(line.size()>160)break;std::istringstream input(line);std::string command;double x,y,w,h;if(input>>command>>x>>y>>w>>h&&command=="RECT"&&std::isfinite(x)&&std::isfinite(y)&&std::isfinite(w)&&std::isfinite(h)&&x>=0&&y>=0&&w>=0&&h>=0&&x<=100000&&y<=100000&&w<=100000&&h<=100000){std::lock_guard<std::mutex> lock(viewport_mutex);view_x=x;view_y=y;view_w=w;view_h=h;}}stopping=true;PostMessageW(surface,WM_CLOSE,0,0);}).detach();
     pause_button=CreateWindowW(L"BUTTON",L"暂停",WS_CHILD|WS_VISIBLE,0,0,64,28,surface,reinterpret_cast<HMENU>(1),cls.hInstance,nullptr);
     mute_button=CreateWindowW(L"BUTTON",L"静音",WS_CHILD|WS_VISIBLE,0,0,86,28,surface,reinterpret_cast<HMENU>(2),cls.hInstance,nullptr);

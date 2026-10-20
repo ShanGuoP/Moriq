@@ -85,6 +85,7 @@ pub(super) struct Manager {
     pub maintenance: Option<moriq_app::MaintenanceControl>,
     pub referenced_import: bool,
     pub import_seen: usize,
+    pub import_refreshed: Option<std::time::Instant>,
     pub report: String,
     pub report_panel: Option<Panel>,
     pub synco_running: bool,
@@ -127,7 +128,7 @@ pub enum ManageMessage {
     SaveDescription,
     Cover,
     PickedCover(LibraryId, Option<PathBuf>),
-    CoverLoaded(LibraryId, Result<Option<image::Handle>, String>),
+    CoverLoaded(LibraryId, u64, Result<Option<image::Handle>, String>),
     Close,
     Filters,
     Organize,
@@ -142,8 +143,8 @@ pub enum ManageMessage {
     SelectVisible,
     RangeSelected(LibraryId, u64, Result<Vec<AssetId>, String>),
     ClearSelection,
-    OrganizerLoaded(LibraryId, Result<Organizer, String>),
-    OverviewLoaded(LibraryId, Result<moriq_app::LoadedOverview, String>),
+    OrganizerLoaded(LibraryId, u64, Result<Organizer, String>),
+    OverviewLoaded(LibraryId, u64, Result<moriq_app::LoadedOverview, String>),
     DetailsLoaded(
         LibraryId,
         AssetId,
@@ -209,6 +210,8 @@ impl App {
         }
         let id = library.info.id;
         let service = self.service.clone();
+        self.projection_request = self.projection_request.wrapping_add(1);
+        let request = self.projection_request;
         let overview_service = service.clone();
         let cover_service = service.clone();
         let activity = if self.manager.panel == Some(Panel::Activity) {
@@ -226,10 +229,10 @@ impl App {
             notices,
             Task::perform(
                 async move { overview_service.overview(id).await },
-                move |r| Message::Manage(ManageMessage::OverviewLoaded(id, r)),
+                move |r| Message::Manage(ManageMessage::OverviewLoaded(id, request, r)),
             ),
             Task::perform(async move { service.organizer(id).await }, move |r| {
-                Message::Manage(ManageMessage::OrganizerLoaded(id, r))
+                Message::Manage(ManageMessage::OrganizerLoaded(id, request, r))
             }),
             Task::perform(
                 async move {
@@ -238,7 +241,7 @@ impl App {
                         .await
                         .map(|p| p.map(|p| image::Handle::from_rgba(p.width, p.height, p.rgba)))
                 },
-                move |r| Message::Manage(ManageMessage::CoverLoaded(id, r)),
+                move |r| Message::Manage(ManageMessage::CoverLoaded(id, request, r)),
             ),
         ])
     }
@@ -822,12 +825,16 @@ impl App {
                 let service = self.service.clone();
                 return self.mutation(async move { service.set_cover(id, path).await });
             }
-            CoverLoaded(id, Ok(handle))
-                if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            CoverLoaded(id, request, Ok(handle))
+                if request == self.projection_request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.manager.cover = handle
             }
-            CoverLoaded(id, Err(e)) if self.library.as_ref().is_some_and(|l| l.info.id == id) => {
+            CoverLoaded(id, request, Err(e))
+                if request == self.projection_request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            {
                 self.error = Some(e)
             }
             Recover if !self.manager.busy && !self.launch.design_preview => {
@@ -969,8 +976,9 @@ impl App {
                 self.manager.notes = value;
                 self.manager.notes_dirty = true;
             }
-            OverviewLoaded(id, Ok(result))
-                if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            OverviewLoaded(id, request, Ok(result))
+                if request == self.projection_request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.manager.favorites = result
                     .favorites
@@ -1002,18 +1010,23 @@ impl App {
                     })
                     .collect();
             }
-            OverviewLoaded(id, Err(e))
-                if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            OverviewLoaded(id, request, Err(e))
+                if request == self.projection_request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.manager.category_covers.clear();
                 self.error = Some(e)
             }
-            OrganizerLoaded(id, Ok(result))
-                if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            OrganizerLoaded(id, request, Ok(result))
+                if request == self.projection_request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.manager.organizer = result;
                 self.refresh_people_choices();
-                return self.folder_message(FolderMessage::Covers);
+                return Task::batch([
+                    self.folder_message(FolderMessage::Covers),
+                    self.refresh_people_portraits(),
+                ]);
             }
             DetailsLoaded(id, asset, version, Ok(result))
                 if self.library.as_ref().is_some_and(|l| l.info.id == id)
@@ -1031,7 +1044,13 @@ impl App {
                 }
                 self.manager.details = result;
             }
-            OrganizerLoaded(id, Err(e)) | DetailsLoaded(id, _, _, Err(e))
+            OrganizerLoaded(id, request, Err(e))
+                if request == self.projection_request
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            {
+                self.error = Some(e)
+            }
+            DetailsLoaded(id, _, _, Err(e))
                 if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.error = Some(e)
@@ -1583,8 +1602,19 @@ impl App {
             Some(Panel::Delete) => content = content.push(self.deletion_panel()),
             Some(Panel::Compare) => content = content.push(self.compare_panel()),
             Some(Panel::Licenses) => {
-                content=content.push(muted("新增空间统计组件 file-id 0.2.3（Notify Contributors），按 MIT 许可证使用。其余依赖的完整发行许可表仍待审计。"))
+                content=content.push(muted("发行包内 THIRD_PARTY_LICENSES.md、licenses/ 和 sbom.cdx.json 提供逐项依赖清单与许可文本。模型权重的授权声明以各模型原始来源为准。"))
+                    .push(text(include_str!("../../../THIRD_PARTY_NOTICES.md")).size(12))
+                    .push(text(include_str!("../../../assets/licenses/ONNX-Runtime-MIT.txt")).size(12))
                     .push(text(include_str!("../../../assets/licenses/file-id-MIT.txt")).size(12));
+                for model in &self.ai.models {
+                    content = content.push(
+                        text(format!(
+                            "{} · {}\n{}",
+                            model.spec.name, model.spec.license, model.spec.source
+                        ))
+                        .size(12),
+                    );
+                }
             }
             Some(Panel::Help) => {
                 for line in [

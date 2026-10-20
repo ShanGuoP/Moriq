@@ -302,6 +302,7 @@ pub struct UserSettings {
     pub recent: Vec<(String, std::path::PathBuf)>,
     pub english: bool,
     pub import: ImportPreferences,
+    pub diagnostic_logging: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -362,7 +363,7 @@ impl Default for ImportPreferences {
     fn default() -> Self {
         Self {
             workers: 0,
-            memory_mib: 1024,
+            memory_mib: 2048,
         }
     }
 }

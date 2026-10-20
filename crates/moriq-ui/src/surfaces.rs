@@ -245,6 +245,9 @@ impl App {
         dismiss: bool,
     ) -> Task<Message> {
         let after = self.surface();
+        if after.panel != Some(manage::Panel::People) {
+            self.stop_people_portraits();
+        }
         if after.panel.is_some() || after.dialog.is_some() {
             self.playback = None;
             self.original_request += 1;
@@ -324,6 +327,16 @@ impl App {
         self.manager.panel = None;
         Task::none()
     }
+    pub(super) fn stop_viewer(&mut self) {
+        self.regions.reset();
+        self.original_request = self.original_request.wrapping_add(1);
+        self.original_size = None;
+        self.playback = None;
+        self.preview_expanded = false;
+        if let Some(y) = self.surfaces.viewer_y.take() {
+            self.scroll_y = y;
+        }
+    }
     pub(super) fn set_viewer(&mut self, open: bool) -> Task<Message> {
         if open {
             if !self.preview_expanded {
@@ -335,8 +348,9 @@ impl App {
                 && let (Some(library), Some(asset)) = (&self.library, &self.selected)
             {
                 if !moriq_app::is_video_format(&asset.format) {
-                    self.original_request += 1;
-                    return self.begin_regions();
+                    // The fit preview comes first. Prepare original-resolution tiles only
+                    // when the viewport is magnified beyond the preview's resolution.
+                    return Task::none();
                 } else {
                     self.original_request += 1;
                     self.playback = None;

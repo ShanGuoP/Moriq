@@ -13,6 +13,7 @@ fn owned_path(root: &Path, relative: &str) -> Result<PathBuf> {
             "assets/",
             "versions/",
             "thumbnails/256/",
+            "previews/",
             "interop/outgoing/",
         ]
         .iter()
@@ -76,6 +77,14 @@ impl Library {
         ids: &[AssetId],
         project: Option<&ProjectDeletionPlan>,
     ) -> Result<PurgeReport> {
+        let pending: bool =
+            self.db
+                .query_row("SELECT EXISTS(SELECT 1 FROM purge_jobs)", [], |r| r.get(0))?;
+        if pending {
+            return Err(Error::Invalid(
+                "存在尚未完成的删除恢复，请先检查通知和备份".into(),
+            ));
+        }
         let (job, files) = self.prepare_purge_for(ids, project)?;
         let commit = (|| {
             for (source, target) in &files {
@@ -228,6 +237,20 @@ impl Library {
                     paths.insert(path);
                 }
                 paths.insert(format!("thumbnails/256/{version}.png"));
+                parse_id(&version)?;
+                let previews = safe_path(&self.root, "previews")?;
+                if previews.is_dir() {
+                    for entry in fs::read_dir(previews)? {
+                        let entry = entry?;
+                        let name = entry.file_name();
+                        if name
+                            .to_str()
+                            .is_some_and(|name| name.starts_with(&format!("{version}-")))
+                        {
+                            paths.insert(format!("previews/{}", name.to_string_lossy()));
+                        }
+                    }
+                }
             }
             paths.extend(self.db.prepare("SELECT p.path FROM project_files p JOIN asset_versions v ON v.id=p.version_id WHERE v.asset_id=?1")?.query_map([&id], |r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?);
             let mut outgoing = self.db.prepare("SELECT t.id,v.format FROM synco_tasks t JOIN asset_versions v ON v.id=t.sent_version_id WHERE t.asset_id=?1")?;

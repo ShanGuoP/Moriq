@@ -177,7 +177,9 @@ mod tests {
         assert_eq!(lib.info().unwrap().projects[0].visited_at, 0);
         assert_eq!(lib.organizer().unwrap().description, "v9 描述");
         assert_eq!(lib.events(false, None).unwrap().items[0].detail, "旧活动");
-        assert_eq!(lib.events(true, None).unwrap().unread, 0);
+        let notices = lib.events(true, None).unwrap();
+        assert_eq!(notices.unread, 1);
+        assert_eq!(notices.items[0].kind, "升级前数据库已备份");
         assert_eq!(
             lib.db
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))

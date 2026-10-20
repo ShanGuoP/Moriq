@@ -1,6 +1,72 @@
 use super::*;
 
+fn reject_network_reference(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        if let Some(Component::Prefix(prefix)) = path.components().next()
+            && !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        {
+            return Err(Error::Invalid(
+                "不自动读取网络或设备引用。请将素材复制到本地磁盘后重新关联。".into(),
+            ));
+        }
+    }
+    #[cfg(not(windows))]
+    if path.to_string_lossy().starts_with("//") {
+        return Err(Error::Invalid(
+            "不自动读取网络引用，请将素材复制到本地后重新关联。".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Library {
+    pub(super) fn forget_import(&mut self, operation: &str) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM import_context WHERE operation_id IN(SELECT id FROM operation_journal WHERE id=?1 AND phase='committed')", [operation])?;
+        tx.execute(
+            "DELETE FROM operation_journal WHERE id=?1 AND phase='committed'",
+            [operation],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub(super) fn clean_import_staging(&mut self) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM import_context WHERE operation_id IN(SELECT id FROM operation_journal WHERE phase='committed')", [])?;
+        tx.execute("DELETE FROM operation_journal WHERE phase='committed'", [])?;
+        tx.commit()?;
+        let staging = safe_path(&self.root, "staging")?;
+        if !staging.is_dir() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(staging)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !["part", "thumb", "ready"]
+                .iter()
+                .any(|suffix| path.extension().is_some_and(|s| s == *suffix))
+            {
+                continue;
+            }
+            let Some(operation) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if Uuid::parse_str(operation).is_err() {
+                continue;
+            }
+            let registered: bool = self.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM operation_journal WHERE id=?1)",
+                [operation],
+                |r| r.get(0),
+            )?;
+            if !registered && let Err(error) = fs::remove_file(path) {
+                tracing::warn!(%error,"unused staging cleanup deferred");
+            }
+        }
+        Ok(())
+    }
     pub fn project_covers(&self) -> Result<Vec<(ProjectId, Option<AssetVersionId>)>> {
         self.db.prepare("SELECT p.id,(SELECT a.display_version_id FROM assets a JOIN project_assets pa ON pa.asset_id=a.id WHERE pa.project_id=p.id AND a.deleted_at IS NULL ORDER BY a.imported_at DESC LIMIT 1) FROM projects p ORDER BY p.name LIMIT 32")?
             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?)))?.map(|r|{let(id,v)=r?;Ok((ProjectId(parse_id(&id)?),v.map(|v|parse_id(&v).map(AssetVersionId)).transpose()?))}).collect()
@@ -17,6 +83,24 @@ impl Library {
                 let owned = if staged.is_file() { staged } else { installed };
                 if !owned.is_file() {
                     return Err(Error::Invalid("恢复副本缺失，已保留记录和原片".into()));
+                }
+                let receipt = fs::read(safe_path(
+                    &self.root,
+                    &format!("staging/{operation}.ready"),
+                )?)?;
+                let expected = receipt
+                    .as_slice()
+                    .try_into()
+                    .ok()
+                    .map(u64::from_le_bytes)
+                    .ok_or_else(|| Error::Invalid("恢复副本未完成，请保留原片并重新导入".into()))?;
+                if expected == 0
+                    || expected > native::file_limit(&original)
+                    || fs::metadata(&owned)?.len() != expected
+                {
+                    return Err(Error::Invalid(
+                        "恢复副本不完整，请保留原片并重新导入".into(),
+                    ));
                 }
                 if referenced && hash_file(&original)? != hash_file(&owned)? {
                     return Err(Error::Invalid(
@@ -40,6 +124,13 @@ impl Library {
                     "UPDATE operation_journal SET phase='committed' WHERE id=?1",
                     [&operation],
                 )?;
+                for suffix in ["part", "thumb", "ready"] {
+                    let _ = fs::remove_file(safe_path(
+                        &self.root,
+                        &format!("staging/{operation}.{suffix}"),
+                    )?);
+                }
+                self.forget_import(&operation)?;
                 Ok(imported)
             })();
             match result {
@@ -363,6 +454,7 @@ impl Library {
         Ok(())
     }
     pub fn rename_project(&mut self, id: ProjectId, name: &str) -> Result<()> {
+        import::validate_component(name.trim())?;
         if name.trim().is_empty() || name.len() > 120 {
             return Err(Error::Invalid("项目名称应为 1～120 字节".into()));
         }
@@ -424,6 +516,7 @@ impl Library {
             if !path.is_absolute() {
                 return Err(Error::Invalid("引用路径无效".into()));
             }
+            reject_network_reference(&path)?;
             if verify_reference {
                 let expected: String = self.db.query_row(
                     "SELECT sha256 FROM asset_versions WHERE id=?1",
@@ -714,6 +807,7 @@ pub(super) fn hash_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut bytes = [0u8; 65536];
     loop {
+        crate::cancel::check()?;
         let count = input.read(&mut bytes)?;
         if count == 0 {
             break;
@@ -728,7 +822,7 @@ pub(super) fn copy_owned(source: &Path, destination: &Path) -> Result<()> {
         .create_new(true)
         .write(true)
         .open(destination)?;
-    std::io::copy(&mut input, &mut output)?;
+    crate::cancel::copy(&mut input, &mut output)?;
     output.sync_all()?;
     Ok(())
 }

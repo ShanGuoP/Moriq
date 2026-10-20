@@ -1,6 +1,24 @@
 //! The application owns job execution; UI polling only refreshes projections.
 use super::*;
 
+#[derive(Default)]
+pub(super) struct Cancellation(std::sync::Mutex<Option<(LibraryId, String, Arc<AtomicBool>)>>);
+impl Cancellation {
+    pub fn register(&self, owner: LibraryId, job: String) -> Arc<AtomicBool> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((owner, job, cancel.clone()));
+        cancel
+    }
+    pub fn stop(&self, target: Option<(LibraryId, &str)>) {
+        let current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((owner, job, cancel)) = current.as_ref()
+            && target.is_none_or(|(id, name)| id == *owner && name == job)
+        {
+            cancel.store(true, Ordering::Release);
+        }
+    }
+}
+
 pub(super) fn start(service: &Service) -> std::io::Result<()> {
     // Only weak ownership of the writer queue: dropping the last public Service
     // stops scheduling and releases the active library after in-flight work settles.
@@ -11,12 +29,15 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
     let maintenance_slot = service.maintenance_slot.clone();
     let read_slots = service.read_slots.clone();
     let job_slot = service.job_slot.clone();
+    let job_cancel = service.job_cancel.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
+        .enable_time()
         .build()?;
     std::thread::Builder::new()
         .name("moriq-job-scheduler".into())
         .spawn(move || {
+            let mut failures = 0u32;
             loop {
                 let Some(queue) = queue.upgrade() else { break };
                 let service = Service {
@@ -27,23 +48,40 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
                     maintenance_slot: maintenance_slot.clone(),
                     read_slots: read_slots.clone(),
                     job_slot: job_slot.clone(),
+                    job_cancel: job_cancel.clone(),
                 };
                 let result = runtime.block_on(async {
                     let owner = service
                         .call(|active| Ok(active.as_ref().map(Library::id)))
-                        .await?;
+                        .await
+                        .map_err(|e| (None, e))?;
                     if let Some(id) = owner {
-                        service.drive_job_step(id).await?;
+                        service
+                            .drive_job_step(id)
+                            .await
+                            .map_err(|e| (Some(id), e))?;
                     }
-                    Ok::<_, String>(())
+                    Ok::<_, (Option<LibraryId>, String)>(())
                 });
-                drop(service);
-                let delay = if let Err(error) = result {
+                let delay = if let Err((owner, error)) = result {
+                    failures = failures.saturating_add(1);
                     tracing::warn!(%error, "background job scheduling failed");
-                    1000
+                    if failures >= 5
+                        && let Some(owner) = owner
+                    {
+                        let detail = format!("后台任务连续失败，已暂停。请检查后重试：{error}");
+                        let _ = runtime.block_on(service.call(move |active| {
+                            check(active, owner)?
+                                .pause_jobs_after_error(&detail)
+                                .map_err(|e| e.to_string())
+                        }));
+                    }
+                    (1000u64 << failures.min(5).saturating_sub(1)).min(30000)
                 } else {
+                    failures = 0;
                     250
                 };
+                drop(service);
                 std::thread::sleep(std::time::Duration::from_millis(delay));
             }
         })?;
@@ -95,14 +133,9 @@ mod tests {
                     .is_empty()
             );
             assert!(service.background_jobs(id).await.is_err());
+            // Reopening must succeed even while the old memory budget is held.
+            service.open(root.clone()).await.unwrap();
             drop(memory);
-            loop {
-                if service.open(root.clone()).await.is_ok() {
-                    break;
-                }
-                assert!(started.elapsed() < Duration::from_secs(15));
-                std::thread::sleep(Duration::from_millis(20));
-            }
             loop {
                 let jobs = service.background_jobs(id).await.unwrap();
                 if jobs[0].state == "completed" {
@@ -167,15 +200,12 @@ mod tests {
                 .await
                 .unwrap();
             drop(memory);
-            loop {
-                let jobs = service.background_jobs(id).await.unwrap();
-                assert_eq!(jobs[0].state, "paused");
-                if jobs[0].completed == 1 {
-                    break;
-                }
+            while service.job_slot.available_permits() == 0 {
                 assert!(started.elapsed() < Duration::from_secs(10));
                 std::thread::sleep(Duration::from_millis(20));
             }
+            let jobs = service.background_jobs(id).await.unwrap();
+            assert_eq!((jobs[0].state.as_str(), jobs[0].completed), ("paused", 0));
             let projection = service.organizer(id).await.unwrap();
             assert_eq!(projection.errors[0].0, OrganizerSection::Folders);
             service

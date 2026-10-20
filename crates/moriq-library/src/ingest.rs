@@ -12,6 +12,7 @@ pub struct Ticket {
     relative: PathBuf,
     project: Option<ProjectId>,
     referenced: bool,
+    expected_bytes: u64,
     operation: String,
     asset: AssetId,
     version: AssetVersionId,
@@ -57,6 +58,10 @@ impl Ticket {
                 output.write_all(&buffer[..count])?;
             }
             output.sync_all()?;
+            if total != self.expected_bytes {
+                return Err(Error::Invalid("读取期间源文件长度改变，请重新导入".into()));
+            }
+            staged_receipt(&self.root, &self.operation, total)?;
             Ok(())
         })();
         drop(output);
@@ -127,6 +132,15 @@ fn cancelled(cancel: &AtomicBool) -> Result<()> {
     } else {
         Ok(())
     }
+}
+pub(super) fn staged_receipt(root: &Path, operation: &str, bytes: u64) -> Result<()> {
+    let mut receipt = tempfile::NamedTempFile::new_in(safe_path(root, "staging")?)?;
+    receipt.write_all(&bytes.to_le_bytes())?;
+    receipt.as_file().sync_all()?;
+    receipt
+        .persist(safe_path(root, &format!("staging/{operation}.ready"))?)
+        .map_err(|e| Error::Io(e.error))?;
+    Ok(())
 }
 fn validate_dimensions(width: u32, height: u32) -> Result<()> {
     if width == 0 || height == 0 {
@@ -248,6 +262,7 @@ impl Library {
             relative: file.relative.clone(),
             project,
             referenced,
+            expected_bytes: length,
             operation,
             asset: AssetId::default(),
             version: AssetVersionId::default(),
@@ -280,14 +295,21 @@ impl Library {
             for path in [
                 staged,
                 self.root
+                    .join(format!("staging/{}.ready", ticket.operation)),
+                self.root
                     .join(format!("staging/{}.thumb", ticket.operation)),
             ] {
-                if let Err(error) = fs::remove_file(path) {
+                if let Err(error) = fs::remove_file(path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
                     tracing::warn!(%error,"import staging cleanup deferred");
                 }
             }
         } else {
             self.interrupt_import(&ticket)?;
+        }
+        if result.is_ok() {
+            self.forget_import(&ticket.operation)?;
         }
         result
     }

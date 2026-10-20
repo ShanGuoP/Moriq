@@ -20,7 +20,9 @@ async function load(kind, root) {
     for (const old of loaded.values()) { await old.model?.dispose?.(); await old.detector?.release?.(); await old.recognizer?.release?.(); }
     loaded.clear();
     const supported = ort.listSupportedBackends().filter(b => b.bundled).map(b => b.name);
-    const preferred = ['dml', 'cuda', 'coreml'].find(name => supported.includes(name));
+    // ORT 1.21 DirectML produces invalid tokens with the pinned quantized Florence
+    // decoder. Keep its CPU path; CLIP/faces and other backends remain eligible.
+    const preferred = ['dml', 'cuda', 'coreml'].find(name => supported.includes(name) && !(kind === 'florence' && name === 'dml'));
     let value;
     let lastError;
     for (const device of [...(preferred ? [preferred] : []), 'cpu']) {

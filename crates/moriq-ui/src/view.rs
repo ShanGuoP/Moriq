@@ -247,6 +247,9 @@ impl App {
                                     muted("简体中文")
                                 ]
                                 .align_y(Alignment::Center),
+                                iced::widget::checkbox(self.preferences.diagnostic_logging)
+                                    .label("诊断日志（重启后生效）")
+                                    .on_toggle(Message::DiagnosticLogging),
                                 heading("导入性能", 13),
                                 row![
                                     muted("同时处理上限"),
@@ -284,6 +287,7 @@ impl App {
                                     "本机自动上限 {}。并发数是上限，实际数量受内存预算限制；保存后在下次导入生效。",
                                     moriq_app::ImportControl::default().workers
                                 )),
+                                muted("新配置默认 2048 MiB；超高像素 RAW 仍可能超过解码器自身上限。"),
                                 muted(self.import.as_ref().map(|job| format!(
                                     "当前批次：最多 {} 张 / {} MiB；单张最高估算 {} MiB，解码峰值 {} 张，等待内存 {} 张。",
                                     job.workers, job.memory_mib, job.largest_mib.load(Ordering::Relaxed),
@@ -310,10 +314,16 @@ impl App {
                                 muted(
                                     "模型按需安装，可在 AI 模型页选择下载源、安装模型并管理索引任务。"
                                 ),
-                                action("查看模型管理", Message::Navigate(2)),
+                                muted(moriq_app::model_directory()
+                                    .map(|path| display_path(&path))
+                                    .unwrap_or_else(|error| error)),
+                                row![
+                                    action("查看模型管理", Message::Navigate(2)),
+                                    action("打开模型文件夹", Message::OpenModelsDirectory)
+                                ].spacing(10),
                                 separator(),
                                 column![
-                                    muted(concat!("MORIQ 墨屿  ", env!("CARGO_PKG_VERSION"))),
+                                    muted(concat!("Moriq Space  ", env!("CARGO_PKG_VERSION"))),
                                     text("杉果派").size(13).color(TEXT),
                                     button(text(moriq_app::SOURCE_REPOSITORY_URL).size(12).color(BLUE))
                                         .padding([4, 0])
@@ -721,13 +731,9 @@ impl App {
     fn sidebar(&self) -> Element<'_, Message> {
         let logo = container(
             mouse_area(
-                row![
-                    icon(Icon::Logo, 34.0, BLUE),
-                    heading("MORIQ", 18),
-                    heading("墨屿", 13)
-                ]
-                .spacing(7)
-                .align_y(Alignment::Center),
+                row![icon(Icon::Logo, 34.0, BLUE), heading("Moriq Space", 18)]
+                    .spacing(7)
+                    .align_y(Alignment::Center),
             )
             .on_press(Message::WindowDrag),
         )
@@ -1008,7 +1014,7 @@ impl App {
                 }));
             let total = self.library.as_ref().map(|l| l.info.count).unwrap_or(0);
             let favorites = self.library.as_ref().map(|l| l.info.favorites).unwrap_or(0);
-            let rows = if self.screen == Screen::Models {
+            let mut rows = if self.screen == Screen::Models {
                 vec![
                     (
                         Icon::Clock,
@@ -1103,42 +1109,16 @@ impl App {
                         self.manager.organizer.collections.len() as u64,
                         Message::Manage(ManageMessage::Collections),
                     ),
-                    (Icon::Person, "人物", 1254, Message::Navigate(2)),
                     (
-                        Icon::Landscape,
-                        "风景",
-                        2563,
-                        Message::Notice("风景内容分类需要可用模型与索引，当前尚未启用。".into()),
-                    ),
-                    (
-                        Icon::Building,
-                        "城市",
-                        986,
-                        Message::Notice("城市内容分类需要可用模型与索引，当前尚未启用。".into()),
-                    ),
-                    (
-                        Icon::Building,
-                        "建筑",
-                        742,
-                        Message::Notice("建筑内容分类需要可用模型与索引，当前尚未启用。".into()),
-                    ),
-                    (
-                        Icon::Plant,
-                        "植物",
-                        1128,
-                        Message::Notice("植物内容分类需要可用模型与索引，当前尚未启用。".into()),
-                    ),
-                    (
-                        Icon::Food,
-                        "美食",
-                        420,
-                        Message::Notice("美食内容分类需要可用模型与索引，当前尚未启用。".into()),
-                    ),
-                    (
-                        Icon::Moon,
-                        "夜景",
-                        315,
-                        Message::Notice("夜景内容分类需要可用模型与索引，当前尚未启用。".into()),
+                        Icon::Person,
+                        "人脸识别",
+                        self.manager
+                            .organizer
+                            .people
+                            .iter()
+                            .filter(|p| p.count > 0)
+                            .count() as u64,
+                        Message::Ai(AiMessage::People),
                     ),
                     (
                         Icon::Video,
@@ -1154,6 +1134,31 @@ impl App {
                     ),
                 ]
             };
+            let categories = self.sidebar_categories();
+            if self.screen != Screen::Models {
+                for (index, (category, count)) in categories.iter().enumerate() {
+                    let kind = match category.as_str() {
+                        "人像" => Icon::Person,
+                        "风景" => Icon::Landscape,
+                        "城市" | "建筑" => Icon::Building,
+                        "植物" => Icon::Plant,
+                        "插画" => Icon::Sparkles,
+                        "截图" | "动物" => Icon::Image,
+                        "美食" => Icon::Food,
+                        "夜景" => Icon::Moon,
+                        _ => Icon::Tag,
+                    };
+                    rows.insert(
+                        8 + index,
+                        (
+                            kind,
+                            category.as_str(),
+                            *count,
+                            Message::Ai(AiMessage::Category(category.clone())),
+                        ),
+                    );
+                }
+            }
             for (kind, label, count, message) in rows {
                 let displayed = if self.launch.design_preview
                     || label == "全部素材"
@@ -1169,20 +1174,21 @@ impl App {
                         "RAW 文件",
                         "未加标签",
                         "视频",
+                        "人脸识别",
                     ]
                     .contains(&label)
+                    || matches!(&message, Message::Ai(AiMessage::Category(_)))
                 {
                     count
                 } else {
                     0
                 };
-                let active = (label == "全部素材"
-                    && !self.query.favorites_only
-                    && self.query.project.is_none()
-                    && self.query.media_kind == MediaKind::All)
+                let active = (label == "全部素材" && self.query == Query::default())
                     || (label == "收藏夹" && self.query.favorites_only)
                     || (label == "RAW 文件" && self.query.media_kind == MediaKind::Raw)
-                    || (label == "视频" && self.query.media_kind == MediaKind::Video);
+                    || (label == "视频" && self.query.media_kind == MediaKind::Video)
+                    || (label == "人脸识别" && self.manager.panel == Some(manage::Panel::People))
+                    || matches!(&message, Message::Ai(AiMessage::Category(category)) if self.query.category == *category);
                 content = content.push(self.nav_row(
                     kind,
                     label,

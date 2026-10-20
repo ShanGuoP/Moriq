@@ -392,11 +392,19 @@ impl App {
                 .width(Length::Fill)
             ]
             .spacing(9),
-            muted(format!(
-                "{:.0} MiB · {}",
-                model.bytes as f64 / 1048576.,
-                model.spec.license
-            )),
+            row![
+                muted(format!(
+                    "{:.0} MiB · {}",
+                    model.bytes as f64 / 1048576.,
+                    model.spec.license
+                )),
+                Space::new().width(Length::Fill),
+                action(
+                    "查看许可",
+                    Message::Manage(crate::manage::ManageMessage::Licenses)
+                )
+            ]
+            .spacing(6),
         ]
         .spacing(12);
         if let Some(control) = downloading {

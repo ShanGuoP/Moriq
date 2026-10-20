@@ -34,6 +34,7 @@ impl Library {
             )?;
         }
         tx.commit()?;
+        self.snapshot = None;
         Ok(())
     }
 }

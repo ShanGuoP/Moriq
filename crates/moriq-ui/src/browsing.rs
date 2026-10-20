@@ -1,5 +1,42 @@
 use super::*;
 
+#[cfg(test)]
+#[test]
+#[allow(clippy::unwrap_used)]
+fn selecting_and_opening_same_version_reuses_pending_and_completed_preview() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Assets;
+    let asset = crate::tests::selected_asset();
+    let tile = Tile {
+        asset: asset.clone(),
+        handle: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
+    };
+    app.tiles = vec![tile.clone()];
+    drop(app.focus_tile(tile.clone()));
+    let request = app.original_request;
+    assert!(app.preview_task.is_some());
+    drop(app.update(Message::OpenImage(asset.id)));
+    assert_eq!(app.original_request, request);
+    assert!(app.preview_task.is_some());
+    let owner = app.library.as_ref().unwrap().info.id;
+    drop(app.update(Message::FullPreviewLoaded(
+        owner,
+        asset.id,
+        asset.version_id,
+        Ok((
+            image::Handle::from_rgba(1, 1, vec![0; 4]),
+            image::Handle::from_rgba(1, 1, vec![0; 4]),
+        )),
+    )));
+    assert!(app.preview_task.is_none());
+    assert_eq!(app.focus_tile(tile.clone()).units(), 0);
+    let mut next = tile;
+    next.asset.version_id = AssetVersionId::default();
+    drop(app.focus_tile(next));
+    assert!(app.original_request > request);
+    assert!(app.preview_background.is_none());
+}
+
 impl App {
     pub(super) fn clear_browsing(&mut self) {
         self.regions.reset();
@@ -48,6 +85,15 @@ impl App {
         task
     }
     pub(super) fn focus_tile(&mut self, tile: Tile) -> Task<Message> {
+        if self.selected.as_ref().is_some_and(|asset| {
+            asset.id == tile.asset.id && asset.version_id == tile.asset.version_id
+        }) && (self.preview_task.is_some() || self.preview_background.is_some())
+        {
+            // Selection, double-click and neighborhood receipts refer to the same load.
+            self.selected = Some(tile.asset);
+            return Task::none();
+        }
+        self.regions.reset();
         self.original_request += 1;
         self.original_size = None;
         self.playback = None;
@@ -70,6 +116,7 @@ impl App {
             self.editing_tags = false;
         }
         if !same_version {
+            self.preview_background = None;
             self.manager.details = Default::default();
         }
         let asset = tile.asset;
@@ -105,16 +152,19 @@ impl App {
         let service = self.service.clone();
         let (task, handle) = Task::perform(
             async move {
-                service.preview_full(library, id).await.map(|p| {
-                    (
-                        image::Handle::from_rgba(p.image.width, p.image.height, p.image.rgba),
-                        image::Handle::from_rgba(
-                            p.background.width,
-                            p.background.height,
-                            p.background.rgba,
-                        ),
-                    )
-                })
+                service
+                    .preview_version(library, id, version)
+                    .await
+                    .map(|p| {
+                        (
+                            image::Handle::from_rgba(p.image.width, p.image.height, p.image.rgba),
+                            image::Handle::from_rgba(
+                                p.background.width,
+                                p.background.height,
+                                p.background.rgba,
+                            ),
+                        )
+                    })
             },
             move |result| Message::FullPreviewLoaded(library, id, version, result),
         )
