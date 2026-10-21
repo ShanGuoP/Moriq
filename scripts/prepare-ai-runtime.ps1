@@ -51,6 +51,8 @@ foreach($unusedPackage in @('onnxruntime-web','guid-typescript',
     if(Test-Path -LiteralPath $unusedPath){Remove-Item -LiteralPath $unusedPath -Recurse -Force}
 }
 @{NodeVersion='24.16.0';Url=$url;Sha256=$sha;TransformersJS='3.8.1';OnnxRuntime='1.21.0';Models='Downloaded only when requested in Moriq Space'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runtime 'provenance.json') -Encoding utf8
+& python (Join-Path $PSScriptRoot 'prune-runtime-notices.py') ai
+if($LASTEXITCODE -ne 0){throw 'AI runtime notice archival failed'}
 $checksums=[ordered]@{}
 foreach($entry in (Get-ChildItem -LiteralPath $runtime -File -Recurse -Force | Sort-Object FullName)){
     $relative=[IO.Path]::GetRelativePath($runtime,$entry.FullName).Replace('\','/')

@@ -61,7 +61,11 @@ def notices(destination, reports):
     def add(name, version, license_name, folder, ecosystem, explicit=None):
         slug = name.replace("@", "").replace("/", "_") + "-" + version
         texts = set()
-        for base in [folder, folder / "licenses", folder / "LICENSES"]:
+        bases = [folder, folder / "licenses", folder / "LICENSES"]
+        if folder.is_relative_to(ROOT / "target/ai-runtime"):
+            archived = ROOT / "target/package-reports/runtime-notices/ai" / folder.relative_to(ROOT / "target/ai-runtime")
+            bases.extend([archived, archived / "licenses", archived / "LICENSES"])
+        for base in bases:
             if not base.is_dir():
                 continue
             for file in base.iterdir():
@@ -104,6 +108,9 @@ def notices(destination, reports):
     for file in sorted((ROOT / "assets/licenses").rglob("*")):
         if file.is_file() and file.suffix.lower() != ".json":
             retain("additional/" + file.relative_to(ROOT / "assets/licenses").as_posix(), file)
+    for file in sorted((ROOT / "target/package-reports/runtime-notices").rglob("*")):
+        if file.is_file() and file.name != "archived-files.json":
+            retain("runtime/" + file.relative_to(ROOT / "target/package-reports/runtime-notices").as_posix(), file)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("wb") as output:
         output.write(b"Moriq Space - license and attribution notices\n\n")
