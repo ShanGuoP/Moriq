@@ -81,15 +81,10 @@ try {
         }
         # User packages contain the application, runtimes and retained notices only.
         # Build identity and audit inventories stay beside build outputs, outside the ZIP.
-        $licensesRoot=Join-Path $stagingRoot 'licenses'
-        New-Item -ItemType Directory -Path $licensesRoot -Force | Out-Null
         New-Item -ItemType Directory -Path $reportsRoot -Force | Out-Null
-        foreach($name in @('LICENSE','NOTICE','THIRD_PARTY_NOTICES.md')){
-            Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $licensesRoot
-        }
         Copy-Item -LiteralPath (Join-Path $targetRoot 'build-info.json') -Destination (Join-Path $reportsRoot 'BUILD.json')
         ($buildInfo.version+' '+$buildInfo.build_id) | Set-Content -LiteralPath (Join-Path $reportsRoot 'VERSION') -Encoding utf8
-        & python (Join-Path $PSScriptRoot 'release-metadata.py') notices $licensesRoot $reportsRoot
+        & python (Join-Path $PSScriptRoot 'release-metadata.py') notices (Join-Path $stagingRoot 'NOTICE.txt') $reportsRoot
         if($LASTEXITCODE -ne 0){throw 'Third-party notice generation failed'}
         $auditTool=Join-Path $targetRoot 'audit-tools/bin/cargo-audit.exe'
         if(Test-Path -LiteralPath $auditTool){
@@ -115,9 +110,10 @@ try {
             if(-not(Test-Path -LiteralPath $sourceManifest)){throw 'Public release requires verified corresponding-source archives'}
             & python (Join-Path $PSScriptRoot 'validate-source-archive.py') (Split-Path -Parent $sourceManifest)
             if($LASTEXITCODE -ne 0){throw 'Corresponding-source inventory validation failed'}
-            Copy-Item -LiteralPath (Split-Path -Parent $sourceManifest) -Destination (Join-Path $licensesRoot 'corresponding-sources') -Recurse
+            Copy-Item -LiteralPath (Split-Path -Parent $sourceManifest) -Destination (Join-Path $stagingRoot 'corresponding-sources') -Recurse
         }
-        $expectedRoot=@('Moriq Space.exe','ai','codecs','licenses')
+        $expectedRoot=@('Moriq Space.exe','ai','codecs','NOTICE.txt')
+        if($PublicRelease){$expectedRoot+='corresponding-sources'}
         $actualRoot=@(Get-ChildItem -LiteralPath $stagingRoot -Force | ForEach-Object {$_.Name})
         if(Compare-Object $expectedRoot $actualRoot){throw 'Unexpected portable package root entries'}
         & python (Join-Path $PSScriptRoot 'release-metadata.py') identity

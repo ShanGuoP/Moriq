@@ -6,7 +6,6 @@ is intentionally a superset of linked packages, including build/platform crates.
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import datetime
@@ -48,10 +47,19 @@ def notices(destination, reports):
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--offline", "--filter-platform", "x86_64-pc-windows-msvc", "--format-version=1"], cwd=ROOT))
     components, lines, missing = [], ["# Third-party licenses", "", "Generated from locked Cargo metadata and installed npm packages.",
         "The inventory includes build and other-platform dependencies; it is not a declaration that every listed package is linked.", ""], []
+    retained = {}
+
+    def retain(reference, file):
+        content = file.read_bytes()
+        checksum = hashlib.sha256(content).hexdigest()
+        entry = retained.setdefault(checksum, {"content": content, "references": []})
+        entry["references"].append(reference)
+
+    for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
+        retain(f"Moriq Space/{name}", ROOT / name)
 
     def add(name, version, license_name, folder, ecosystem, explicit=None):
         slug = name.replace("@", "").replace("/", "_") + "-" + version
-        target = destination / ecosystem / slug
         texts = set()
         for base in [folder, folder / "licenses", folder / "LICENSES"]:
             if not base.is_dir():
@@ -67,13 +75,12 @@ def notices(destination, reports):
         if ecosystem == 'npm' and name.startswith('onnxruntime-'):
             texts.add(ROOT / 'assets/licenses/ONNX-Runtime-MIT.txt')
         for index, file in enumerate(sorted(texts)):
-            target.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(file, target / (str(index) + "-" + file.name))
+            retain(f"{ecosystem}/{slug}/{index}-{file.name}", file)
         if not texts:
             missing.append({"name": name, "version": version, "ecosystem": ecosystem, "license": license_name})
         components.append({"type": "library", "name": name, "version": version,
             "purl": f"pkg:{ecosystem}/{quote(name, safe='/')}@{quote(version, safe='')}", "properties": [{"name": "declared-license", "value": str(license_name)}]})
-        lines.append(f"- **{name} {version}** — {license_name}; retained texts: `{ecosystem}/{slug}/`" + (" (no upstream license text located)" if not texts else ""))
+        lines.append(f"- **{name} {version}** — {license_name}; text references below: {ecosystem}/{slug}/" + (" (no upstream license text located)" if not texts else ""))
 
     for package in metadata["packages"]:
         if package.get("source") is None and package["name"].startswith("moriq-"):
@@ -94,8 +101,21 @@ def notices(destination, reports):
             continue
         if package.get("name") and package.get("version"):
             add(package["name"], package["version"], package.get("license", "NOASSERTION"), manifest.parent, "npm")
-    shutil.copytree(ROOT / "assets/licenses", destination / "additional", dirs_exist_ok=True)
-    (destination / "THIRD_PARTY_LICENSES.md").write_text("\n".join(lines) + "\n", encoding="utf8")
+    for file in sorted((ROOT / "assets/licenses").rglob("*")):
+        if file.is_file() and file.suffix.lower() != ".json":
+            retain("additional/" + file.relative_to(ROOT / "assets/licenses").as_posix(), file)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("wb") as output:
+        output.write(b"Moriq Space - license and attribution notices\n\n")
+        output.write(("\n".join(lines) + "\n").encode("utf8"))
+        for entry in retained.values():
+            output.write(("\n" + "=" * 72 + "\n" + "\n".join(entry["references"]) + "\n\n").encode("utf8"))
+            output.write(entry["content"])
+            output.write(b"\n")
+    write(reports / "license-text-index.json", [
+        {"sha256": checksum, "references": entry["references"]}
+        for checksum, entry in retained.items()
+    ])
     write(reports / "sbom.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1, "components": components})
     write(reports / "license-gaps.json", missing)
     print(json.dumps({"components": len(components), "missing_texts": len(missing)}))
@@ -107,4 +127,4 @@ if __name__ == "__main__":
     elif sys.argv[1] == "notices":
         notices(Path(sys.argv[2]), Path(sys.argv[3]))
     else:
-        raise SystemExit("Expected identity or notices LICENSE_DIRECTORY REPORT_DIRECTORY")
+        raise SystemExit("Expected identity or notices NOTICE_FILE REPORT_DIRECTORY")
