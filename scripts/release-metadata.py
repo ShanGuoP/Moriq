@@ -44,14 +44,14 @@ def identity():
     write(ROOT / "target/build-info.json", data)
 
 
-def notices(destination):
+def notices(destination, reports):
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--offline", "--filter-platform", "x86_64-pc-windows-msvc", "--format-version=1"], cwd=ROOT))
     components, lines, missing = [], ["# Third-party licenses", "", "Generated from locked Cargo metadata and installed npm packages.",
         "The inventory includes build and other-platform dependencies; it is not a declaration that every listed package is linked.", ""], []
 
     def add(name, version, license_name, folder, ecosystem, explicit=None):
         slug = name.replace("@", "").replace("/", "_") + "-" + version
-        target = destination / "licenses" / ecosystem / slug
+        target = destination / ecosystem / slug
         texts = set()
         for base in [folder, folder / "licenses", folder / "LICENSES"]:
             if not base.is_dir():
@@ -73,7 +73,7 @@ def notices(destination):
             missing.append({"name": name, "version": version, "ecosystem": ecosystem, "license": license_name})
         components.append({"type": "library", "name": name, "version": version,
             "purl": f"pkg:{ecosystem}/{quote(name, safe='/')}@{quote(version, safe='')}", "properties": [{"name": "declared-license", "value": str(license_name)}]})
-        lines.append(f"- **{name} {version}** — {license_name}; retained texts: `licenses/{ecosystem}/{slug}/`" + (" (no upstream license text located)" if not texts else ""))
+        lines.append(f"- **{name} {version}** — {license_name}; retained texts: `{ecosystem}/{slug}/`" + (" (no upstream license text located)" if not texts else ""))
 
     for package in metadata["packages"]:
         if package.get("source") is None and package["name"].startswith("moriq-"):
@@ -94,10 +94,10 @@ def notices(destination):
             continue
         if package.get("name") and package.get("version"):
             add(package["name"], package["version"], package.get("license", "NOASSERTION"), manifest.parent, "npm")
-    shutil.copytree(ROOT / "assets/licenses", destination / "licenses/additional", dirs_exist_ok=True)
+    shutil.copytree(ROOT / "assets/licenses", destination / "additional", dirs_exist_ok=True)
     (destination / "THIRD_PARTY_LICENSES.md").write_text("\n".join(lines) + "\n", encoding="utf8")
-    write(destination / "sbom.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1, "components": components})
-    write(destination / "license-gaps.json", missing)
+    write(reports / "sbom.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1, "components": components})
+    write(reports / "license-gaps.json", missing)
     print(json.dumps({"components": len(components), "missing_texts": len(missing)}))
 
 
@@ -105,6 +105,6 @@ if __name__ == "__main__":
     if len(sys.argv) == 1 or sys.argv[1] == "identity":
         identity()
     elif sys.argv[1] == "notices":
-        notices(Path(sys.argv[2]))
+        notices(Path(sys.argv[2]), Path(sys.argv[3]))
     else:
-        raise SystemExit("Expected identity or notices DIRECTORY")
+        raise SystemExit("Expected identity or notices LICENSE_DIRECTORY REPORT_DIRECTORY")

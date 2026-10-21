@@ -125,7 +125,6 @@ pub enum ManageMessage {
     Version(AssetVersionId),
     VersionSelected(LibraryId, AssetId, AssetVersionId, Result<(), String>),
     Description(String),
-    SaveDescription,
     Cover,
     PickedCover(LibraryId, Option<PathBuf>),
     CoverLoaded(LibraryId, u64, Result<Option<image::Handle>, String>),
@@ -786,21 +785,6 @@ impl App {
                 }
             }
             Description(value) => self.manager.description_draft = Some(value),
-            SaveDescription => {
-                if !self.launch.design_preview
-                    && let Some(l) = &self.library
-                {
-                    let id = l.info.id;
-                    let service = self.service.clone();
-                    let value = self
-                        .manager
-                        .description_draft
-                        .as_ref()
-                        .unwrap_or(&self.manager.organizer.description)
-                        .clone();
-                    return self.mutation(async move { service.description(id, value).await });
-                }
-            }
             Cover => {
                 if !self.launch.design_preview
                     && let Some(l) = &self.library
@@ -1228,6 +1212,29 @@ impl App {
                     return self.reset_query();
                 }
             }
+            ReferenceImport
+                if self.library.is_some()
+                    && self.import.is_none()
+                    && !self.switching
+                    && !self.manager.busy =>
+            {
+                self.manager.referenced_import = true;
+                self.manager.busy = true;
+                self.manager.panel = None;
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("引用外部原片 · 请保留源文件及磁盘位置")
+                            .add_filter("媒体", moriq_app::IMPORT_EXTENSIONS)
+                            .pick_files()
+                            .await
+                            .map(|files| {
+                                files.into_iter().map(|f| f.path().to_path_buf()).collect()
+                            })
+                    },
+                    Message::PickedImages,
+                );
+            }
             FolderImport if self.import.is_none() && !self.manager.busy => {
                 self.manager.referenced_import = false;
                 self.manager.busy = true;
@@ -1484,7 +1491,7 @@ impl App {
         if self.compact_panel() {
             return self.popup(base);
         }
-        let mut content = Column::new().spacing(14);
+        let mut content = Column::new().spacing(18);
         for (section, _) in &self.manager.organizer.errors {
             let (panel, label) = match section {
                 OrganizerSection::Folders => (Panel::Collections, "分组"),
@@ -1546,15 +1553,54 @@ impl App {
         } else {
             Space::new().width(0).into()
         };
+        let (kind, description) = match self.manager.panel {
+            Some(Panel::Collections) => (Icon::Tag, "管理你的整理方式，让素材更有条理。"),
+            Some(Panel::People) => (
+                Icon::Person,
+                "管理已识别的人物，支持修改名称、合并人物或手动纠正识别结果。",
+            ),
+            Some(Panel::Tags) => (
+                Icon::Tag,
+                "管理标签名称与素材归类，支持重命名、合并或删除。",
+            ),
+            Some(Panel::Filters | Panel::Metadata | Panel::Rules) => {
+                (Icon::Filter, "组合搜索条件，快速找到需要的素材。")
+            }
+            Some(Panel::Project | Panel::AssetProjects) => {
+                (Icon::Folder, "管理素材所属项目与项目层级。")
+            }
+            Some(Panel::Tasks) => (Icon::Clock, "查看处理进度，管理后台任务。"),
+            Some(Panel::ExportOptions) => (Icon::Download, "选择输出格式、尺寸与整理方式。"),
+            Some(Panel::Activity) => (Icon::Clock, "查看资源库内的操作与处理记录。"),
+            Some(Panel::Notifications) => (Icon::Bell, "查看任务结果与需要关注的消息。"),
+            Some(Panel::Location) => (Icon::Pin, "查看和编辑素材的地理位置。"),
+            Some(Panel::Storage | Panel::Maintenance) => {
+                (Icon::Database, "管理本地资源、备份与资源库完整性。")
+            }
+            Some(Panel::Delete) => (Icon::Trash, "核对本次操作的范围与影响后再继续。"),
+            Some(Panel::Versions | Panel::Compare) => {
+                (Icon::Image, "查看素材版本，保留原片与编辑记录。")
+            }
+            Some(Panel::Synco) => (Icon::Network, "发送素材副本，并接收编辑后的新版本。"),
+            Some(Panel::Similar) => (Icon::Search, "查看与当前素材接近的图片。"),
+            Some(Panel::Batch | Panel::Organize) => {
+                (Icon::Edit, "统一整理所选素材的标签、评分与其他信息。")
+            }
+            Some(Panel::Licenses) => (Icon::Package, "查看第三方组件与模型的授权说明。"),
+            _ => (Icon::Settings, "管理资源库与应用工具。"),
+        };
         let header = row![
             back,
-            heading(title, 20),
-            Space::new().width(Length::Fill),
+            form_icon(kind, true),
+            iced::widget::column![heading(title, 22), muted(description)]
+                .spacing(7)
+                .width(Length::Fill),
             icon_button(Icon::Close, Message::Manage(ManageMessage::Close)).on_press_maybe(
                 (self.manager.panel != Some(Panel::Delete) || !self.manager.busy)
                     .then_some(Message::Manage(ManageMessage::Close))
             )
         ]
+        .spacing(14)
         .align_y(Alignment::Center);
         let action = |label: &str, event| {
             let selected = if self.manager.multiselect {
@@ -1602,7 +1648,7 @@ impl App {
             Some(Panel::Delete) => content = content.push(self.deletion_panel()),
             Some(Panel::Compare) => content = content.push(self.compare_panel()),
             Some(Panel::Licenses) => {
-                content=content.push(muted("发行包内 THIRD_PARTY_LICENSES.md、licenses/ 和 sbom.cdx.json 提供逐项依赖清单与许可文本。模型权重的授权声明以各模型原始来源为准。"))
+                content=content.push(muted("发行包的 licenses 文件夹内提供第三方组件说明、逐项依赖清单与许可文本。模型权重的授权声明以各模型原始来源为准。"))
                     .push(text(include_str!("../../../THIRD_PARTY_NOTICES.md")).size(12))
                     .push(text(include_str!("../../../assets/licenses/ONNX-Runtime-MIT.txt")).size(12))
                     .push(text(include_str!("../../../assets/licenses/file-id-MIT.txt")).size(12));
@@ -1939,8 +1985,12 @@ impl App {
                 content = content.push(
                     row![
                         text_input("开始日期 YYYY-MM-DD", &self.manager.date_start)
+                            .style(crate::theme::input)
+                            .padding(10)
                             .on_input(|v| Message::Manage(Date(0, v))),
                         text_input("结束日期 YYYY-MM-DD", &self.manager.date_end)
+                            .style(crate::theme::input)
+                            .padding(10)
                             .on_input(|v| Message::Manage(Date(1, v)))
                     ]
                     .spacing(8),
@@ -2142,41 +2192,74 @@ impl App {
                         )
                     ]);
                 }
-                content=content.push(checkbox(options.preserve_exif).label("保留 EXIF（JPEG / PNG / WebP 嵌入，其他格式附带 .exif）").on_toggle(|v|Message::Manage(ExportOption(7,v.to_string()))))
-                    .push(text_input("目录模板，例如 {year}/{month}/{camera}",&self.manager.export_options.directory_template).on_input(|v|Message::Manage(ExportOption(8,v))))
+                content=content.push(checkbox(options.preserve_exif).label("保留 EXIF（JPEG / PNG / WebP 嵌入，其他格式附带 .exif）").on_toggle(|v|Message::Manage(ExportOption(7,
+v.to_string()))))
+                    .push(text_input("目录模板，例如 {year}/{month}/{camera}",
+&self.manager.export_options.directory_template).style(crate::theme::input).padding(10).on_input(|v|Message::Manage(ExportOption(8,
+v))))
                     .push(muted("留空使用上方目录选择。变量：{date}、{year}、{month}、{day} 为导入日期，{format}、{camera}、{project}。转换图统一嵌入 sRGB；不复制私有 MakerNote 和旧缩略图。"))
                     .push(muted("最长边 0 表示不缩放；原文件配合缩放或旋转时输出 PNG。JPEG 透明区域使用白色背景，WebP 为无损编码。"))
                     .push(action("选择位置并导出",Export));
             }
             Some(Panel::Collections) => {
-                content = content.push(self.folders_panel());
-                content = content.push(
-                    button("编辑组合条件…")
-                        .style(secondary)
-                        .on_press(Message::Rules(crate::rules::RuleMessage::Open)),
+                content = content.push(self.folders_panel()).push(separator());
+                let mut collections = iced::widget::column![form_heading(
+                    Icon::Sparkles,
+                    "智能集合",
+                    "将当前的搜索、筛选及排序保存为智能集合；集合会随素材变化自动更新。"
+                )]
+                .spacing(16)
+                .push(
+                    text_input("集合名称", &self.manager.collection_name)
+                        .on_input(|s| Message::Manage(CollectionName(s)))
+                        .padding(10)
+                        .style(input),
+                )
+                .push(
+                    row![
+                        form_action(
+                            Icon::Filter,
+                            "编辑组合条件…",
+                            Message::Rules(crate::rules::RuleMessage::Open),
+                            true
+                        ),
+                        form_action(
+                            Icon::Collection,
+                            "保存当前条件",
+                            Message::Manage(SaveCollection),
+                            false
+                        )
+                        .on_press_maybe(
+                            (!self.manager.busy && !self.manager.collection_name.trim().is_empty())
+                                .then_some(Message::Manage(SaveCollection))
+                        )
+                    ]
+                    .spacing(12),
                 );
-                content = content
-                    .push(muted(
-                        "将当前搜索、筛选及排序保存为智能集合；集合会随素材变化自动更新。",
-                    ))
-                    .push(
-                        text_input("集合名称", &self.manager.collection_name)
-                            .on_input(|s| Message::Manage(CollectionName(s)))
-                            .padding(10)
-                            .style(input),
-                    )
-                    .push(action("保存当前条件", SaveCollection));
                 for c in &self.manager.organizer.collections {
-                    content = content.push(row![
+                    collections = collections.push(row![
                         action(&c.name, UseCollection(c.id.clone())),
                         Space::new().width(Length::Fill),
                         action("删除规则", DeleteCollection(c.id.clone()))
                     ]);
                 }
                 content = content
+                    .push(collections)
                     .push(separator())
-                    .push(heading("标签", 15))
-                    .push(action("重命名、合并或删除标签", Tags));
+                    .push(form_heading(
+                        Icon::Tag,
+                        "标签",
+                        "管理标签，支持重命名、合并或删除标签。",
+                    ))
+                    .push(
+                        form_action(
+                            Icon::Tag,
+                            "重命名、合并或删除标签",
+                            Message::Manage(Tags),
+                            false,
+                        )
+                        .width(Length::Fill),
+                    );
                 for (tag, count) in &self.manager.organizer.tags {
                     content = content.push(action(&format!("#{tag}  {count}"), Tag(tag.clone())));
                 }
@@ -2225,15 +2308,18 @@ impl App {
                 .push(text(&self.manager.report).size(12));
         }
         let has_footer = self.manager.panel == Some(Panel::Filters);
-        let body_height = (self.viewport.height
-            - 80.0
-            - 48.0
-            - 44.0
-            - 32.0
-            - if has_footer { 50.0 } else { 0.0 })
-        .max(80.0);
+        // Reserve the title, padding and fixed actions before sizing the scroll area.
+        let body_height = (self.viewport.height - if has_footer { 300.0 } else { 240.0 }).max(80.0);
+        let body_content: Element<'_, Message> = if matches!(
+            self.manager.panel,
+            Some(Panel::People | Panel::Collections | Panel::Compare)
+        ) {
+            content.into()
+        } else {
+            form_card(content)
+        };
         let body = container(
-            scroll(content)
+            scroll(body_content)
                 .id("management")
                 .on_scroll(|v| {
                     Message::OverlayScrolled(
@@ -2244,7 +2330,7 @@ impl App {
                 .height(Length::Shrink),
         )
         .max_height(body_height);
-        let mut form = iced::widget::column![header, body].spacing(16);
+        let mut form = iced::widget::column![header, separator(), body].spacing(20);
         if has_footer {
             form = form.push(
                 row![
@@ -2256,21 +2342,23 @@ impl App {
                     Space::new().width(Length::Fill),
                     action("应用", ApplyFilter)
                 ]
-                .spacing(10),
+                .spacing(10)
+                .height(44)
+                .align_y(Alignment::Center),
             );
         }
         let modal = container(form)
-            .padding(24)
+            .padding(28)
             .width(if self.manager.panel == Some(Panel::Compare) {
                 (self.viewport.width - 48.0).clamp(280.0, 1200.0)
             } else {
                 (self.viewport.width - 40.0).clamp(
                     260.0,
                     match self.manager.panel {
-                        Some(Panel::Location | Panel::Delete | Panel::AssetProjects) => 480.0,
-                        Some(Panel::Versions | Panel::Tasks) => 440.0,
-                        Some(Panel::Project | Panel::ExportOptions) => 520.0,
-                        _ => 580.0,
+                        Some(Panel::Location | Panel::Delete | Panel::AssetProjects) => 560.0,
+                        Some(Panel::Versions | Panel::Tasks) => 580.0,
+                        Some(Panel::People | Panel::Collections) => 700.0,
+                        _ => 640.0,
                     },
                 )
             })

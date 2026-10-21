@@ -126,12 +126,23 @@ mod tests {
                 [],
             )
             .unwrap();
-        lib.db.execute("INSERT INTO detected_faces(id,version_id,revision,ordinal,box,vector,person_id) VALUES('face',?1,'test',0,'[0.1,0.2,0.3,0.4]',x'00000000','person')",[asset.version_id.to_string()]).unwrap();
+        lib.db
+            .execute(
+                "INSERT INTO detected_faces(id,version_id,revision,ordinal,box,vector,person_id) \
+                VALUES('face',?1,'test',0,'[0.1,0.2,0.3,0.4]',x'00000000','person')",
+                [asset.version_id.to_string()],
+            )
+            .unwrap();
+
         let source = lib.person_portrait_source("person").unwrap().unwrap();
         assert_eq!(source.version, asset.version_id);
         assert_eq!(source.bounds, [0.1, 0.2, 0.3, 0.4]);
         let next = AssetVersionId(Uuid::new_v4());
-        lib.db.execute("INSERT INTO asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes,dominant_color) SELECT ?1,asset_id,id,'import','versions/another.png',sha256,format,width,height,bytes,dominant_color FROM asset_versions WHERE id=?2",params![next.to_string(),asset.version_id.to_string()]).unwrap();
+        lib.db.execute("INSERT INTO \
+                asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes,dominant_color) SELECT ?1,asset_id,id,'import','versions/another.png',sha256,format,width,height,bytes,dominant_color FROM asset_versions WHERE id=?2",
+params![next.to_string(),
+asset.version_id.to_string()]).unwrap();
+
         lib.display_version(asset.id, next).unwrap();
         assert!(lib.person_portrait_source("person").unwrap().is_none());
         lib.display_version(asset.id, asset.version_id).unwrap();

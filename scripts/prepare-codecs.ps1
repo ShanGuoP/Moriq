@@ -45,7 +45,11 @@ Copy-Item -LiteralPath (Join-Path $selected 'LICENSE.txt') -Destination (Join-Pa
 Copy-Item -LiteralPath (Join-Path $codecRoot 'libraw/LibRaw-0.22.2/LICENSE.LGPL') -Destination (Join-Path $licenses 'LibRaw-LGPL.txt') -Force
 Copy-Item -LiteralPath (Join-Path $codecRoot 'libraw/LibRaw-0.22.2/COPYRIGHT') -Destination (Join-Path $licenses 'LibRaw-COPYRIGHT.txt') -Force
 $artifacts | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $runtime 'provenance.json') -Encoding utf8
-$checksums=@{}
-Get-ChildItem -LiteralPath $runtime -File | Where-Object Extension -In '.dll','.exe' | ForEach-Object {$checksums[$_.Name]=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+$checksums=[ordered]@{}
+foreach($entry in (Get-ChildItem -LiteralPath $runtime -File -Recurse -Force | Sort-Object FullName)){
+    $relative=[IO.Path]::GetRelativePath($runtime,$entry.FullName).Replace('\','/')
+    if($relative -eq 'checksums.json'){continue}
+    $checksums[$relative]=(Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 $checksums | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runtime 'checksums.json') -Encoding utf8
 Write-Output "Bundled media components ready: $runtime"

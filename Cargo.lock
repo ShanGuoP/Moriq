@@ -2118,12 +2118,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
+ "iced_runtime",
  "moriq-app",
  "moriq-domain",
  "moriq-render",
  "rfd",
  "tokio",
- "toml 0.8.23",
  "tracing",
 ]
 

@@ -12,7 +12,13 @@ impl SemanticPlan {
         asset: AssetId,
         version: AssetVersionId,
     ) -> Result<Vec<(AssetId, String)>> {
-        let bytes:Option<Vec<u8>>=self.db.connection()?.query_row("SELECT e.vector FROM ai_embeddings e JOIN assets a ON a.display_version_id=e.version_id WHERE a.id=?1 AND e.version_id=?2 AND e.model_id='chinese-clip' AND e.revision=?3",params![asset.to_string(),version.to_string(),self.revision],|r|r.get(0)).optional()?;
+        let bytes:Option<Vec<u8>>=self.db.connection()?.query_row("SELECT e.vector FROM ai_embeddings e JOIN assets a ON a.display_version_id=e.version_id WHERE \
+                a.id=?1 AND e.version_id=?2 AND e.model_id='chinese-clip' AND e.revision=?3",
+params![asset.to_string(),
+version.to_string(),
+self.revision],
+|r|r.get(0)).optional()?;
+
         let Some(bytes) = bytes else {
             return Ok(Vec::new());
         };
@@ -35,7 +41,9 @@ impl SemanticPlan {
         Ok(items)
     }
     pub fn search(&self, query: &[f32], exclude: Option<AssetId>) -> Result<Vec<AssetId>> {
-        let mut stmt=self.db.connection()?.prepare("SELECT a.id,e.vector FROM ai_embeddings e JOIN assets a ON a.display_version_id=e.version_id WHERE a.deleted_at IS NULL AND e.model_id='chinese-clip' AND e.revision=?1")?;
+        let mut stmt=self.db.connection()?.prepare("SELECT a.id,e.vector FROM ai_embeddings e JOIN assets a ON a.display_version_id=e.version_id WHERE \
+                a.deleted_at IS NULL AND e.model_id='chinese-clip' AND e.revision=?1")?;
+
         let mut rows = stmt.query([&self.revision])?;
         let mut top: Vec<(AssetId, f32)> = Vec::new();
         while let Some(row) = rows.next()? {
@@ -153,16 +161,34 @@ pub(crate) fn store(
         )
         .optional()?;
     let Some(asset) = asset else { return Ok(()) };
-    tx.execute("INSERT INTO ai_results(version_id,model_id,revision,preprocessing,data,created_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(version_id,model_id,revision,preprocessing) DO UPDATE SET data=excluded.data,created_at=excluded.created_at",params![version,model,revision,PREPROCESSING,data,now_ms()?])?;
+    tx.execute("INSERT INTO ai_results(version_id,model_id,revision,preprocessing,data,created_at) \
+                VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(version_id,model_id,revision,preprocessing) DO UPDATE SET \
+                data=excluded.data,created_at=excluded.created_at",
+params![version,
+model,
+revision,
+PREPROCESSING,
+data,
+now_ms()?])?;
+
     if model == "chinese-clip" {
         let embedding = vector(&result["image_vector"])?;
-        tx.execute("INSERT INTO ai_embeddings VALUES(?1,?2,?3,?4) ON CONFLICT(version_id,model_id,revision) DO UPDATE SET vector=excluded.vector",params![version,model,revision,vector_bytes(&embedding)])?;
+        tx.execute("INSERT INTO ai_embeddings VALUES(?1,?2,?3,?4) ON CONFLICT(version_id,model_id,revision) DO UPDATE \
+                SET vector=excluded.vector",
+params![version,
+model,
+revision,
+vector_bytes(&embedding)])?;
+
         if let Some(category) = result["labels"]
             .as_array()
             .and_then(|l| l.first())
             .and_then(|l| l["label"].as_str())
         {
-            tx.execute("INSERT INTO asset_classification(asset_id,category,manual) VALUES(?1,?2,0) ON CONFLICT(asset_id) DO UPDATE SET category=excluded.category WHERE manual=0",params![asset,category])?;
+            tx.execute("INSERT INTO asset_classification(asset_id,category,manual) VALUES(?1,?2,0) ON CONFLICT(asset_id) DO \
+                UPDATE SET category=excluded.category WHERE manual=0",
+params![asset,
+category])?;
         }
     }
     if model == "faces" {
@@ -192,7 +218,9 @@ pub(crate) fn suggest_people(
     let mut best: Vec<Option<(String, f32)>> = vec![None; vectors.len()];
     let lease = pool.checkout()?;
     let db = lease.connection()?;
-    let mut stmt = db.prepare("SELECT p.person_id,p.vector FROM person_vectors p WHERE p.revision=?1 AND NOT EXISTS(SELECT 1 FROM detected_faces f WHERE f.version_id=?2 AND f.person_id=p.person_id)")?;
+    let mut stmt = db.prepare("SELECT p.person_id,p.vector FROM person_vectors p WHERE p.revision=?1 AND NOT EXISTS(SELECT 1 FROM \
+                detected_faces f WHERE f.version_id=?2 AND f.person_id=p.person_id)")?;
+
     let mut rows = stmt.query(params![model_revision("faces")?, version])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
@@ -377,7 +405,15 @@ fn store_faces(
         let id = previous
             .map(|f| f.id.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        tx.execute("INSERT INTO detected_faces(id,version_id,revision,ordinal,box,vector,person_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,version,revision,ordinal,serde_json::to_string(&bounds).map_err(|e|Error::Invalid(e.to_string()))?,vector_bytes(&embedding),person])?;
+        tx.execute("INSERT INTO detected_faces(id,version_id,revision,ordinal,box,vector,person_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+params![id,
+version,
+revision,
+ordinal,
+serde_json::to_string(&bounds).map_err(|e|Error::Invalid(e.to_string()))?,
+vector_bytes(&embedding),
+person])?;
+
         ordinal += 1;
     }
     for person in affected {
@@ -402,14 +438,25 @@ impl Library {
         }
         let tx = self.db.transaction()?;
         for id in ids {
-            tx.execute("INSERT INTO asset_classification(asset_id,category,manual) VALUES(?1,?2,1) ON CONFLICT(asset_id) DO UPDATE SET category=excluded.category,manual=1",params![id.to_string(),category.trim()])?;
+            tx.execute("INSERT INTO asset_classification(asset_id,category,manual) VALUES(?1,?2,1) ON CONFLICT(asset_id) DO \
+                UPDATE SET category=excluded.category,manual=1",
+params![id.to_string(),
+category.trim()])?;
         }
         tx.commit()?;
         self.snapshot = None;
         Ok(())
     }
     pub fn people(&self) -> Result<Vec<Person>> {
-        self.db.prepare("SELECT p.id,p.name,count(DISTINCT a.id) FROM people p LEFT JOIN detected_faces f ON f.person_id=p.id LEFT JOIN assets a ON a.display_version_id=f.version_id AND a.deleted_at IS NULL GROUP BY p.id ORDER BY count(DISTINCT a.id) DESC,p.name")?.query_map([],|r|Ok(Person{id:r.get(0)?,name:r.get(1)?,count:r.get(2)?}))?.collect::<std::result::Result<Vec<_>,_>>().map_err(Error::from)
+        self.db.prepare("SELECT p.id,p.name,count(DISTINCT a.id) FROM people p LEFT JOIN detected_faces f ON \
+                f.person_id=p.id LEFT JOIN assets a ON a.display_version_id=f.version_id AND a.deleted_at IS NULL \
+                GROUP BY p.id ORDER BY count(DISTINCT a.id) DESC,p.name")?.query_map([],
+|r|Ok(Person{
+id:r.get(0)?,
+name:r.get(1)?,
+count:r.get(2)?}
+))?.collect::<std::result::Result<Vec<_>,
+_>>().map_err(Error::from)
     }
     pub fn rename_person(&mut self, id: &str, name: &str) -> Result<()> {
         let name = name.trim();
@@ -449,7 +496,10 @@ impl Library {
         Ok(())
     }
     pub fn faces(&self, asset: AssetId) -> Result<Vec<Face>> {
-        let mut stmt=self.db.prepare("SELECT f.id,f.version_id,f.person_id,coalesce(p.name,'未分组'),f.box FROM detected_faces f JOIN assets a ON a.display_version_id=f.version_id LEFT JOIN people p ON p.id=f.person_id WHERE a.id=?1 ORDER BY f.ordinal")?;
+        let mut stmt=self.db.prepare("SELECT f.id,f.version_id,f.person_id,coalesce(p.name,'未分组'),f.box FROM detected_faces f JOIN assets \
+                a ON a.display_version_id=f.version_id LEFT JOIN people p ON p.id=f.person_id WHERE a.id=?1 ORDER \
+                BY f.ordinal")?;
+
         let rows = stmt
             .query_map([asset.to_string()], |r| {
                 Ok((

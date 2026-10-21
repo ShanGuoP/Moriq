@@ -84,6 +84,7 @@ impl Library {
         name: &str,
         parent: Option<ProjectId>,
     ) -> Result<ProjectId> {
+        import::validate_component(name.trim())?;
         let tx = self.db.transaction()?;
         if name.trim().is_empty() || name.len() > 120 {
             return Err(Error::Invalid("文件夹名称应为 1～120 字节".into()));
@@ -99,7 +100,12 @@ impl Library {
     }
     pub fn move_project(&mut self, id: ProjectId, parent: Option<ProjectId>) -> Result<()> {
         if let Some(parent) = parent {
-            let cycle:bool=self.db.query_row("WITH RECURSIVE descendants(id) AS(SELECT ?1 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT EXISTS(SELECT 1 FROM descendants WHERE id=?2)",params![id.to_string(),parent.to_string()],|r|r.get(0))?;
+            let cycle:bool=self.db.query_row("WITH RECURSIVE descendants(id) AS(SELECT ?1 UNION ALL SELECT p.id FROM projects p JOIN descendants \
+                d ON p.parent_id=d.id) SELECT EXISTS(SELECT 1 FROM descendants WHERE id=?2)",
+params![id.to_string(),
+parent.to_string()],
+|r|r.get(0))?;
+
             if cycle {
                 return Err(Error::Invalid("不能把文件夹移到自身或子文件夹下".into()));
             }
@@ -151,7 +157,11 @@ impl Library {
         Ok(())
     }
     pub fn reference_hash(&self, asset: AssetId, version: AssetVersionId) -> Result<String> {
-        self.db.query_row("SELECT v.sha256 FROM asset_versions v JOIN file_locations f ON f.version_id=v.id WHERE v.id=?1 AND v.asset_id=?2",params![version.to_string(),asset.to_string()],|r|r.get(0)).map_err(Error::from)
+        self.db.query_row("SELECT v.sha256 FROM asset_versions v JOIN file_locations f ON f.version_id=v.id WHERE v.id=?1 AND \
+                v.asset_id=?2",
+params![version.to_string(),
+asset.to_string()],
+|r|r.get(0)).map_err(Error::from)
     }
     pub fn relocate_reference(
         &mut self,

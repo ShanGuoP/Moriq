@@ -14,6 +14,7 @@ pub struct Session {
     _temporary_flat: Option<tempfile::TempPath>,
     _lease: Arc<File>,
 }
+
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RegionSession")
@@ -56,6 +57,11 @@ pub(crate) fn run(
         .spawn()?;
     let start = Instant::now();
     loop {
+        if crate::cancel::stopped() {
+            let _ = child.kill();
+            let _ = child.wait();
+            crate::cancel::check()?;
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
@@ -111,6 +117,7 @@ impl Session {
         path: tempfile::TempPath,
         lease: Arc<File>,
     ) -> Result<Self> {
+        crate::cancel::check()?;
         let mut session = Self {
             width: dimensions.0,
             height: dimensions.1,
@@ -120,14 +127,21 @@ impl Session {
             _temporary_flat: None,
             _lease: lease,
         };
-        if native::RAW_EXTENSIONS.contains(&session.extension.as_str()) {
+        let raw = native::RAW_EXTENSIONS.contains(&session.extension.as_str());
+        let raster = ["jpg", "jpeg", "png", "webp", "bmp"].contains(&session.extension.as_str())
+            && u64::from(dimensions.0) * u64::from(dimensions.1) <= 64 * 1024 * 1024;
+        if raw || raster {
+            let kind = if raw { "raw" } else { "raster" };
             let cached = cacheable
-                .then(|| safe_path(&root, &format!("previews/{version}-raw-flat1.rgba")))
+                .then(|| safe_path(&root, &format!("previews/{version}-{kind}-flat1.rgba")))
                 .transpose()?;
             let valid = cached
                 .as_ref()
                 .and_then(|path| File::open(path).ok())
-                .and_then(|mut file| header(&mut file).ok().map(|size| (file, size)));
+                .and_then(|mut file| header(&mut file).ok().map(|size| (file, size)))
+                .filter(|(_, (width, height, w, h))| {
+                    (*width, *height) == dimensions && (*w, *h) == dimensions
+                });
             let (file, (width, height, w, h)) = if let Some(value) = valid {
                 value
             } else {
@@ -139,14 +153,37 @@ impl Session {
                 } else {
                     tempfile::NamedTempFile::new()?
                 };
-                #[cfg(windows)]
-                let program = native::raw_worker()?;
-                #[cfg(target_os = "macos")]
-                let program = crate::raw_portable::worker()?;
-                #[cfg(not(any(windows, target_os = "macos")))]
-                return Err(Error::Invalid("此构建缺少内置 RAW 解码器".into()));
-                #[cfg(any(windows, target_os = "macos"))]
-                run(program, &session.path, temporary.path(), 0, None)?;
+                if raw {
+                    #[cfg(windows)]
+                    let program = native::raw_worker()?;
+                    #[cfg(target_os = "macos")]
+                    let program = crate::raw_portable::worker()?;
+                    #[cfg(not(any(windows, target_os = "macos")))]
+                    return Err(Error::Invalid("此构建缺少内置 RAW 解码器".into()));
+                    #[cfg(any(windows, target_os = "macos"))]
+                    run(program, &session.path, temporary.path(), 0, None)?;
+                } else {
+                    // Decode once in Rust, including ICC and EXIF orientation. All
+                    // viewport tiles then read this bounded, rebuildable pixel file.
+                    let image = media::raster(
+                        File::open(&session.path)?,
+                        Path::new(&format!("image.{}", session.extension)),
+                        0,
+                    )?
+                    .image
+                    .ok_or_else(|| Error::Invalid("原尺寸解码无像素".into()))?
+                    .into_rgba8();
+                    crate::cancel::check()?;
+                    if image.dimensions() != dimensions {
+                        return Err(Error::Invalid("原尺寸与登记信息不一致".into()));
+                    }
+                    let mut output = temporary.reopen()?;
+                    output.write_all(b"MORIQIMG")?;
+                    for n in [image.width(), image.height(), image.width(), image.height()] {
+                        output.write_all(&n.to_le_bytes())?;
+                    }
+                    output.write_all(image.as_raw())?;
+                }
                 let mut file = temporary.reopen()?;
                 let size = header(&mut file)?;
                 if let Some(path) = cached {
@@ -158,7 +195,7 @@ impl Session {
                 (file, size)
             };
             if (width, height) != (w, h) {
-                return Err(Error::Invalid("RAW 区域缓存不是原尺寸".into()));
+                return Err(Error::Invalid("区域缓存不是原尺寸".into()));
             }
             session.width = width;
             session.height = height;
@@ -166,7 +203,19 @@ impl Session {
         }
         Ok(session)
     }
+    pub fn tile_memory_mib(&self) -> u32 {
+        if self.flat.is_some() { 16 } else { 1024 }
+    }
+    pub fn tile_cancellable(
+        &self,
+        region: ImageRegion,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Pixels> {
+        let _scope = crate::cancel::Scope::enter(cancelled);
+        self.tile(region)
+    }
     pub fn tile(&self, region: ImageRegion) -> Result<Pixels> {
+        crate::cancel::check()?;
         if region.width == 0
             || region.height == 0
             || !region.level.is_power_of_two()
@@ -184,6 +233,7 @@ impl Session {
             let mut pixels = vec![0u8; (w * h * 4) as usize];
             let mut row = vec![0u8; region.width as usize * 4];
             for y in 0..h {
+                crate::cancel::check()?;
                 let sy = region.y + (y * region.level + region.level / 2).min(region.height - 1);
                 let mut offset =
                     24 + (u64::from(sy) * u64::from(self.width) + u64::from(region.x)) * 4;
@@ -255,5 +305,58 @@ impl Session {
         }
         let cropped = image.crop_imm(region.x, region.y, region.width, region.height);
         Ok(pixels(resize::fit(&cropped, 512)?))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn raster_tiles_reuse_decoded_pixels_rebuild_corruption_and_keep_live_handles_after_trim() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("original.png");
+        let expected =
+            image::RgbaImage::from_fn(1100, 800, |x, y| image::Rgba([x as u8, y as u8, 42, 177]));
+        expected.save(&source).unwrap();
+        let original = fs::read(&source).unwrap();
+        let mut lib = Library::create(dir.path(), "viewer").unwrap();
+        lib.import(&source, None).unwrap();
+        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
+        let cache = lib
+            .root
+            .join(format!("previews/{}-raster-flat1.rgba", asset.version_id));
+        fs::write(&cache, b"corrupt").unwrap();
+        let session = lib.media_source(asset.id).unwrap().regions().unwrap();
+        assert_eq!(session.tile_memory_mib(), 16);
+        assert_eq!(fs::metadata(&cache).unwrap().len(), 24 + 1100 * 800 * 4);
+        let region = ImageRegion {
+            x: 100,
+            y: 140,
+            width: 512,
+            height: 400,
+            level: 2,
+        };
+        let tile = session.tile(region).unwrap();
+        assert_eq!((tile.width, tile.height), (256, 200));
+        assert_eq!(&tile.rgba[..4], &expected.get_pixel(101, 141).0);
+        assert_eq!(
+            &tile.rgba[tile.rgba.len() - 4..],
+            &expected.get_pixel(611, 539).0
+        );
+        let reopened = lib.media_source(asset.id).unwrap().regions().unwrap();
+        assert_eq!(reopened.tile(region).unwrap().rgba, tile.rgba);
+        assert!(
+            reopened
+                .tile_cancellable(region, Arc::new(std::sync::atomic::AtomicBool::new(true)))
+                .is_err()
+        );
+        assert_eq!(reopened.tile(region).unwrap().rgba, tile.rgba);
+        lib.cache_plan().trim(0).unwrap();
+        assert!(!cache.exists());
+        assert_eq!(session.tile(region).unwrap().rgba, tile.rgba);
+        fs::remove_file(lib.asset_path(asset.id).unwrap()).unwrap();
+        assert_eq!(session.tile(region).unwrap().rgba, tile.rgba);
+        assert_eq!(fs::read(source).unwrap(), original);
     }
 }

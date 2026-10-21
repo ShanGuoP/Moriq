@@ -6,6 +6,7 @@ personal library, model credentials or full media paths to a public issue.
 Local validation:
 
 ```powershell
+python scripts/check-source-style.py
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-targets --all-features --locked
@@ -42,3 +43,12 @@ the publisher remains responsible for reviewing the actual source completeness.
 The scripts do not create tags, push changes, generate a publisher certificate,
 or claim a missing source archive has been reviewed. CI and the local docs
 directory remain under the project's existing user-selected policy.
+
+
+Runtime manifests are embedded at build time. AI and codec trees are verified on
+first use per process; later AI worker restarts reuse that result. Restart after
+repairing or replacing a runtime. Unknown files (including extensionless Node and
+data files) are rejected, except the informational checksums.json; debug builds
+also exclude the unused node.zip/node-unpacked preparation cache. The temporary
+AI guard is checked before every launch. This is tamper detection within the
+same-user boundary, not isolation from a process that can modify application files.

@@ -96,19 +96,17 @@ impl App {
             .into();
         }
         let mut create = button(text(if self.switching {
-            self.tr("text_021")
+            "正在打开…"
         } else {
-            self.tr("text_022")
+            "选择位置并创建"
         }))
         .padding([13, 24])
         .style(primary);
-        let mut open = action(self.tr("text_023"), Message::Open);
+        let mut open = action("打开已有资源库", Message::Open);
         if !self.switching {
             create = create.on_press(Message::Create);
         } else {
-            open = button(text(self.tr("text_023")))
-                .padding(13)
-                .style(secondary);
+            open = button(text("打开已有资源库")).padding(13).style(secondary);
         }
         container(
             column![
@@ -116,17 +114,17 @@ impl App {
                     .center_x(100)
                     .center_y(100),
                 Space::new().height(12),
-                heading(self.tr("text_024"), 32),
-                muted(self.tr("text_025")),
+                heading("每一份灵感，都有归处。", 32),
+                muted("欢迎使用 Moriq Space。创建一个资源库，开始整理你的照片与创意。"),
                 Space::new().height(12),
                 container(
                     column![
-                        heading(self.tr("text_026"), 18),
-                        text_input(self.tr("text_016"), &self.name)
+                        heading("创建你的第一个资源库", 18),
+                        text_input("资源库名称", &self.name)
                             .on_input(Message::Name)
                             .padding(13)
                             .style(input),
-                        muted(self.tr("text_027")),
+                        muted("选择保存位置后，原片、标签和项目将一起保存在 .moriq 文件夹中。"),
                         row![create, open].spacing(10),
                     ]
                     .spacing(18)
@@ -134,7 +132,7 @@ impl App {
                 .padding(28)
                 .width(580)
                 .style(panel),
-                muted(self.tr("text_028")),
+                muted("本地存储  ·  原片不覆盖  ·  AI 模型按需安装"),
             ]
             .spacing(16)
             .align_x(Alignment::Center),

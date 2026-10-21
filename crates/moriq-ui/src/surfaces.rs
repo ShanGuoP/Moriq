@@ -12,6 +12,24 @@ mod tests {
     use super::*;
     use crate::manage::Panel;
     #[test]
+    fn mov_opens_the_video_player_for_all_extension_cases() {
+        for format in ["mov", "MOV", "mOv"] {
+            let mut app = crate::tests::app();
+            app.screen = Screen::Assets;
+            let mut asset = crate::tests::selected_asset();
+            asset.format = format.into();
+            app.selected = Some(asset);
+            let request = app.original_request;
+            assert!(app.set_viewer(true).units() > 0);
+            assert!(app.preview_expanded);
+            assert!(app.original_request > request);
+            assert!(app.regions.session.is_none());
+            drop(app.set_viewer(false));
+            assert!(!app.preview_expanded);
+            assert!(app.playback.is_none());
+        }
+    }
+    #[test]
     fn tag_filter_uses_exact_tag_and_more_returns_to_the_same_query() {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
@@ -250,6 +268,8 @@ impl App {
         }
         if after.panel.is_some() || after.dialog.is_some() {
             self.playback = None;
+            self.video_frame = None;
+            self.video_upload = false;
             self.original_request += 1;
         }
         if dismiss {
@@ -332,6 +352,8 @@ impl App {
         self.original_request = self.original_request.wrapping_add(1);
         self.original_size = None;
         self.playback = None;
+        self.video_frame = None;
+        self.video_upload = false;
         self.preview_expanded = false;
         if let Some(y) = self.surfaces.viewer_y.take() {
             self.scroll_y = y;
@@ -354,6 +376,8 @@ impl App {
                 } else {
                     self.original_request += 1;
                     self.playback = None;
+                    self.video_frame = None;
+                    self.video_upload = false;
                     let request = self.original_request;
                     let (library, id, version) = (library.info.id, asset.id, asset.version_id);
                     let service = self.service.clone();
@@ -370,6 +394,8 @@ impl App {
             self.original_request += 1;
             self.original_size = None;
             self.playback = None;
+            self.video_frame = None;
+            self.video_upload = false;
             self.preview_expanded = false;
             let mut y = self.surfaces.viewer_y.take().unwrap_or(self.scroll_y);
             let height = self.active_masonry().map_or_else(

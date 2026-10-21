@@ -237,11 +237,17 @@ impl Library {
         project: Option<ProjectId>,
         referenced: bool,
     ) -> Result<Ticket> {
+        if referenced {
+            organize::reject_network_reference(&file.path)?;
+        }
         let length = fs::metadata(&file.path)?.len();
         if length == 0 || length > native::file_limit(&file.path) {
             return Err(Error::Invalid("媒体超出文件大小预算或为空文件".into()));
         }
         let source = file.path.canonicalize()?;
+        if referenced {
+            organize::reject_network_reference(&source)?;
+        }
         let project = self.resolve_import_project(file, project)?;
         let operation = Uuid::new_v4().to_string();
         let (platform, native) = organize::encode_path(&source)?;
@@ -254,7 +260,15 @@ impl Library {
             "INSERT INTO operation_journal VALUES(?1,?2,'prepared')",
             params![operation, format!("staging/{operation}.part")],
         )?;
-        tx.execute("INSERT INTO import_context(operation_id,platform,source,project_id,referenced,relative_path) VALUES(?1,?2,?3,?4,?5,?6)", params![operation, platform, native, project.map(|p|p.to_string()), referenced, relative])?;
+        tx.execute("INSERT INTO import_context(operation_id,platform,source,project_id,referenced,relative_path) \
+                VALUES(?1,?2,?3,?4,?5,?6)",
+ params![operation,
+ platform,
+ native,
+ project.map(|p|p.to_string()),
+ referenced,
+ relative])?;
+
         tx.commit()?;
         Ok(Ticket {
             root: self.root.clone(),

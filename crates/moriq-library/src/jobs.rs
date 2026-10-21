@@ -128,7 +128,10 @@ impl Library {
         Ok(())
     }
     pub fn job_failures(&self, job: &str) -> Result<Vec<JobFailure>> {
-        let mut stmt=self.db.prepare("SELECT a.id,coalesce(a.name,e.version_id),e.message FROM background_job_errors e LEFT JOIN asset_versions v ON v.id=e.version_id LEFT JOIN assets a ON a.id=v.asset_id WHERE e.job_id=?1 ORDER BY e.seq LIMIT 100")?;
+        let mut stmt=self.db.prepare("SELECT a.id,coalesce(a.name,e.version_id),e.message FROM background_job_errors e LEFT JOIN \
+                asset_versions v ON v.id=e.version_id LEFT JOIN assets a ON a.id=v.asset_id WHERE e.job_id=?1 ORDER \
+                BY e.seq LIMIT 100")?;
+
         let rows = stmt
             .query_map([job], |r| {
                 Ok((
@@ -150,7 +153,12 @@ impl Library {
     }
     fn retry_failed_job(&mut self, old: &str) -> Result<String> {
         let tx = self.db.transaction()?;
-        let source:Option<(String,i32)>=tx.query_row("SELECT kind,priority FROM background_jobs WHERE id=?1 AND state IN('completed','cancelled')",[old],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let source:Option<(String,
+i32)>=tx.query_row("SELECT kind,priority FROM background_jobs WHERE id=?1 AND state IN('completed','cancelled')",
+[old],
+|r|Ok((r.get(0)?,
+r.get(1)?))).optional()?;
+
         let Some((kind, priority)) = source else {
             return Err(Error::Invalid(
                 "请等待原任务完成或先取消，再重试失败项".into(),
@@ -158,7 +166,12 @@ impl Library {
         };
         let id = Uuid::new_v4().to_string();
         tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind,priority,now_ms()?])?;
-        tx.execute("INSERT INTO background_job_items SELECT ?1,row_number() OVER(ORDER BY e.seq),e.version_id FROM background_job_errors e JOIN asset_versions v ON v.id=e.version_id JOIN assets a ON a.id=v.asset_id WHERE e.job_id=?2 AND a.deleted_at IS NULL",params![id,old])?;
+        tx.execute("INSERT INTO background_job_items SELECT ?1,row_number() OVER(ORDER BY e.seq),e.version_id FROM \
+                background_job_errors e JOIN asset_versions v ON v.id=e.version_id JOIN assets a ON a.id=v.asset_id \
+                WHERE e.job_id=?2 AND a.deleted_at IS NULL",
+params![id,
+old])?;
+
         let count: u64 = tx.query_row(
             "SELECT count(*) FROM background_job_items WHERE job_id=?1",
             [&id],
@@ -176,7 +189,12 @@ impl Library {
         Ok(id)
     }
     pub fn abort_job(&self, job: &str, generation: i64, error: &str) -> Result<()> {
-        self.db.execute("UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1,error=?3 WHERE id=?1 AND generation=?2 AND inflight=1",params![job,generation,error.chars().take(2000).collect::<String>()])?;
+        self.db.execute("UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1,error=?3 WHERE id=?1 \
+                AND generation=?2 AND inflight=1",
+params![job,
+generation,
+error.chars().take(2000).collect::<String>()])?;
+
         Ok(())
     }
     pub fn enqueue_media_job(&mut self, kind: &str, priority: i32) -> Result<String> {
@@ -197,7 +215,10 @@ impl Library {
         if let Some(model) = kind.strip_prefix("analysis:") {
             moriq_ai::installed_path(model).map_err(Error::Invalid)?;
         }
-        let existing:Option<String>=self.db.query_row("SELECT id FROM background_jobs WHERE kind=?1 AND state IN('queued','running','paused') LIMIT 1",[kind],|r|r.get(0)).optional()?;
+        let existing:Option<String>=self.db.query_row("SELECT id FROM background_jobs WHERE kind=?1 AND state IN('queued','running','paused') LIMIT 1",
+[kind],
+|r|r.get(0)).optional()?;
+
         if let Some(id) = existing {
             return Ok(id);
         }
@@ -209,13 +230,29 @@ impl Library {
         } else {
             format!("v.format NOT IN({})", video::sql_formats())
         };
-        tx.execute(&format!("INSERT INTO background_job_items(job_id,seq,version_id) SELECT ?1,row_number() OVER(ORDER BY v.id),v.id FROM asset_versions v JOIN assets a ON a.id=v.asset_id WHERE a.deleted_at IS NULL AND {formats}"),[&id])?;
+        tx.execute(&format!("INSERT INTO background_job_items(job_id,seq,version_id) SELECT ?1,row_number() OVER(ORDER BY \
+                v.id),v.id FROM asset_versions v JOIN assets a ON a.id=v.asset_id WHERE a.deleted_at IS NULL AND \
+                {formats}"),
+[&id])?;
+
         tx.execute("UPDATE background_jobs SET total=(SELECT count(*) FROM background_job_items WHERE job_id=?1) WHERE id=?1",[&id])?;
         tx.commit()?;
         Ok(id)
     }
     pub fn background_jobs(&self) -> Result<Vec<BackgroundJob>> {
-        self.db.prepare("SELECT id,kind,state,priority,checkpoint,total,failed,error FROM background_jobs ORDER BY CASE WHEN state IN('queued','running') THEN 0 WHEN state='paused' THEN 1 ELSE 2 END,created_at DESC LIMIT 100")?.query_map([],|r|Ok(BackgroundJob{id:r.get(0)?,kind:r.get(1)?,state:r.get(2)?,priority:r.get(3)?,completed:r.get(4)?,total:r.get(5)?,failed:r.get(6)?,error:r.get(7)?}))?.collect::<std::result::Result<Vec<_>,_>>().map_err(Error::from)
+        self.db.prepare("SELECT id,kind,state,priority,checkpoint,total,failed,error FROM background_jobs ORDER BY CASE WHEN \
+                state IN('queued','running') THEN 0 WHEN state='paused' THEN 1 ELSE 2 END,created_at DESC LIMIT 100")?.query_map([],
+|r|Ok(BackgroundJob{
+id:r.get(0)?,
+kind:r.get(1)?,
+state:r.get(2)?,
+priority:r.get(3)?,
+completed:r.get(4)?,
+total:r.get(5)?,
+failed:r.get(6)?,
+error:r.get(7)?}
+))?.collect::<std::result::Result<Vec<_>,
+_>>().map_err(Error::from)
     }
     pub fn control_job(&mut self, id: &str, command: JobCommand) -> Result<()> {
         if matches!(command, JobCommand::RetryFailed) {
@@ -224,8 +261,14 @@ impl Library {
         let changed=match command{
             JobCommand::Pause=>self.db.execute("UPDATE background_jobs SET state='paused' WHERE id=?1 AND state IN('queued','running')",[id])?,
             JobCommand::Resume=>self.db.execute("UPDATE background_jobs SET state='queued',inflight=0,generation=generation+1 WHERE id=?1 AND state='paused'",[id])?,
-            JobCommand::Cancel=>self.db.execute("UPDATE background_jobs SET state='cancelled',inflight=0,generation=generation+1 WHERE id=?1 AND state IN('queued','running','paused')",[id])?,
-            JobCommand::Priority(p) if (-100..=100).contains(&p)=>self.db.execute("UPDATE background_jobs SET priority=?2 WHERE id=?1 AND state IN('queued','running','paused')",params![id,p])?,
+            JobCommand::Cancel=>self.db.execute("UPDATE background_jobs SET state='cancelled',inflight=0,generation=generation+1 WHERE id=?1 AND \
+                state IN('queued','running','paused')",
+[id])?,
+
+            JobCommand::Priority(p) if (-100..=100).contains(&p)=>self.db.execute("UPDATE background_jobs SET priority=?2 WHERE id=?1 AND state IN('queued','running','paused')",
+params![id,
+p])?,
+
             _=>return Err(Error::Invalid("任务优先级应在 -100～100 之间".into()))};
         if changed == 0 {
             return Err(Error::Invalid("任务状态已改变，请刷新后重试".into()));
@@ -233,7 +276,17 @@ impl Library {
         Ok(())
     }
     pub fn claim_job_step(&mut self) -> Result<Option<Work>> {
-        let next:Option<(String,String,i64,i64)>=self.db.query_row("SELECT id,kind,generation,checkpoint FROM background_jobs WHERE state IN('queued','running') AND inflight=0 ORDER BY priority DESC,created_at,id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        let next:Option<(String,
+String,
+i64,
+i64)>=self.db.query_row("SELECT id,kind,generation,checkpoint FROM background_jobs WHERE state IN('queued','running') AND \
+                inflight=0 ORDER BY priority DESC,created_at,id LIMIT 1",
+[],
+|r|Ok((r.get(0)?,
+r.get(1)?,
+r.get(2)?,
+r.get(3)?))).optional()?;
+
         let Some((job, kind, generation, checkpoint)) = next else {
             return Ok(None);
         };
@@ -246,14 +299,21 @@ impl Library {
             )?;
             return Ok(None);
         }
-        let item:Option<(i64,String)>=self.db.query_row("SELECT seq,version_id FROM background_job_items WHERE job_id=?1 AND seq>?2 ORDER BY seq LIMIT 1",params![job,checkpoint],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let item:Option<(i64,
+String)>=self.db.query_row("SELECT seq,version_id FROM background_job_items WHERE job_id=?1 AND seq>?2 ORDER BY seq LIMIT 1",
+params![job,
+checkpoint],
+|r|Ok((r.get(0)?,
+r.get(1)?))).optional()?;
+
         let Some((seq, version)) = item else {
-            self.db.execute(
+            let tx = self.db.transaction()?;
+            tx.execute(
                 "UPDATE background_jobs SET state='completed',checkpoint=total WHERE id=?1",
                 [&job],
             )?;
-            self.db
-                .execute("DELETE FROM background_job_items WHERE job_id=?1", [&job])?;
+            tx.execute("DELETE FROM background_job_items WHERE job_id=?1", [&job])?;
+            tx.commit()?;
             return Ok(None);
         };
         let asset: Option<String> = self
@@ -322,7 +382,12 @@ impl Library {
             return Err(Error::Invalid("后台任务所属资源库已改变".into()));
         }
         let work = outcome.work;
-        let state:Option<String>=self.db.query_row("SELECT state FROM background_jobs WHERE id=?1 AND generation=?2 AND inflight=1 AND state IN('running','paused','queued')",params![work.job,work.generation],|r|r.get(0)).optional()?;
+        let state:Option<String>=self.db.query_row("SELECT state FROM background_jobs WHERE id=?1 AND generation=?2 AND inflight=1 AND state \
+                IN('running','paused','queued')",
+params![work.job,
+work.generation],
+|r|r.get(0)).optional()?;
+
         if state.is_none() {
             return Ok(());
         }
@@ -375,9 +440,21 @@ impl Library {
             Err(error) => failure = error.chars().take(2000).collect(),
         }
         if !failure.is_empty() {
-            tx.execute("INSERT INTO background_job_errors VALUES(?1,?2,?3,?4) ON CONFLICT(job_id,seq) DO UPDATE SET message=excluded.message",params![work.job,work.seq,work.version,failure])?;
+            tx.execute("INSERT INTO background_job_errors VALUES(?1,?2,?3,?4) ON CONFLICT(job_id,seq) DO UPDATE SET \
+                message=excluded.message",
+params![work.job,
+work.seq,
+work.version,
+failure])?;
         }
-        tx.execute("UPDATE background_jobs SET checkpoint=?3,inflight=0,failed=failed+?4,error=CASE WHEN ?4 THEN ?5 ELSE error END WHERE id=?1 AND generation=?2",params![work.job,work.generation,work.seq,!failure.is_empty(),failure])?;
+        tx.execute("UPDATE background_jobs SET checkpoint=?3,inflight=0,failed=failed+?4,error=CASE WHEN ?4 THEN ?5 \
+                ELSE error END WHERE id=?1 AND generation=?2",
+params![work.job,
+work.generation,
+work.seq,
+!failure.is_empty(),
+failure])?;
+
         tx.commit()?;
         self.snapshot = None;
         Ok(())

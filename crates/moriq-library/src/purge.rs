@@ -194,9 +194,33 @@ impl Library {
                     parse_id(&operation)?;
                     paths.insert(format!("staging/{operation}.part"));
                     paths.insert(format!("staging/{operation}.thumb"));
-                    if phase != "committed" && !self.db.query_row("SELECT EXISTS(SELECT 1 FROM asset_versions WHERE path=?1 COLLATE NOCASE UNION ALL SELECT 1 FROM project_files WHERE path=?1 COLLATE NOCASE)", [&path], |r| r.get::<_,bool>(0))? {
+                    if phase != "committed" && !self.db.query_row("SELECT EXISTS(SELECT 1 FROM asset_versions WHERE path=?1 COLLATE NOCASE UNION ALL SELECT 1 FROM \
+                project_files WHERE path=?1 COLLATE NOCASE)",
+ [&path],
+ |r| r.get::<_,
+bool>(0))? {
+
                         paths.insert(path);
                     }
+                }
+            }
+        }
+        // Enumerate once rather than once per version in a large purge batch.
+        let mut previews_by_version = std::collections::HashMap::<String, Vec<String>>::new();
+        let previews = safe_path(&self.root, "previews")?;
+        if previews.is_dir() {
+            for entry in fs::read_dir(previews)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if let Some(id) = name.get(..36)
+                    && Uuid::parse_str(id).is_ok()
+                    && name.as_bytes().get(36) == Some(&b'-')
+                {
+                    previews_by_version
+                        .entry(id.to_owned())
+                        .or_default()
+                        .push(format!("previews/{name}"));
                 }
             }
         }
@@ -238,21 +262,15 @@ impl Library {
                 }
                 paths.insert(format!("thumbnails/256/{version}.png"));
                 parse_id(&version)?;
-                let previews = safe_path(&self.root, "previews")?;
-                if previews.is_dir() {
-                    for entry in fs::read_dir(previews)? {
-                        let entry = entry?;
-                        let name = entry.file_name();
-                        if name
-                            .to_str()
-                            .is_some_and(|name| name.starts_with(&format!("{version}-")))
-                        {
-                            paths.insert(format!("previews/{}", name.to_string_lossy()));
-                        }
-                    }
+                if let Some(previews) = previews_by_version.get(&version) {
+                    paths.extend(previews.iter().cloned());
                 }
             }
-            paths.extend(self.db.prepare("SELECT p.path FROM project_files p JOIN asset_versions v ON v.id=p.version_id WHERE v.asset_id=?1")?.query_map([&id], |r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?);
+            paths.extend(self.db.prepare("SELECT p.path FROM project_files p JOIN asset_versions v ON v.id=p.version_id WHERE v.asset_id=?1")?.query_map([&id],
+ |r|r.get::<_,
+String>(0))?.collect::<std::result::Result<Vec<_>,
+_>>()?);
+
             let mut outgoing = self.db.prepare("SELECT t.id,v.format FROM synco_tasks t JOIN asset_versions v ON v.id=t.sent_version_id WHERE t.asset_id=?1")?;
             for task in outgoing.query_map([&id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -273,7 +291,9 @@ impl Library {
             .collect();
         for source in paths {
             let project_alias = project_aliases.contains(source.as_str());
-            let mut owners = self.db.prepare("SELECT asset_id FROM asset_versions WHERE path=?1 COLLATE NOCASE UNION SELECT v.asset_id FROM project_files p JOIN asset_versions v ON v.id=p.version_id WHERE p.path=?1 COLLATE NOCASE")?;
+            let mut owners = self.db.prepare("SELECT asset_id FROM asset_versions WHERE path=?1 COLLATE NOCASE UNION SELECT v.asset_id FROM \
+                project_files p JOIN asset_versions v ON v.id=p.version_id WHERE p.path=?1 COLLATE NOCASE")?;
+
             for owner in owners.query_map([&source], |r| r.get::<_, String>(0))? {
                 if !selected.contains(&owner?) && !project_alias {
                     return Err(Error::Invalid(
@@ -364,6 +384,11 @@ impl Library {
         match fs::remove_dir(directory) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            // Unknown files are not authorized for deletion. Retain them, but retire
+            // the completed journal so they cannot block all later purge operations.
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                tracing::warn!(%job, "unregistered purge files retained in trash");
+            }
             Err(error) => return Err(error.into()),
         }
         self.db
@@ -376,6 +401,34 @@ impl Library {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn stray_files_do_not_block_committed_or_rolled_back_purges() {
+        for committed in [false, true] {
+            let (_dir, mut lib, assets) = fixture();
+            let asset = &assets[0];
+            lib.edit(&[asset.id], &Edit::Trash(true)).unwrap();
+            let (job, files) = lib.prepare_purge(&[asset.id]).unwrap();
+            for (source, target) in &files {
+                fs::rename(lib.root.join(source), lib.root.join(target)).unwrap();
+            }
+            let stray = lib.root.join(format!("trash/purge-{job}/desktop.ini"));
+            fs::write(&stray, b"unknown data must survive").unwrap();
+            if committed {
+                lib.commit_purge(&job, &[asset.id]).unwrap();
+            }
+            lib.recover_purges().unwrap();
+            assert_eq!(fs::read(stray).unwrap(), b"unknown data must survive");
+            assert!(
+                !lib.db
+                    .query_row("SELECT EXISTS(SELECT 1 FROM purge_jobs)", [], |r| r
+                        .get::<_, bool>(0))
+                    .unwrap()
+            );
+            let next = if committed { assets[1].id } else { asset.id };
+            lib.edit(&[next], &Edit::Trash(true)).unwrap();
+            assert_eq!(lib.purge(&[next]).unwrap().deleted, 1);
+        }
+    }
     #[test]
     fn project_delete_cleans_interrupted_imports_without_recovery_and_rolls_back_on_failure() {
         let (dir, mut library, assets) = fixture();
@@ -418,7 +471,12 @@ mod tests {
                     params![op, path, phase],
                 )
                 .unwrap();
-            library.db.execute("INSERT INTO import_context(operation_id,platform,source,project_id,referenced) VALUES(?1,?2,?3,?4,0)", params![op,platform,native,project.to_string()]).unwrap();
+            library.db.execute("INSERT INTO import_context(operation_id,platform,source,project_id,referenced) VALUES(?1,?2,?3,?4,0)",
+ params![op,
+platform,
+native,
+project.to_string()]).unwrap();
+
             for suffix in ["part", "thumb"] {
                 let staged = library.root.join(format!("staging/{op}.{suffix}"));
                 fs::write(&staged, b"recovery staging").unwrap();
@@ -589,7 +647,7 @@ mod tests {
         assert_eq!(library.info().unwrap().projects.len(), 1);
     }
     #[test]
-    fn project_delete_uses_current_scope_and_database_failure_restores_live_assets() {
+    fn project_delete_rejects_changed_scope_and_database_failure_restores_live_assets() {
         let (_dir, mut library, assets) = fixture();
         let project = library.create_project("测试项目").unwrap();
         library
@@ -611,7 +669,9 @@ mod tests {
             .db
             .execute_batch("DROP TRIGGER fail_project_delete;")
             .unwrap();
-        assert_eq!(library.delete_project_contents(&stale).unwrap().deleted, 2);
+        assert!(library.delete_project_contents(&stale).is_err());
+        assert_eq!(library.info().unwrap().count, 3);
+        assert_eq!(library.delete_project_contents(&plan).unwrap().deleted, 2);
         let empty = library.create_project("空项目").unwrap();
         let plan = library.project_deletion_plan(empty).unwrap();
         assert_eq!(library.delete_project_contents(&plan).unwrap().deleted, 0);
@@ -860,7 +920,13 @@ mod tests {
                 lib.root.join("versions/result.png"),
             )
             .unwrap();
-            lib.db.execute("INSERT INTO asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) SELECT ?1,asset_id,id,'synco','versions/result.png',sha256,format,width,height,bytes FROM asset_versions WHERE id=?2",params![returned.to_string(),asset.version_id.to_string()]).unwrap();
+            lib.db.execute("INSERT INTO \
+                asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) SELECT \
+                ?1,asset_id,id,'synco','versions/result.png',sha256,format,width,height,bytes FROM asset_versions \
+                WHERE id=?2",
+params![returned.to_string(),
+asset.version_id.to_string()]).unwrap();
+
             lib.db
                 .execute(
                     "UPDATE synco_tasks SET state=?1,ack='{}',returned_version_id=?2",

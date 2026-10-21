@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::grouped_number as number;
 use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
@@ -860,15 +861,4 @@ fn info_row<'a>(label: &str, value: String) -> Element<'a, Message> {
     ]
     .spacing(8)
     .into()
-}
-fn number(value: u64) -> String {
-    let s = value.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }

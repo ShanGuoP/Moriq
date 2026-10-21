@@ -300,9 +300,9 @@ pub struct UserSettings {
     pub synco: SyncoPreferences,
     pub ai: AiPreferences,
     pub recent: Vec<(String, std::path::PathBuf)>,
-    pub english: bool,
     pub import: ImportPreferences,
     pub diagnostic_logging: bool,
+    pub reduced_motion: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

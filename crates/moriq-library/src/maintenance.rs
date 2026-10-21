@@ -105,7 +105,10 @@ impl Plan {
         if control.cancel.load(Ordering::Relaxed) {
             return Ok(());
         }
-        db.execute_batch("PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-2048; CREATE TEMP TABLE maintenance_snapshot AS SELECT v.id,v.path,v.sha256,v.dominant_color,f.platform,f.native_path FROM asset_versions v LEFT JOIN file_locations f ON f.version_id=v.id;")?;
+        db.execute_batch("PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-2048; CREATE TEMP TABLE maintenance_snapshot AS \
+                SELECT v.id,v.path,v.sha256,v.dominant_color,f.platform,f.native_path FROM asset_versions v LEFT \
+                JOIN file_locations f ON f.version_id=v.id;")?;
+
         let total: usize = db.query_row("SELECT count(*) FROM maintenance_snapshot", [], |r| {
             r.get(0)
         })?;
@@ -161,6 +164,14 @@ impl Plan {
                 // Freeze only files that need decoding. The decoded bytes are exactly those hashed,
                 // even if an external editor changes a referenced source during this task.
                 let mut frozen = if repair && (!valid_thumbnail || color.is_empty()) {
+                    let required = fs::metadata(&source)?
+                        .len()
+                        .saturating_add(64 * 1024 * 1024);
+                    if fs2::available_space(&self.root)? < required {
+                        return Err(Error::Invalid(
+                            "剩余空间不足，无法暂存源文件以修复缓存".into(),
+                        ));
+                    }
                     Some(tempfile::NamedTempFile::new_in(safe_path(
                         &self.root, "staging",
                     )?)?)

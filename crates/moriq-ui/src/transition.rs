@@ -1,8 +1,8 @@
 //! Page-only transitions. Chrome and layout stay fixed; no screenshot or media allocation.
 use super::*;
 use std::time::Instant;
-pub(super) const FADE_OUT: Duration = Duration::from_millis(70);
-pub(super) const FADE_IN: Duration = Duration::from_millis(110);
+pub(super) const FADE_OUT: Duration = Duration::from_millis(50);
+pub(super) const FADE_IN: Duration = Duration::from_millis(130);
 pub(super) struct Entrance {
     pub started: Instant,
     sampled: Instant,
@@ -95,7 +95,6 @@ impl App {
                 | Message::AllAssets
                 | Message::Favorites
                 | Message::Project(_)
-                | Message::ModelTab(_)
                 | Message::List(_)
                 | Message::Back
                 | Message::Forward
@@ -123,13 +122,13 @@ impl App {
             Message::Project(id) => {
                 self.screen != Screen::Assets || self.query.project != Some(*id)
             }
-            Message::ModelTab(tab) => self.screen == Screen::Models && self.model_tab != *tab,
             Message::List(list) => self.screen != Screen::Assets || self.list != *list,
             _ => false,
         }
     }
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
         if let Message::TransitionFrame(now) = message {
+            self.gallery_feedback.sample(now);
             if let Some(entrance) = &mut self.surface_motion {
                 entrance.sampled = now;
                 if entrance.remaining() <= 0.0 {
@@ -158,7 +157,10 @@ impl App {
         if matches!(message, Message::ShowLibraries) {
             self.transition = None;
         }
-        if self.library.is_some() && Self::is_page_navigation(&message) {
+        if !self.preferences.reduced_motion
+            && self.library.is_some()
+            && Self::is_page_navigation(&message)
+        {
             if self.page_changes(&message) {
                 if let Some(transition) = &mut self.transition
                     && transition.pending.is_some()
@@ -189,11 +191,20 @@ impl App {
             }
         }
         let before = (self.content_screen(), self.model_tab);
+        if Self::is_page_navigation(&message) {
+            self.gallery_feedback.clear();
+        }
         let surface = self.surface();
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.commit_navigation(message);
+        if self.preferences.reduced_motion {
+            self.transition = None;
+            self.surface_motion = None;
+        }
         if surface != self.surface() {
-            self.surface_motion = self.surface_open().then(|| Entrance::new(Instant::now()));
+            self.gallery_feedback.clear();
+            self.surface_motion = (self.surface_open() && !self.preferences.reduced_motion)
+                .then(|| Entrance::new(Instant::now()));
             if self.surface_open() {
                 // A newly opened form owns input immediately; never leave it via an older click.
                 self.transition = None;
@@ -202,8 +213,13 @@ impl App {
         let current = self.library.as_ref().map(|l| l.info.id);
         if current != library {
             // Never run a queued action against a different library.
-            self.transition = current.map(|_| PageTransition::incoming(Instant::now(), 0.8));
-        } else if before != (self.content_screen(), self.model_tab) {
+            self.gallery_feedback.clear();
+            self.transition = current
+                .filter(|_| !self.preferences.reduced_motion)
+                .map(|_| PageTransition::incoming(Instant::now(), 0.8));
+        } else if !self.preferences.reduced_motion
+            && before != (self.content_screen(), self.model_tab)
+        {
             // Global destinations also animate, replacing stale outgoing actions.
             self.transition = Some(PageTransition::incoming(Instant::now(), 0.8));
         }

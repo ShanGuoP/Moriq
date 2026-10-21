@@ -1,6 +1,6 @@
 use super::*;
 
-fn reject_network_reference(path: &Path) -> Result<()> {
+pub(super) fn reject_network_reference(path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         use std::path::Prefix;
@@ -44,7 +44,7 @@ impl Library {
         for entry in fs::read_dir(staging)? {
             let entry = entry?;
             let path = entry.path();
-            if !["part", "thumb", "ready"]
+            if !["part", "thumb", "ready", "synco"]
                 .iter()
                 .any(|suffix| path.extension().is_some_and(|s| s == *suffix))
             {
@@ -68,12 +68,41 @@ impl Library {
         Ok(())
     }
     pub fn project_covers(&self) -> Result<Vec<(ProjectId, Option<AssetVersionId>)>> {
-        self.db.prepare("SELECT p.id,(SELECT a.display_version_id FROM assets a JOIN project_assets pa ON pa.asset_id=a.id WHERE pa.project_id=p.id AND a.deleted_at IS NULL ORDER BY a.imported_at DESC LIMIT 1) FROM projects p ORDER BY p.name LIMIT 32")?
-            .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?)))?.map(|r|{let(id,v)=r?;Ok((ProjectId(parse_id(&id)?),v.map(|v|parse_id(&v).map(AssetVersionId)).transpose()?))}).collect()
+        self.db.prepare("SELECT p.id,(SELECT a.display_version_id FROM assets a JOIN project_assets pa ON pa.asset_id=a.id \
+                WHERE pa.project_id=p.id AND a.deleted_at IS NULL ORDER BY a.imported_at DESC LIMIT 1) FROM \
+                projects p ORDER BY p.name LIMIT 32")?
+            .query_map([],
+|r|Ok((r.get::<_,
+String>(0)?,
+r.get::<_,
+Option<String>>(1)?)))?.map(|r|{
+let(id,
+v)=r?;
+Ok((ProjectId(parse_id(&id)?),
+v.map(|v|parse_id(&v).map(AssetVersionId)).transpose()?))}
+).collect()
     }
     pub fn recover_imports(&mut self) -> Result<ImportReport> {
-        let records=self.db.prepare("SELECT j.id,j.path,c.platform,c.source,c.project_id,c.referenced,c.relative_path FROM operation_journal j JOIN import_context c ON c.operation_id=j.id WHERE j.phase='interrupted' LIMIT 100")?
-            .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Vec<u8>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,bool>(5)?,r.get::<_,Option<String>>(6)?)))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let records=self.db.prepare("SELECT j.id,j.path,c.platform,c.source,c.project_id,c.referenced,c.relative_path FROM \
+                operation_journal j JOIN import_context c ON c.operation_id=j.id WHERE j.phase='interrupted' LIMIT \
+                100")?
+            .query_map([],
+|r|Ok((r.get::<_,
+String>(0)?,
+r.get::<_,
+String>(1)?,
+r.get::<_,
+String>(2)?,
+r.get::<_,
+Vec<u8>>(3)?,
+r.get::<_,
+Option<String>>(4)?,
+r.get::<_,
+bool>(5)?,
+r.get::<_,
+Option<String>>(6)?)))?.collect::<std::result::Result<Vec<_>,
+_>>()?;
+
         let mut report = ImportReport::default();
         for (operation, path, platform, source, project, referenced, relative) in records {
             let result = (|| {
@@ -223,21 +252,30 @@ impl Library {
             &mut errors,
             Categories,
             (|| {
-                Ok(self.db.prepare("SELECT c.category,count(*) FROM asset_classification c JOIN assets a ON a.id=c.asset_id WHERE a.deleted_at IS NULL GROUP BY c.category ORDER BY c.category")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?)
+                Ok(self.db.prepare("SELECT c.category,count(*) FROM asset_classification c JOIN assets a ON a.id=c.asset_id WHERE \
+                a.deleted_at IS NULL GROUP BY c.category ORDER BY c.category")?.query_map([],
+|r|Ok((r.get(0)?,
+r.get(1)?)))?.collect::<std::result::Result<Vec<_>,
+_>>()?)
             })(),
         );
         result.video_count = section(
             &mut errors,
             Statistics,
             (|| {
-                Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at IS NULL AND v.format IN({})",crate::video::sql_formats()),[],|r|r.get(0))?)
+                Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at \
+                IS NULL AND v.format IN({})",
+crate::video::sql_formats()),
+[],
+|r|r.get(0))?)
             })(),
         );
         result.tags = section(
             &mut errors,
             Tags,
             (|| {
-                Ok(self.db.prepare("SELECT t.name,count(*) FROM tags t JOIN asset_tags at ON at.tag_id=t.id JOIN assets a ON a.id=at.asset_id WHERE a.deleted_at IS NULL GROUP BY t.id ORDER BY t.name LIMIT 2000")?
+                Ok(self.db.prepare("SELECT t.name,count(*) FROM tags t JOIN asset_tags at ON at.tag_id=t.id JOIN assets a ON \
+                a.id=at.asset_id WHERE a.deleted_at IS NULL GROUP BY t.id ORDER BY t.name LIMIT 2000")?
             .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?)
             })(),
         );
@@ -263,7 +301,14 @@ impl Library {
             &mut errors,
             Statistics,
             (|| {
-                Ok(self.db.query_row("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM asset_tags WHERE asset_id=a.id)),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=a.id)),0),coalesce(sum(rating>=4),0) FROM assets a WHERE deleted_at IS NULL",[week],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?)
+                Ok(self.db.query_row("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM asset_tags WHERE \
+                asset_id=a.id)),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM project_assets WHERE \
+                asset_id=a.id)),0),coalesce(sum(rating>=4),0) FROM assets a WHERE deleted_at IS NULL",
+[week],
+|r|Ok((r.get(0)?,
+r.get(1)?,
+r.get(2)?,
+r.get(3)?)))?)
             })(),
         );
         result.interrupted = section(
@@ -292,7 +337,11 @@ impl Library {
             &mut errors,
             Statistics,
             (|| {
-                Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at IS NULL AND v.format IN({})",native::raw_sql()),[],|r|r.get(0))?)
+                Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at \
+                IS NULL AND v.format IN({})",
+native::raw_sql()),
+[],
+|r|r.get(0))?)
             })(),
         );
         result.synco = section(&mut errors, Synco, self.synco_tasks());
@@ -358,7 +407,11 @@ impl Library {
             projects,
             exif: vec![],
             versions:self.versions(id)?,
-            referenced:self.db.query_row("SELECT EXISTS(SELECT 1 FROM file_locations f JOIN assets a ON a.display_version_id=f.version_id WHERE a.id=?1)",[id.to_string()],|r|r.get(0))?,
+            referenced:self.db.query_row("SELECT EXISTS(SELECT 1 FROM file_locations f JOIN assets a ON a.display_version_id=f.version_id \
+                WHERE a.id=?1)",
+[id.to_string()],
+|r|r.get(0))?,
+
             ..Default::default()
         })
     }
@@ -486,7 +539,11 @@ impl Library {
             return Err(Error::Invalid("请输入 1～120 字节的集合名称".into()));
         }
         let rule = toml::to_string(query).map_err(|e| Error::Invalid(e.to_string()))?;
-        self.db.execute("INSERT INTO smart_collections VALUES(?1,?2,?3) ON CONFLICT(name) DO UPDATE SET query=excluded.query",params![Uuid::new_v4().to_string(),name.trim(),rule])?;
+        self.db.execute("INSERT INTO smart_collections VALUES(?1,?2,?3) ON CONFLICT(name) DO UPDATE SET query=excluded.query",
+params![Uuid::new_v4().to_string(),
+name.trim(),
+rule])?;
+
         Ok(())
     }
     pub fn delete_collection(&mut self, id: &str) -> Result<()> {
@@ -560,8 +617,7 @@ impl Library {
             .prefix(".moriq-backup-")
             .tempdir_in(&parent)?;
         let database = stage.path().join("catalog.db");
-        self.db
-            .execute("VACUUM INTO ?1", [database.to_string_lossy().as_ref()])?;
+        self.db.backup(rusqlite::MAIN_DB, &database, None)?;
         copy_owned(
             &safe_path(&self.root, "library.toml")?,
             &stage.path().join("library.toml"),

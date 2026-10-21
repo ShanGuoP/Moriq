@@ -268,6 +268,7 @@ pub fn install_with_mirror(id: &str, control: &DownloadControl, use_mirror: bool
             let allowed = url.host_str().is_some_and(|host| {
                 host == "huggingface.co"
                     || host == "hf-mirror.com"
+                    || host.ends_with(".hf-mirror.com")
                     || host.ends_with(".huggingface.co")
                     || host.ends_with(".hf.co")
                     || host.ends_with(".xethub.hf.co")

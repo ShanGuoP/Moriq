@@ -28,7 +28,8 @@ pub fn verify_runtime(root: &Path, manifest: &str, replaceable: &[&str]) -> Resu
                 .to_string_lossy()
                 .replace('\\', "/");
             #[cfg(debug_assertions)]
-            if relative == "node-unpacked" {
+            if relative == "node-unpacked" || relative == "node.zip" {
+                // Preparation scratch space is never packaged or used to launch Node.
                 continue;
             }
             reject_link(&path)?;
@@ -36,14 +37,9 @@ pub fn verify_runtime(root: &Path, manifest: &str, replaceable: &[&str]) -> Resu
                 pending.push(path);
                 continue;
             }
-            let executable = path.extension().and_then(|s| s.to_str()).is_some_and(|s| {
-                [
-                    "exe", "dll", "node", "js", "mjs", "cjs", "wasm", "so", "dylib",
-                ]
-                .iter()
-                .any(|e| s.eq_ignore_ascii_case(e))
-            }) || path.file_name().is_some_and(|s| s == "package.json");
-            if executable && !files.contains_key(&relative) {
+            // The manifest covers data as well as executables, including POSIX node.
+            // Its on-disk copy is informational; only the embedded copy is trusted.
+            if relative != "checksums.json" && !files.contains_key(&relative) {
                 return Err(format!("发现未登记的运行组件：{relative}"));
             }
         }
@@ -120,6 +116,11 @@ mod tests {
         let digest = format!("{:x}", Sha256::digest(b"trusted"));
         let manifest = serde_json::json!({"worker.mjs":digest}).to_string();
         assert!(verify_runtime(dir.path(), &manifest, &[]).is_ok());
+        for name in ["node", "injected.json", "shadow.js"] {
+            fs::write(dir.path().join(name), b"injected").unwrap();
+            assert!(verify_runtime(dir.path(), &manifest, &[]).is_err());
+            fs::remove_file(dir.path().join(name)).unwrap();
+        }
         fs::write(dir.path().join("shadow.js"), b"injected").unwrap();
         assert!(verify_runtime(dir.path(), &manifest, &[]).is_err());
         fs::remove_file(dir.path().join("shadow.js")).unwrap();

@@ -12,23 +12,22 @@ pub struct MasonryIndex {
     pub columns: Vec<Vec<Placement>>,
     pub width: f32,
     pub height: f32,
-    pub count: usize,
     pub widths: Vec<f32>,
 }
 impl MasonryIndex {
     pub fn new(sizes: &[(u32, u32)], columns: usize, width: f32, gap: f32) -> Self {
         let width = width.max(1.0);
         let gap = gap.max(0.0);
-        let count = columns.clamp(1, 12);
-        let mut result = vec![Vec::new(); count];
-        let mut bottoms = vec![0.0f32; count];
-        let widths = if count == 4 {
+        let column_count = columns.clamp(1, 12);
+        let mut result = vec![Vec::new(); column_count];
+        let mut bottoms = vec![0.0f32; column_count];
+        let widths = if column_count == 4 {
             [107.0, 87.0, 94.0, 100.0]
                 .into_iter()
                 .map(|weight| width * weight / 97.0)
                 .collect::<Vec<_>>()
         } else {
-            vec![width; count]
+            vec![width; column_count]
         };
         for (index, &(w, h)) in sizes.iter().enumerate() {
             let column = bottoms
@@ -52,7 +51,6 @@ impl MasonryIndex {
             columns: result,
             width,
             height,
-            count: sizes.len(),
             widths,
         }
     }

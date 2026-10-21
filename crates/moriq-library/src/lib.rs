@@ -15,9 +15,6 @@ use uuid::Uuid;
 
 const SCHEMA: u32 = 22;
 pub mod analysis;
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod audit_round2;
 mod batch;
 pub mod cache;
 mod cancel;
@@ -44,6 +41,9 @@ mod read_pool;
 pub mod region;
 pub mod similarity;
 pub mod storage;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod storage_regression_tests;
 mod vector;
 pub mod video;
 pub use catalog::validate_reference;
@@ -188,13 +188,8 @@ impl Library {
     }
     pub fn create(parent: &Path, name: &str) -> Result<Self> {
         let name = name.trim().trim_end_matches(".moriq").trim();
-        if name.is_empty()
-            || name.len() > 120
-            || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
-            || name == "."
-            || name == ".."
-            || name.ends_with([' ', '.'])
-        {
+        import::validate_component(name)?;
+        if name.len() > 120 {
             return Err(Error::Invalid(
                 "请输入有效库名，避免斜线和系统保留字符".into(),
             ));
@@ -208,6 +203,7 @@ impl Library {
         let staging = tempfile::Builder::new()
             .prefix(".moriq-create-")
             .tempdir_in(parent)?;
+        require_hardlinks(staging.path())?;
         for dir in DIRECTORIES {
             fs::create_dir_all(staging.path().join(dir))?;
         }
@@ -264,6 +260,7 @@ impl Library {
             .write(true)
             .open(safe_path(&root, "library.lock")?)?;
         lock.try_lock_exclusive().map_err(|_| Error::Locked)?;
+        require_hardlinks(&root)?;
         let db_path = safe_path(&root, "catalog.db")?;
         safe_path(&root, "catalog.db-wal")?;
         safe_path(&root, "catalog.db-shm")?;
@@ -283,7 +280,7 @@ impl Library {
             let backup = safe_path(&root, "backups")?;
             fs::create_dir_all(&backup)?;
             let backup = backup.join(format!("schema-{version}-{}.db", Uuid::new_v4()));
-            db.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
+            db.backup(rusqlite::MAIN_DB, &backup, None)?;
             tracing::info!(path = %backup.display(), "pre-migration database snapshot saved");
             Some(backup)
         } else {
@@ -406,7 +403,10 @@ impl Library {
             })
         })?;
         db.execute("UPDATE background_jobs SET inflight=0,state=CASE WHEN state='running' THEN 'queued' ELSE state END WHERE inflight=1 OR state='running'",[])?;
-        db.execute("UPDATE background_jobs SET state='paused',error='库中含外部引用，后台读取已暂停；请核对来源后在任务中继续' WHERE state='queued' AND kind<>'batch' AND EXISTS(SELECT 1 FROM file_locations)",[])?;
+        db.execute("UPDATE background_jobs SET state='paused',error='库中含外部引用，后台读取已暂停；请核对来源后在任务中继续' WHERE state='queued' \
+                AND kind<>'batch' AND EXISTS(SELECT 1 FROM file_locations)",
+[])?;
+
         if manifest.schema_version < SCHEMA {
             manifest.schema_version = SCHEMA;
             manifest.min_reader_version = SCHEMA;
@@ -486,7 +486,12 @@ impl Library {
             [],
             |r| r.get(0),
         )?;
-        let mut stmt = self.db.prepare("WITH RECURSIVE tree(root,id) AS(SELECT id,id FROM projects UNION ALL SELECT tree.root,p.id FROM projects p JOIN tree ON p.parent_id=tree.id) SELECT p.id,p.name,count(DISTINCT pa.asset_id),p.parent_id,p.visited_at FROM projects p LEFT JOIN tree ON tree.root=p.id LEFT JOIN project_assets pa ON pa.project_id=tree.id AND EXISTS(SELECT 1 FROM assets a WHERE a.id=pa.asset_id AND a.deleted_at IS NULL) GROUP BY p.id ORDER BY p.name")?;
+        let mut stmt = self.db.prepare("WITH RECURSIVE tree(root,id) AS(SELECT id,id FROM projects UNION ALL SELECT tree.root,p.id FROM \
+                projects p JOIN tree ON p.parent_id=tree.id) SELECT p.id,p.name,count(DISTINCT \
+                pa.asset_id),p.parent_id,p.visited_at FROM projects p LEFT JOIN tree ON tree.root=p.id LEFT JOIN \
+                project_assets pa ON pa.project_id=tree.id AND EXISTS(SELECT 1 FROM assets a WHERE a.id=pa.asset_id \
+                AND a.deleted_at IS NULL) GROUP BY p.id ORDER BY p.name")?;
+
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -535,7 +540,14 @@ impl Library {
     pub fn page(&mut self, query: &Query, offset: usize, limit: usize) -> Result<Page> {
         let project = query.project.map(|id| id.to_string());
         // instr makes %, _ and quotes literal. All user input stays parameterized.
-        let mut condition = "WHERE (?1='' OR instr(lower(a.name),lower(?1))>0 OR instr(lower(a.notes),lower(?1))>0 OR EXISTS(SELECT 1 FROM ai_results ar WHERE ar.version_id=v.id AND (instr(lower(coalesce(json_extract(ar.data,'$.caption'),'')),lower(?1))>0 OR instr(lower(coalesce(json_extract(ar.data,'$.ocr'),'')),lower(?1))>0)) OR EXISTS(SELECT 1 FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND instr(lower(t.name),lower(?1))>0))
+        const WHERE_HEAD: &str = "WHERE (?1='' OR instr(lower(a.name),lower(?1))>0 OR instr(lower(a.notes),lower(?1))>0 OR \
+                EXISTS(SELECT 1 FROM ai_results ar WHERE ar.version_id=v.id AND \
+                (instr(lower(coalesce(json_extract(ar.data,'$.caption'),'')),lower(?1))>0 OR \
+                instr(lower(coalesce(json_extract(ar.data,'$.ocr'),'')),lower(?1))>0)) OR EXISTS(SELECT 1 FROM \
+                asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND \
+                instr(lower(t.name),lower(?1))>0))";
+
+        const WHERE_TAIL: &str = "
           AND (?2=0 OR a.favorite=1) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM project_assets pa WHERE pa.asset_id=a.id AND pa.project_id IN(WITH RECURSIVE descendants(id) AS(SELECT ?3 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT id FROM descendants)))
           AND (a.deleted_at IS NOT NULL)=?4 AND (?5='' OR v.format=?5) AND a.rating>=?6
           AND v.bytes>=?7 AND (?8=0 OR v.bytes<=?8) AND a.imported_at>=?9 AND v.width>=?10
@@ -544,29 +556,29 @@ impl Library {
           AND (?12=0 OR NOT EXISTS(SELECT 1 FROM asset_tags WHERE asset_id=a.id))
           AND (?13=0 OR NOT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=a.id))
           AND (?14='' OR EXISTS(SELECT 1 FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND t.name=?14)) AND (?15='' OR v.dominant_color=?15) AND a.edited_at>=?16 AND (?17=0 OR (?17=1 AND NOT EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)) OR (?17=2 AND EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)))";
-        let media_condition = format!(
-            "{condition} AND (?19=0 OR (?19=1 AND v.format IN({})) OR (?19=2 AND v.format IN({}))) AND (?20='' OR EXISTS(SELECT 1 FROM asset_classification ac WHERE ac.asset_id=a.id AND ac.category=?20) OR (?20='未分类' AND NOT EXISTS(SELECT 1 FROM asset_classification ac WHERE ac.asset_id=a.id))) AND (?21='' OR EXISTS(SELECT 1 FROM detected_faces df WHERE df.version_id=v.id AND df.person_id=?21)) AND (?23=0 OR a.id IN(SELECT value FROM json_each(?22))) AND (?24='' OR EXISTS(SELECT 1 FROM virtual_folder_assets fa WHERE fa.folder_id=?24 AND fa.asset_id=a.id))",
-            native::raw_sql(),
-            video::sql_formats()
-        );
-        condition = &media_condition;
+
         let indexed_text = if query.text.chars().count() >= 3 {
             Some(format!("\"{}\"", query.text.replace('"', "\"\"")))
         } else {
             None
         };
         let search_text = indexed_text.as_deref().unwrap_or(&query.text);
-        let indexed_condition;
-        if indexed_text.is_some() {
-            let end = condition
-                .find("\n          AND (?2")
-                .ok_or_else(|| Error::Invalid("搜索条件无效".into()))?;
-            indexed_condition = format!(
-                "WHERE (a.id IN(SELECT asset_id FROM search_fts WHERE search_fts MATCH ?1) OR a.display_version_id IN(SELECT version_id FROM ai_text_fts WHERE ai_text_fts MATCH ?1)){}",
-                &condition[end..]
-            );
-            condition = &indexed_condition;
-        }
+        let where_head = if indexed_text.is_some() {
+            "WHERE (a.id IN(SELECT asset_id FROM search_fts WHERE search_fts MATCH ?1) OR a.display_version_id IN(SELECT version_id FROM ai_text_fts WHERE ai_text_fts MATCH ?1))"
+        } else {
+            WHERE_HEAD
+        };
+        let media_condition = format!(
+            "{where_head}{WHERE_TAIL} AND (?19=0 OR (?19=1 AND v.format IN({})) OR (?19=2 AND v.format IN({}))) \
+                AND (?20='' OR EXISTS(SELECT 1 FROM asset_classification ac WHERE ac.asset_id=a.id AND \
+                ac.category=?20) OR (?20='未分类' AND NOT EXISTS(SELECT 1 FROM asset_classification ac WHERE \
+                ac.asset_id=a.id))) AND (?21='' OR EXISTS(SELECT 1 FROM detected_faces df WHERE df.version_id=v.id \
+                AND df.person_id=?21)) AND (?23=0 OR a.id IN(SELECT value FROM json_each(?22))) AND (?24='' OR \
+                EXISTS(SELECT 1 FROM virtual_folder_assets fa WHERE fa.folder_id=?24 AND fa.asset_id=a.id))",
+            native::raw_sql(),
+            video::sql_formats()
+        );
+        let mut condition = media_condition.as_str();
         let mut values: Vec<rusqlite::types::Value> = params![
             search_text,
             query.favorites_only,
@@ -646,8 +658,14 @@ impl Library {
             *count
         } else {
             self.snapshot = None;
-            self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS query_snapshot(position INTEGER PRIMARY KEY,asset_id TEXT NOT NULL); CREATE UNIQUE INDEX IF NOT EXISTS query_snapshot_asset ON query_snapshot(asset_id); DELETE FROM query_snapshot;")?;
-            self.db.execute(&format!("INSERT INTO query_snapshot SELECT row_number() OVER(ORDER BY {order_by})-1,a.id FROM assets a LEFT JOIN asset_order o ON o.asset_id=a.id JOIN asset_versions v ON v.id=a.display_version_id {condition}"),rusqlite::params_from_iter(values))?;
+            self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS query_snapshot(position INTEGER PRIMARY KEY,asset_id TEXT NOT \
+                NULL); CREATE UNIQUE INDEX IF NOT EXISTS query_snapshot_asset ON query_snapshot(asset_id); DELETE \
+                FROM query_snapshot;")?;
+
+            self.db.execute(&format!("INSERT INTO query_snapshot SELECT row_number() OVER(ORDER BY {order_by})-1,a.id FROM assets a LEFT \
+                JOIN asset_order o ON o.asset_id=a.id JOIN asset_versions v ON v.id=a.display_version_id {condition}"),
+rusqlite::params_from_iter(values))?;
+
             let count = self
                 .db
                 .query_row("SELECT count(*) FROM query_snapshot", [], |r| r.get(0))?;
@@ -668,7 +686,9 @@ impl Library {
             ("query_snapshot", offset as u64, end, "ASC")
         };
         let sql = format!(
-            "SELECT a.id,v.id,a.name,v.format,v.width,v.height,v.bytes,a.favorite,a.rating,a.imported_at FROM {source} o JOIN assets a ON a.id=o.asset_id JOIN asset_versions v ON v.id=a.display_version_id WHERE o.position>=?1 AND o.position<?2 ORDER BY o.position {order}"
+            "SELECT a.id,v.id,a.name,v.format,v.width,v.height,v.bytes,a.favorite,a.rating,a.imported_at FROM \
+                {source} o JOIN assets a ON a.id=o.asset_id JOIN asset_versions v ON v.id=a.display_version_id \
+                WHERE o.position>=?1 AND o.position<?2 ORDER BY o.position {order}"
         );
         let mut stmt = self.db.prepare(&sql)?;
         let rows = stmt.query_map(params![start, end], |r| {
@@ -725,7 +745,9 @@ impl Library {
         } else {
             ("query_snapshot", "ASC")
         };
-        let mut statement=self.db.prepare(&format!("SELECT v.width,v.height FROM {table} o JOIN assets a ON a.id=o.asset_id JOIN asset_versions v ON v.id=a.display_version_id ORDER BY o.position {order}"))?;
+        let mut statement=self.db.prepare(&format!("SELECT v.width,v.height FROM {table} o JOIN assets a ON a.id=o.asset_id JOIN asset_versions v ON \
+                v.id=a.display_version_id ORDER BY o.position {order}"))?;
+
         statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -948,7 +970,21 @@ impl Library {
             "INSERT INTO assets(id,display_version_id,name,imported_at) VALUES(?1,?2,?3,?4)",
             params![asset.to_string(), version.to_string(), name, now_ms()?],
         )?;
-        transaction.execute("INSERT INTO asset_versions(id,asset_id,origin,path,sha256,format,width,height,bytes) VALUES(?1,?2,'original',?3,?4,?5,?6,?7,?8)",params![version.to_string(),asset.to_string(),relative,hash,extension,width,height,fs::metadata(staged)?.len()])?;
+        transaction.execute(
+            "INSERT INTO asset_versions(id,asset_id,origin,path,sha256,format,width,height,bytes) \
+                VALUES(?1,?2,'original',?3,?4,?5,?6,?7,?8)",
+            params![
+                version.to_string(),
+                asset.to_string(),
+                relative,
+                hash,
+                extension,
+                width,
+                height,
+                fs::metadata(staged)?.len()
+            ],
+        )?;
+
         if let Some(metadata) = video {
             transaction.execute(
                 "INSERT INTO video_metadata(version_id,json) VALUES(?1,?2)",
@@ -1052,8 +1088,8 @@ impl Library {
     }
     pub fn create_project(&self, name: &str) -> Result<ProjectId> {
         import::validate_component(name.trim())?;
-        if name.trim().is_empty() || name.len() > 1024 {
-            return Err(Error::Invalid("项目名不能为空且最多 1024 字节".into()));
+        if name.trim().is_empty() || name.len() > 120 {
+            return Err(Error::Invalid("项目名不能为空且最多 120 字节".into()));
         }
         let id = ProjectId::default();
         self.db.execute(
@@ -1065,6 +1101,7 @@ impl Library {
 }
 
 /// Explicit diagnostics output; never used for library content.
+#[cfg(feature = "capture")]
 pub fn save_capture(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
     image::save_buffer_with_format(
         path,
@@ -1084,6 +1121,16 @@ pub fn decode_resource(bytes: &[u8]) -> Result<Pixels> {
     limits.max_alloc = Some(32 * 1024 * 1024);
     reader.limits(limits);
     Ok(pixels(reader.decode()?))
+}
+
+fn require_hardlinks(root: &Path) -> Result<()> {
+    let probe = tempfile::NamedTempFile::new_in(root)?;
+    let link = root.join(format!(".moriq-link-probe-{}", Uuid::new_v4()));
+    fs::hard_link(probe.path(), &link).map_err(|error| Error::Invalid(format!(
+        "此位置无法创建资源库所需的硬链接（{error}）。请将资源库放在支持硬链接的 NTFS、APFS 或 ext4 卷上。"
+    )))?;
+    fs::remove_file(link)?;
+    Ok(())
 }
 
 fn parse_id(value: &str) -> Result<Uuid> {
@@ -1280,7 +1327,14 @@ mod tests {
         for (previous, total) in [(0, 100_000), (100_000, 500_000)] {
             let started = std::time::Instant::now();
             let tx = lib.db.transaction().unwrap();
-            tx.execute_batch(&format!("WITH RECURSIVE n(i) AS(SELECT {} UNION ALL SELECT i+1 FROM n WHERE i<{}) INSERT INTO assets(id,display_version_id,name,imported_at) SELECT printf('00000000-0000-4000-8000-%012x',i),printf('10000000-0000-4000-8000-%012x',i),printf('样本_%06d.png',i),i FROM n; INSERT INTO asset_versions(id,asset_id,origin,path,sha256,format,width,height,bytes) SELECT display_version_id,id,'original','assets/00/'||display_version_id||'.png','{}','png',1,1,3 FROM assets WHERE imported_at>{};",previous+1,total,"a".repeat(64),previous)).unwrap();
+            tx.execute_batch(&format!("WITH RECURSIVE n(i) AS(SELECT {} UNION ALL SELECT i+1 FROM n WHERE i<{}) INSERT INTO \
+                assets(id,display_version_id,name,imported_at) SELECT \
+                printf('00000000-0000-4000-8000-%012x',i),printf('10000000-0000-4000-8000-%012x',i),printf('样本_%06d.png',i),i FROM n; INSERT INTO asset_versions(id,asset_id,origin,path,sha256,format,width,height,bytes) SELECT display_version_id,id,'original','assets/00/'||display_version_id||'.png','{}','png',1,1,3 FROM assets WHERE imported_at>{};",
+previous+1,
+total,
+"a".repeat(64),
+previous)).unwrap();
+
             tx.commit().unwrap();
             lib.snapshot = None;
             println!(

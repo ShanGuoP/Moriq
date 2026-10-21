@@ -50,6 +50,17 @@ fn fit_view_does_not_decode_original_and_repeated_zoom_does_not_restart_it() {
     assert!(app.regions.loading);
     assert_eq!(app.regions.target_scale, Some(1.0 / app.dpi_scale));
     assert!(app.regions.zoom_request > 0);
+    let cancelled = app.regions.cancelled.clone();
+    drop(app.set_viewer(false));
+    assert!(cancelled.load(Ordering::Acquire));
+    assert!(!app.regions.cancelled.load(Ordering::Acquire));
+    drop(app.set_viewer(true));
+    drop(app.region_message(RegionMessage::Actual));
+    let closing = app.regions.cancelled.clone();
+    drop(app.update(Message::WindowClose));
+    assert!(closing.load(Ordering::Acquire));
+    assert!(!app.preview_expanded);
+    assert!(app.regions.session_task.is_none());
 }
 use std::{
     collections::{HashMap, HashSet},
@@ -79,9 +90,22 @@ pub(super) struct Regions {
     pending: HashSet<ImageRegion>,
     failed: HashSet<ImageRegion>,
     clock: u64,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    session_task: Option<iced::task::Handle>,
+    tile_tasks: HashMap<ImageRegion, iced::task::Handle>,
 }
 impl Regions {
+    pub fn is_loading(&self) -> bool {
+        self.loading || !self.pending.is_empty()
+    }
     pub fn reset(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(handle) = self.session_task.take() {
+            handle.abort();
+        }
+        for (_, handle) in self.tile_tasks.drain() {
+            handle.abort();
+        }
         *self = Self {
             request: self.request.wrapping_add(1),
             ..Default::default()
@@ -141,10 +165,18 @@ impl App {
         self.regions.version = Some(version);
         let request = self.regions.request;
         let service = self.service.clone();
-        Task::perform(
-            async move { service.region_session(owner, id, version).await },
+        let cancelled = self.regions.cancelled.clone();
+        let (task, handle) = Task::perform(
+            async move {
+                service
+                    .region_session_cancellable(owner, id, version, cancelled)
+                    .await
+            },
             move |r| Message::Regions(RegionMessage::Loaded(owner, id, version, request, r)),
         )
+        .abortable();
+        self.regions.session_task = Some(handle);
+        task
     }
     pub(super) fn region_message(&mut self, event: RegionMessage) -> Task<Message> {
         match event {
@@ -176,6 +208,7 @@ impl App {
                     && self.regions.request == request =>
             {
                 self.regions.loading = false;
+                self.regions.session_task = None;
                 match result {
                     Ok(session) => {
                         self.original_size = Some((session.width, session.height));
@@ -212,6 +245,7 @@ impl App {
                     && self.regions.request == request =>
             {
                 self.regions.pending.remove(&region);
+                self.regions.tile_tasks.remove(&region);
                 match result {
                     Ok(handle) => {
                         self.regions.clock += 1;
@@ -303,15 +337,19 @@ impl App {
             let request = self.regions.request;
             let service = self.service.clone();
             let session = session.clone();
-            tasks.push(Task::perform(
+            let cancelled = self.regions.cancelled.clone();
+            let (task, handle) = Task::perform(
                 async move {
                     service
-                        .region_tile(owner, session, region)
+                        .region_tile_cancellable(owner, session, region, cancelled)
                         .await
                         .map(|p| image::Handle::from_rgba(p.width, p.height, p.rgba))
                 },
                 move |r| Message::Regions(RegionMessage::Tile(owner, version, request, region, r)),
-            ));
+            )
+            .abortable();
+            self.regions.tile_tasks.insert(region, handle);
+            tasks.push(task);
         }
         Task::batch(tasks)
     }

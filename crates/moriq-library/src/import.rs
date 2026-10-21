@@ -144,7 +144,11 @@ impl Library {
                 format!("{stem} ({sequence})")
             };
             let candidate = format!("{parent}/{name}");
-            let occupied:Option<String>=self.db.query_row("SELECT id FROM asset_versions WHERE path=?1 COLLATE NOCASE UNION ALL SELECT version_id FROM project_files WHERE path=?1 COLLATE NOCASE LIMIT 1",[&candidate],|r|r.get(0)).optional()?;
+            let occupied:Option<String>=self.db.query_row("SELECT id FROM asset_versions WHERE path=?1 COLLATE NOCASE UNION ALL SELECT version_id FROM \
+                project_files WHERE path=?1 COLLATE NOCASE LIMIT 1",
+[&candidate],
+|r|r.get(0)).optional()?;
+
             if let (Some(id), Some(owned)) = (&occupied, existing)
                 && *id == owned.to_string()
             {

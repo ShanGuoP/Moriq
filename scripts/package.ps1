@@ -8,6 +8,7 @@ $ErrorActionPreference='Stop'
 $projectRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $targetRoot=Join-Path $projectRoot 'target'
 $packageRoot=Join-Path $targetRoot 'package'
+$reportsRoot=Join-Path $targetRoot 'package-reports'
 . (Join-Path $PSScriptRoot 'ai-runtime-files.ps1')
 $previousBuildId=$env:MORIQ_BUILD_ID
 if($PublicRelease){
@@ -29,6 +30,10 @@ try {
     }
     $validation=@()
     if(-not $SkipChecks){
+        & python (Join-Path $PSScriptRoot 'check-source-style.py')
+        if($LASTEXITCODE -ne 0){throw 'Source style validation failed'}
+        $validation+=@{Command='python scripts/check-source-style.py';Passed=$true}
+
         foreach($checkArgs in @(
             @('fmt','--all','--','--check'),
             @('clippy','--workspace','--all-targets','--all-features','--locked','--','-D','warnings'),
@@ -55,6 +60,12 @@ try {
     try {
         Copy-Item -LiteralPath $binary -Destination (Join-Path $stagingRoot 'Moriq Space.exe')
         Copy-Item -LiteralPath (Join-Path $targetRoot 'codecs/runtime') -Destination (Join-Path $stagingRoot 'codecs') -Recurse
+        $codecChecksums=Get-Content -LiteralPath (Join-Path $stagingRoot 'codecs/checksums.json') -Raw | ConvertFrom-Json
+        foreach($entry in $codecChecksums.PSObject.Properties){
+            $runtimeFile=Join-Path $stagingRoot ('codecs/'+$entry.Name)
+            if(-not(Test-Path -LiteralPath $runtimeFile -PathType Leaf)){throw "Codec package is missing manifest entry: $($entry.Name)"}
+            if((Get-FileHash -LiteralPath $runtimeFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Value){throw "Codec package checksum mismatch: $($entry.Name)"}
+        }
         $ai=Join-Path $stagingRoot 'ai'
         New-Item -ItemType Directory -Path $ai | Out-Null
         foreach($name in $aiRuntimeEntries){
@@ -68,12 +79,17 @@ try {
             if(-not(Test-Path -LiteralPath $runtimeFile -PathType Leaf)){throw "AI package is missing manifest entry: $($entry.Name)"}
             if((Get-FileHash -LiteralPath $runtimeFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Value){throw "AI package checksum mismatch: $($entry.Name)"}
         }
-        Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $stagingRoot
-        Copy-Item -LiteralPath (Join-Path $projectRoot 'NOTICE') -Destination $stagingRoot
-        Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $stagingRoot
-        Copy-Item -LiteralPath (Join-Path $targetRoot 'build-info.json') -Destination (Join-Path $stagingRoot 'BUILD.json')
-        ($buildInfo.version+' '+$buildInfo.build_id) | Set-Content -LiteralPath (Join-Path $stagingRoot 'VERSION') -Encoding utf8
-        & python (Join-Path $PSScriptRoot 'release-metadata.py') notices $stagingRoot
+        # User packages contain the application, runtimes and retained notices only.
+        # Build identity and audit inventories stay beside build outputs, outside the ZIP.
+        $licensesRoot=Join-Path $stagingRoot 'licenses'
+        New-Item -ItemType Directory -Path $licensesRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $reportsRoot -Force | Out-Null
+        foreach($name in @('LICENSE','NOTICE','THIRD_PARTY_NOTICES.md')){
+            Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $licensesRoot
+        }
+        Copy-Item -LiteralPath (Join-Path $targetRoot 'build-info.json') -Destination (Join-Path $reportsRoot 'BUILD.json')
+        ($buildInfo.version+' '+$buildInfo.build_id) | Set-Content -LiteralPath (Join-Path $reportsRoot 'VERSION') -Encoding utf8
+        & python (Join-Path $PSScriptRoot 'release-metadata.py') notices $licensesRoot $reportsRoot
         if($LASTEXITCODE -ne 0){throw 'Third-party notice generation failed'}
         $auditTool=Join-Path $targetRoot 'audit-tools/bin/cargo-audit.exe'
         if(Test-Path -LiteralPath $auditTool){
@@ -83,7 +99,7 @@ try {
             if($LASTEXITCODE -ne 0){throw 'Dependency security audit failed'}
             $security=$securityText | ConvertFrom-Json
             if($security.vulnerabilities.found -or $security.warnings.unsound.Count -gt 0){throw 'Dependency security audit reports vulnerabilities or unsoundness'}
-            $securityText | Set-Content -LiteralPath (Join-Path $stagingRoot 'security-audit.json') -Encoding utf8
+            $securityText | Set-Content -LiteralPath (Join-Path $reportsRoot 'security-audit.json') -Encoding utf8
             $databaseCommit=$security.database.'last-commit'
             if(-not $databaseCommit){
                 $databaseCommit=(& git -C (Join-Path $targetRoot 'advisory-db') rev-parse HEAD)
@@ -92,15 +108,18 @@ try {
             $validation+=@{Command='cargo-audit';Passed=$true;DatabaseCommit=$databaseCommit;UnmaintainedWarnings=$security.warnings.unmaintained.Count}
         } elseif($PublicRelease){throw 'Public release requires cargo-audit at target/audit-tools/bin/cargo-audit.exe'}
         if($PublicRelease){
-            $gaps=Get-Content -LiteralPath (Join-Path $stagingRoot 'license-gaps.json') -Raw | ConvertFrom-Json
+            $gaps=Get-Content -LiteralPath (Join-Path $reportsRoot 'license-gaps.json') -Raw | ConvertFrom-Json
             if($gaps.Count -gt 0){throw 'Missing upstream license texts; inspect license-gaps.json'}
             if((Get-AuthenticodeSignature -LiteralPath $binary).Status -ne 'Valid'){throw 'Public release requires a valid Authenticode signature'}
             $sourceManifest=Join-Path $targetRoot 'corresponding-sources/verified.json'
             if(-not(Test-Path -LiteralPath $sourceManifest)){throw 'Public release requires verified corresponding-source archives'}
             & python (Join-Path $PSScriptRoot 'validate-source-archive.py') (Split-Path -Parent $sourceManifest)
             if($LASTEXITCODE -ne 0){throw 'Corresponding-source inventory validation failed'}
-            Copy-Item -LiteralPath (Split-Path -Parent $sourceManifest) -Destination (Join-Path $stagingRoot 'corresponding-sources') -Recurse
+            Copy-Item -LiteralPath (Split-Path -Parent $sourceManifest) -Destination (Join-Path $licensesRoot 'corresponding-sources') -Recurse
         }
+        $expectedRoot=@('Moriq Space.exe','ai','codecs','licenses')
+        $actualRoot=@(Get-ChildItem -LiteralPath $stagingRoot -Force | ForEach-Object {$_.Name})
+        if(Compare-Object $expectedRoot $actualRoot){throw 'Unexpected portable package root entries'}
         & python (Join-Path $PSScriptRoot 'release-metadata.py') identity
         $finalSource=Get-Content -LiteralPath (Join-Path $targetRoot 'build-info.json') -Raw | ConvertFrom-Json
         if($finalSource.source_sha256 -ne $buildInfo.source_sha256){throw 'Source changed during packaging; previous package retained'}

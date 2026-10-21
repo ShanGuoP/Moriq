@@ -7,7 +7,7 @@ license.workspace = true
 bytes.workspace = true
 moriq-domain.workspace = true
 moriq-ai.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["backup"] }
 image.workspace = true
 serde.workspace = true
 uuid.workspace = true
@@ -28,3 +28,7 @@ chrono.workspace = true
 cc = "1"
 [lints]
 workspace = true
+
+[features]
+default = []
+capture = []

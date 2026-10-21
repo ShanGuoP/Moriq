@@ -9,38 +9,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("pass test output directory")?,
     );
     fs::create_dir_all(&parent)?;
-    let source = parent.join("测试视频 sample.mp4");
-    let status = std::process::Command::new(video::tool("ffmpeg")?)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=320x180:rate=24",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:sample_rate=48000",
-            "-t",
-            "4",
-            "-c:v",
-            "mpeg4",
-            "-c:a",
-            "aac",
-        ])
-        .arg(&source)
-        .status()?;
-    if !status.success() {
-        return Err("fixture generation failed".into());
+    let supplied = std::env::args_os().nth(2).map(PathBuf::from);
+    let source = supplied
+        .clone()
+        .unwrap_or_else(|| parent.join("测试视频 sample.mp4"));
+    if supplied.is_none() {
+        let status = std::process::Command::new(video::tool("ffmpeg")?)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=24",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000",
+                "-t",
+                "4",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&source)
+            .status()?;
+        if !status.success() {
+            return Err("fixture generation failed".into());
+        }
     }
     let original = fs::read(&source)?;
     let metadata = video::probe(&source)?;
-    assert_eq!((metadata.width, metadata.height), (320, 180));
-    assert!(metadata.has_audio);
-    assert!(metadata.duration_ms >= 3900);
+    if supplied.is_none() {
+        assert_eq!((metadata.width, metadata.height), (320, 180));
+        assert!(metadata.has_audio);
+        assert!(metadata.duration_ms >= 3900);
+    }
     let mut lib = Library::create(&parent, "视频验证")?;
     lib.import(&source, None)?;
     let query = Query {
@@ -62,7 +69,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &parent,
         ExportOptions::default(),
     )?;
-    assert_eq!(fs::read(exported.join("测试视频 sample.mp4"))?, original);
+    assert_eq!(
+        fs::read(exported.join(source.file_name().ok_or("missing filename")?))?,
+        original
+    );
     let root = lib.root().to_path_buf();
     drop(lib);
     let mut reopened = Library::open(&root)?;

@@ -1,5 +1,6 @@
 use super::*;
 use crate::components::choice as pick_list;
+use crate::components::grouped_number as number;
 use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
@@ -199,14 +200,24 @@ impl App {
             let modal = container(
                 column![
                     row![
-                        heading(title, 20),
-                        Space::new().width(Length::Fill),
+                        form_icon(
+                            if project {
+                                Icon::Collection
+                            } else {
+                                Icon::Folder
+                            },
+                            true
+                        ),
+                        column![heading(title, 22), muted(description)]
+                            .spacing(6)
+                            .width(Length::Fill),
                         icon_button(Icon::Close, Message::HideCreate)
                     ]
+                    .spacing(16)
                     .align_y(Alignment::Center),
+                    separator(),
                     entry,
                     profile,
-                    muted(description),
                     row![
                         action("取消", Message::HideCreate),
                         Space::new().width(Length::Fill),
@@ -226,128 +237,13 @@ impl App {
                 ]
                 .spacing(20),
             )
-            .padding(26)
-            .width(480)
+            .padding(28)
+            .width((self.viewport.width - 40.0).clamp(260.0, 580.0))
             .style(crate::theme::modal);
-            let modal = if dialog == Dialog::Settings {
-                container(
-                    column![
-                        row![
-                            heading("设置", 20),
-                            Space::new().width(Length::Fill),
-                            icon_button(Icon::Close, Message::HideCreate)
-                        ]
-                        .align_y(Alignment::Center),
-                        separator(),
-                        container(scroll(
-                            column![
-                                row![
-                                    heading("界面语言", 13),
-                                    Space::new().width(Length::Fill),
-                                    muted("简体中文")
-                                ]
-                                .align_y(Alignment::Center),
-                                iced::widget::checkbox(self.preferences.diagnostic_logging)
-                                    .label("诊断日志（重启后生效）")
-                                    .on_toggle(Message::DiagnosticLogging),
-                                heading("导入性能", 13),
-                                row![
-                                    muted("同时处理上限"),
-                                    Space::new().width(Length::Fill),
-                                    pick_list(
-                                        std::iter::once("自动".to_string())
-                                            .chain((1..=32).map(|n| n.to_string()))
-                                            .collect::<Vec<_>>(),
-                                        Some(if self.preferences.import.workers == 0 {
-                                            "自动".into()
-                                        } else {
-                                            self.preferences.import.workers.to_string()
-                                        }),
-                                        |v| Message::ImportPreference(0, v)
-                                    )
-                                ]
-                                .align_y(Alignment::Center),
-                                row![
-                                    muted("图片处理内存 · MiB"),
-                                    Space::new().width(Length::Fill),
-                                    pick_list(
-                                        vec![
-                                            "256".to_string(),
-                                            "512".into(),
-                                            "1024".into(),
-                                            "2048".into(),
-                                            "4096".into()
-                                        ],
-                                        Some(self.preferences.import.memory_mib.to_string()),
-                                        |v| Message::ImportPreference(1, v)
-                                    )
-                                ]
-                                .align_y(Alignment::Center),
-                                muted(format!(
-                                    "本机自动上限 {}。并发数是上限，实际数量受内存预算限制；保存后在下次导入生效。",
-                                    moriq_app::ImportControl::default().workers
-                                )),
-                                muted("新配置默认 2048 MiB；超高像素 RAW 仍可能超过解码器自身上限。"),
-                                muted(self.import.as_ref().map(|job| format!(
-                                    "当前批次：最多 {} 张 / {} MiB；单张最高估算 {} MiB，解码峰值 {} 张，等待内存 {} 张。",
-                                    job.workers, job.memory_mib, job.largest_mib.load(Ordering::Relaxed),
-                                    job.peak.load(Ordering::Relaxed), job.waiting_memory.load(Ordering::Relaxed)
-                                )).unwrap_or_default()),
-                                action("保存导入设置", Message::SaveImportPreferences),
-                                separator(),
-                                heading("资源库位置", 13),
-                                text(
-                                    self.library
-                                        .as_ref()
-                                        .map(|library| display_path(&library.root))
-                                        .unwrap_or_else(|| "尚未打开资源库".into())
-                                )
-                                .size(12)
-                                .color(ICON),
-                                row![
-                                    action("打开资源库", Message::Open),
-                                    action("新建资源库", Message::ShowCreate)
-                                ]
-                                .spacing(10),
-                                separator(),
-                                heading("模型与索引", 13),
-                                muted(
-                                    "模型按需安装，可在 AI 模型页选择下载源、安装模型并管理索引任务。"
-                                ),
-                                muted(moriq_app::model_directory()
-                                    .map(|path| display_path(&path))
-                                    .unwrap_or_else(|error| error)),
-                                row![
-                                    action("查看模型管理", Message::Navigate(2)),
-                                    action("打开模型文件夹", Message::OpenModelsDirectory)
-                                ].spacing(10),
-                                separator(),
-                                column![
-                                    muted(concat!("Moriq Space  ", env!("CARGO_PKG_VERSION"))),
-                                    text("杉果派").size(13).color(TEXT),
-                                    button(text(moriq_app::SOURCE_REPOSITORY_URL).size(12).color(BLUE))
-                                        .padding([4, 0])
-                                        .style(flat)
-                                        .on_press(Message::OpenSourceRepository)
-                                ].spacing(6)
-                            ]
-                            .spacing(16)
-                        )
-                        .id("management")
-                        .on_scroll(|v| Message::OverlayScrolled(
-                            v.absolute_offset().y,
-                            (v.content_bounds().height - v.bounds().height).max(0.0)
-                        ))
-                        .height(Length::Shrink)).max_height((self.viewport.height - 220.0).clamp(120.0, 680.0))
-                    ]
-                    .spacing(16),
-                )
-                .padding(26)
-                .width((self.viewport.width - 40.0).clamp(260.0, 480.0))
-                .max_height((self.viewport.height - 100.0).max(140.0))
-                .style(crate::theme::modal)
+            let modal: Element<'_, Message> = if dialog == Dialog::Settings {
+                self.settings_form()
             } else {
-                modal
+                modal.into()
             };
             stack![
                 base,
@@ -364,11 +260,8 @@ impl App {
                 )
                 .on_press(Message::HideCreate),
                 container(
-                    mouse_area(crate::motion::translated(
-                        modal.into(),
-                        self.surface_offset()
-                    ))
-                    .on_press(Message::Noop)
+                    mouse_area(crate::motion::translated(modal, self.surface_offset()))
+                        .on_press(Message::Noop)
                 )
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
@@ -1261,15 +1154,4 @@ impl App {
         .style(sidebar)
         .into()
     }
-}
-fn number(value: u64) -> String {
-    let s = value.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }

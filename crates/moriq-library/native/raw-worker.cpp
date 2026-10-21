@@ -10,6 +10,7 @@
 #include <fstream>
 #include <thread>
 #include <vector>
+#include <memory>
 #include "raw-budget.h"
 using Microsoft::WRL::ComPtr;
 static HANDLE guard(DWORD parent,bool probe) {
@@ -44,6 +45,17 @@ int wmain(int argc,wchar_t** argv) {
         raw_memory_report(output,child_mib);
         return output.good()?0:7;
     }
+    uint32_t original_w=0,original_h=0;
+    // Bounded previews can combine Bayer cells before demosaicing. This still
+    // develops sensor data; full-resolution viewing/export keeps the full path.
+    if(edge>0&&raw.imgdata.idata.filters&&raw.imgdata.idata.filters!=9&&!raw.imgdata.idata.is_foveon&&
+       std::max(raw.imgdata.sizes.width,raw.imgdata.sizes.height)>edge*2){
+        auto sizing=std::make_unique<LibRaw>();
+        if(sizing->open_file(argv[1])==LIBRAW_SUCCESS&&sizing->adjust_sizes_info_only()==LIBRAW_SUCCESS){
+            original_w=sizing->imgdata.sizes.iwidth;original_h=sizing->imgdata.sizes.iheight;
+            if(original_w&&original_h)raw.imgdata.params.half_size=1;
+        }
+    }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     if(!QueryInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits),nullptr))return 3;
     limits.ProcessMemoryLimit=uint64_t(child_mib)*1024*1024;
@@ -54,8 +66,8 @@ int wmain(int argc,wchar_t** argv) {
     libraw_processed_image_t* pixels=raw.dcraw_make_mem_image(&error);
     if(!pixels||error!=LIBRAW_SUCCESS) return 5;
     if(pixels->type!=LIBRAW_IMAGE_BITMAP||pixels->bits!=8||(pixels->colors!=3&&pixels->colors!=1)) {LibRaw::dcraw_clear_mem(pixels);return 5;}
-    const uint32_t width=pixels->width,height=pixels->height;
-    uint32_t w=width,h=height;
+    const uint32_t width=original_w?original_w:pixels->width,height=original_h?original_h:pixels->height;
+    uint32_t w=pixels->width,h=pixels->height;
     if(!w||!h||uint64_t(w)*h*4>512ULL*1024*1024) {LibRaw::dcraw_clear_mem(pixels);return 6;}
     std::vector<BYTE> rgb;
     BYTE* data=pixels->data;

@@ -30,7 +30,7 @@ pub fn choice<'a, T: ToString + PartialEq + Clone + 'a>(
             background: Color::WHITE.into(),
             border: Border {
                 color: if matches!(status, iced::widget::pick_list::Status::Active) {
-                    LINE
+                    CONTROL_LINE
                 } else {
                     BLUE
                 },
@@ -53,6 +53,68 @@ pub fn action<'a>(label: &str, message: Message) -> iced::widget::Button<'a, Mes
         .padding([8, 12])
         .style(secondary)
         .on_press(message)
+}
+pub fn form_action<'a>(
+    kind: Icon,
+    label: &str,
+    message: Message,
+    prominent: bool,
+) -> iced::widget::Button<'a, Message> {
+    let color = if prominent { Color::WHITE } else { BLUE };
+    button(
+        row![icon(kind, 18.0, color), text(label.to_owned()).size(14)]
+            .spacing(10)
+            .align_y(Alignment::Center),
+    )
+    .padding([11, 16])
+    .style(if prominent { primary } else { secondary })
+    .on_press(message)
+}
+pub fn form_icon<'a>(kind: Icon, large: bool) -> Element<'a, Message> {
+    let side = if large { 52 } else { 42 };
+    container(icon(kind, if large { 26.0 } else { 22.0 }, BLUE))
+        .center_x(side)
+        .center_y(side)
+        .style(|_| container::Style {
+            background: Some(PALE.into()),
+            border: Border {
+                radius: 12.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+pub fn form_heading<'a>(kind: Icon, title: &str, description: &str) -> Element<'a, Message> {
+    row![
+        form_icon(kind, false),
+        column![heading(title, 16), muted(description)]
+            .spacing(6)
+            .width(Length::Fill)
+    ]
+    .spacing(16)
+    .align_y(Alignment::Center)
+    .into()
+}
+pub fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding(18)
+        .width(Length::Fill)
+        .style(theme::form_card_style)
+        .into()
+}
+pub fn detail_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding(12)
+        .width(Length::Fill)
+        .style(theme::form_card_style)
+        .into()
+}
+pub fn detail_heading<'a>(kind: Icon, title: &str) -> Element<'a, Message> {
+    row![icon(kind, 17.0, BLUE), heading(title, 14)]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
 }
 pub fn icon_button<'a>(kind: Icon, message: Message) -> iced::widget::Button<'a, Message> {
     button(icon(kind, 18.0, ICON))
@@ -192,4 +254,16 @@ pub fn ring<'a>(value: String, caption: &str, filled: f32, diameter: f32) -> Ele
         container(label).center_x(diameter).center_y(diameter)
     ]
     .into()
+}
+
+pub(super) fn grouped_number(value: u64) -> String {
+    let s = value.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }

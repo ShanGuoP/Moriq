@@ -59,7 +59,16 @@ pub fn signature(image: &image::DynamicImage) -> Signature {
     }
 }
 pub(crate) fn store(tx: &Connection, version: &str, s: &Signature) -> Result<()> {
-    tx.execute("INSERT INTO image_fingerprints(version_id,hash,red,green,blue,aspect) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(version_id) DO UPDATE SET hash=excluded.hash,red=excluded.red,green=excluded.green,blue=excluded.blue,aspect=excluded.aspect,algorithm=1",params![version,s.hash as i64,s.color[0],s.color[1],s.color[2],s.aspect])?;
+    tx.execute("INSERT INTO image_fingerprints(version_id,hash,red,green,blue,aspect) VALUES(?1,?2,?3,?4,?5,?6) ON \
+                CONFLICT(version_id) DO UPDATE SET \
+                hash=excluded.hash,red=excluded.red,green=excluded.green,blue=excluded.blue,aspect=excluded.aspect,algorithm=1",
+params![version,
+s.hash as i64,
+s.color[0],
+s.color[1],
+s.color[2],
+s.aspect])?;
+
     Ok(())
 }
 pub struct SimilarityPlan {
@@ -78,13 +87,28 @@ impl Library {
 impl SimilarityPlan {
     pub fn search(&self, asset: AssetId) -> Result<Vec<SimilarAsset>> {
         let db = self.connection.connection()?;
-        let reference:Option<(i64,u8,u8,u8,f64)>=db.query_row("SELECT f.hash,f.red,f.green,f.blue,f.aspect FROM image_fingerprints f JOIN assets a ON a.display_version_id=f.version_id WHERE a.id=?1 AND a.deleted_at IS NULL",[asset.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+        let reference:Option<(i64,
+u8,
+u8,
+u8,
+f64)>=db.query_row("SELECT f.hash,f.red,f.green,f.blue,f.aspect FROM image_fingerprints f JOIN assets a ON \
+                a.display_version_id=f.version_id WHERE a.id=?1 AND a.deleted_at IS NULL",
+[asset.to_string()],
+|r|Ok((r.get(0)?,
+r.get(1)?,
+r.get(2)?,
+r.get(3)?,
+r.get(4)?))).optional()?;
+
         let Some((hash, r, g, b, aspect)) = reference else {
             return Err(Error::Invalid(
                 "所选图片还没有近似索引，请先在后台任务中建立索引".into(),
             ));
         };
-        let mut stmt=db.prepare("SELECT a.id,a.name,f.hash,f.red,f.green,f.blue FROM image_fingerprints f JOIN assets a ON a.display_version_id=f.version_id WHERE a.deleted_at IS NULL AND a.id<>?1 AND f.algorithm=1 AND f.aspect BETWEEN ?2 AND ?3")?;
+        let mut stmt=db.prepare("SELECT a.id,a.name,f.hash,f.red,f.green,f.blue FROM image_fingerprints f JOIN assets a ON \
+                a.display_version_id=f.version_id WHERE a.deleted_at IS NULL AND a.id<>?1 AND f.algorithm=1 AND \
+                f.aspect BETWEEN ?2 AND ?3")?;
+
         let mut rows = stmt.query(params![asset.to_string(), aspect * 0.95, aspect * 1.05])?;
         let mut matches = Vec::new();
         while let Some(row) = rows.next()? {

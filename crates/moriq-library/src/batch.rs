@@ -75,7 +75,10 @@ impl Library {
                 serde_json::to_string(&patch).map_err(|e| Error::Invalid(e.to_string()))?
             ],
         )?;
-        tx.execute(&format!("INSERT INTO background_job_items SELECT ?1,row_number() OVER(ORDER BY a.id),a.display_version_id FROM {table} s JOIN assets a ON a.id=s.asset_id"),[&id])?;
+        tx.execute(&format!("INSERT INTO background_job_items SELECT ?1,row_number() OVER(ORDER BY a.id),a.display_version_id \
+                FROM {table} s JOIN assets a ON a.id=s.asset_id"),
+[&id])?;
+
         tx.execute("UPDATE background_jobs SET total=(SELECT count(*) FROM background_job_items WHERE job_id=?1) WHERE id=?1",[&id])?;
         tx.commit()?;
         Ok(id)
@@ -93,7 +96,15 @@ pub(crate) fn apply(tx: &Connection, version: &str, value: &serde_json::Value) -
         )
         .optional()?;
     let Some(asset) = asset else { return Ok(()) };
-    tx.execute("UPDATE assets SET favorite=coalesce(?2,favorite),rating=coalesce(?3,rating),notes=coalesce(?4,notes),edited_at=?5 WHERE id=?1",params![asset,patch.favorite,patch.rating,patch.notes,now_ms()?])?;
+    tx.execute("UPDATE assets SET \
+                favorite=coalesce(?2,favorite),rating=coalesce(?3,rating),notes=coalesce(?4,notes),edited_at=?5 \
+                WHERE id=?1",
+params![asset,
+patch.favorite,
+patch.rating,
+patch.notes,
+now_ms()?])?;
+
     if let Some(category) = patch.category {
         tx.execute("INSERT INTO asset_classification VALUES(?1,?2,1) ON CONFLICT(asset_id) DO UPDATE SET category=excluded.category,manual=1",params![asset,category.trim()])?;
     }

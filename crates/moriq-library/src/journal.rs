@@ -9,6 +9,7 @@ impl Library {
         {
             return Err(Error::Invalid("库名无效或描述超过 8 KiB，未保存".into()));
         }
+        import::validate_component(name)?;
         let tx = self.db.transaction()?;
         for (key, value) in [("display_name", name), ("description", description)] {
             tx.execute("INSERT INTO library_preferences(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value])?;
@@ -53,7 +54,14 @@ impl Library {
         {
             return Err(Error::Invalid("通知内容无效或超出长度限制".into()));
         }
-        self.db.execute("INSERT INTO notifications(at,title,detail,level,asset_id,retry) VALUES(?1,?2,?3,?4,?5,?6)",params![now_ms()?,value.title,value.detail,value.level,value.asset.map(|id|id.to_string()),value.retry])?;
+        self.db.execute("INSERT INTO notifications(at,title,detail,level,asset_id,retry) VALUES(?1,?2,?3,?4,?5,?6)",
+params![now_ms()?,
+value.title,
+value.detail,
+value.level,
+value.asset.map(|id|id.to_string()),
+value.retry])?;
+
         Ok(())
     }
     pub fn read_notifications(&self, through: i64) -> Result<()> {
@@ -65,9 +73,13 @@ impl Library {
     }
     pub fn events(&self, notifications: bool, before: Option<i64>) -> Result<EventPage> {
         let sql = if notifications {
-            "SELECT id,at,title,detail,asset_id,NULL,read_at IS NULL,retry FROM notifications WHERE id<?1 ORDER BY id DESC LIMIT 51"
+            "SELECT id,at,title,detail,CASE WHEN EXISTS(SELECT 1 FROM assets WHERE id=notifications.asset_id) \
+                THEN asset_id END,NULL,read_at IS NULL,retry FROM notifications WHERE id<?1 ORDER BY id DESC LIMIT \
+                51"
         } else {
-            "SELECT id,at,kind,detail,asset_id,project_id,0,'' FROM activity WHERE id<?1 ORDER BY id DESC LIMIT 51"
+            "SELECT id,at,kind,detail,CASE WHEN EXISTS(SELECT 1 FROM assets WHERE id=activity.asset_id) THEN \
+                asset_id END,CASE WHEN EXISTS(SELECT 1 FROM projects WHERE id=activity.project_id) THEN project_id \
+                END,0,'' FROM activity WHERE id<?1 ORDER BY id DESC LIMIT 51"
         };
         let mut items = Vec::new();
         let mut stmt = self.db.prepare(sql)?;
@@ -256,7 +268,7 @@ mod tests {
         );
     }
     #[test]
-    fn activity_is_transactional_and_links_survive_deletion_as_history() {
+    fn activity_is_transactional_and_deleted_links_are_inert_history() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "活动").unwrap();
         let source = dir.path().join("图片.png");
@@ -286,7 +298,7 @@ mod tests {
                 .unwrap()
                 .items
                 .iter()
-                .any(|e| e.kind == "purge" && e.asset == Some(asset))
+                .any(|e| e.kind == "purge" && e.asset.is_none())
         );
         assert_eq!(lib.asset_trash_state(asset).unwrap(), None);
     }

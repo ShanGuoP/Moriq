@@ -485,6 +485,12 @@ impl App {
         }
     }
     pub(super) fn people_panel(&self) -> Element<'_, Message> {
+        use crate::{
+            icons::{Icon, icon},
+            theme::*,
+        };
+        use iced::widget::{Space, row};
+        use iced::{Alignment, Length};
         let choices: Vec<_> = self
             .manager
             .organizer
@@ -492,21 +498,76 @@ impl App {
             .iter()
             .map(PersonChoice::person)
             .collect();
+        let can_rename = self.ai.person.is_some() && !self.ai.person_name.trim().is_empty();
+        let can_merge = self
+            .ai
+            .person
+            .as_ref()
+            .zip(self.ai.target.as_ref())
+            .is_some_and(|(a, b)| a.id != b.id);
         let mut view = column![
-            muted("点击人物查看对应素材；在上方选择人物后可命名或合并，图片详情内可纠正单个人脸的归属。"),
-            choice(choices.clone(), self.ai.person.clone(), |p| Message::Ai(
-                AiMessage::Person(p)
-            )),
-            text_input("人物名称", &self.ai.person_name)
-                .on_input(|v| Message::Ai(AiMessage::Name(v))),
-            action("保存名称", Message::Ai(AiMessage::Rename)),
-            choice(choices, self.ai.target.clone(), |p| Message::Ai(
-                AiMessage::Target(p)
-            ))
-            .placeholder("合并到人物"),
-            action("合并到所选人物", Message::Ai(AiMessage::Merge))
+            form_card(
+                column![
+                    form_heading(
+                        Icon::Person,
+                        "修改人物名称",
+                        "选择一个已识别的人物并设置新的名称。"
+                    ),
+                    choice(choices.clone(), self.ai.person.clone(), |p| Message::Ai(
+                        AiMessage::Person(p)
+                    ))
+                    .placeholder("选择人物")
+                    .width(Length::Fill),
+                    row![
+                        text_input("人物名称", &self.ai.person_name)
+                            .padding(11)
+                            .style(input)
+                            .on_input(|v| Message::Ai(AiMessage::Name(v)))
+                            .width(Length::Fill),
+                        form_action(Icon::Save, "保存名称", Message::Ai(AiMessage::Rename), true)
+                            .on_press_maybe(can_rename.then_some(Message::Ai(AiMessage::Rename)))
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center)
+                ]
+                .spacing(16)
+            ),
+            form_card(
+                column![
+                    form_heading(
+                        Icon::Network,
+                        "合并人物",
+                        "将当前选中的人物合并到另一个人物下，统一其所有照片。"
+                    ),
+                    row![
+                        choice(choices, self.ai.target.clone(), |p| Message::Ai(
+                            AiMessage::Target(p)
+                        ))
+                        .placeholder("合并到人物")
+                        .width(Length::Fill),
+                        form_action(
+                            Icon::Network,
+                            "合并到所选人物",
+                            Message::Ai(AiMessage::Merge),
+                            false
+                        )
+                        .on_press_maybe(can_merge.then_some(Message::Ai(AiMessage::Merge)))
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center)
+                ]
+                .spacing(16)
+            ),
+            row![
+                icon(Icon::Person, 20.0, MUTED),
+                heading("已识别的人物", 15),
+                chip(self.manager.organizer.people.len().to_string(), ICON),
+                Space::new().width(Length::Fill)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
         ]
-        .spacing(10);
+        .spacing(18);
         if self.manager.organizer.people.is_empty() {
             view = view.push(muted(
                 "尚未识别到人物。请先在 AI 模型页安装人脸模型，并运行人脸分析。",
@@ -515,15 +576,15 @@ impl App {
         for person in &self.manager.organizer.people {
             let thumbnail: Element<'_, Message> =
                 if let Some(handle) = self.ai.portraits.get(&person.id) {
-                    photo(Some(handle), iced::Length::Fixed(42.), 42.)
+                    photo(Some(handle), iced::Length::Fixed(58.), 58.)
                 } else {
                     iced::widget::container(crate::icons::icon(
                         crate::icons::Icon::Person,
                         22.,
                         crate::theme::MUTED,
                     ))
-                    .center_x(42)
-                    .center_y(42)
+                    .center_x(58)
+                    .center_y(58)
                     .style(crate::theme::pale)
                     .into()
                 };
@@ -531,31 +592,101 @@ impl App {
                 iced::widget::button(
                     iced::widget::row![
                         thumbnail,
-                        iced::widget::text(PersonChoice::person(person).to_string()).size(13),
+                        column![
+                            heading(
+                                if person.name.is_empty() || person.name == "未命名人物" {
+                                    format!("未命名人物 · {}", &person.id[..person.id.len().min(8)])
+                                } else {
+                                    person.name.clone()
+                                },
+                                15
+                            ),
+                            row![
+                                icon(Icon::Image, 14.0, MUTED),
+                                muted(format!("{} 张", person.count))
+                            ]
+                            .spacing(8)
+                        ]
+                        .spacing(8)
+                        .width(Length::Fill),
+                        icon(Icon::Right, 18.0, ICON)
                     ]
                     .spacing(12)
                     .align_y(iced::Alignment::Center),
                 )
-                .padding([6, 10])
+                .padding([8, 10])
                 .width(iced::Length::Fill)
-                .style(crate::theme::secondary)
+                .style(
+                    if self.ai.person.as_ref().is_some_and(|p| p.id == person.id) {
+                        selected_row
+                    } else {
+                        secondary
+                    },
+                )
                 .on_press(Message::Ai(AiMessage::PersonFilter(person.id.clone()))),
             );
         }
         view.into()
     }
     pub(super) fn ai_details(&self) -> Element<'_, Message> {
-        let mut view = column![
-            heading("AI 分析与整理", 14),
-            muted(self.manager.details.ai_caption.clone()),
-            muted(self.manager.details.ocr.clone()),
-            text_input("人工分类（可批量修改）", &self.ai.category)
-                .on_input(|v| Message::Ai(AiMessage::CategoryInput(v))),
-            action("保存分类", Message::Ai(AiMessage::SaveCategory)),
-            action("以此图搜索相似图片", Message::Ai(AiMessage::ImageSearch)),
-            action("管理人物", Message::Ai(AiMessage::People))
-        ]
-        .spacing(8);
+        use crate::icons::Icon;
+        use iced::Length;
+        let video = self
+            .selected
+            .as_ref()
+            .is_some_and(|a| moriq_app::is_video_format(&a.format));
+        let mut view = column![detail_heading(Icon::Sparkles, "AI 分析与整理")].spacing(12);
+        if !self.manager.details.ai_caption.is_empty() {
+            view = view.push(muted(self.manager.details.ai_caption.clone()));
+        }
+        if !self.manager.details.ocr.is_empty() {
+            view = view.push(muted(self.manager.details.ocr.clone()));
+        }
+        if self.manager.details.ai_caption.is_empty() && self.manager.details.ocr.is_empty() {
+            view = view.push(muted(if video {
+                "视频支持人工分类，图片识别与相似搜索适用于照片。"
+            } else {
+                "暂无识别描述，可在 AI 模型页运行分析。"
+            }));
+        }
+        view = view
+            .push(
+                text_input("人工分类（可批量修改）", &self.ai.category)
+                    .style(crate::theme::input)
+                    .padding(10)
+                    .size(12)
+                    .on_input(|v| Message::Ai(AiMessage::CategoryInput(v))),
+            )
+            .push(
+                form_action(
+                    Icon::Save,
+                    "保存分类",
+                    Message::Ai(AiMessage::SaveCategory),
+                    true,
+                )
+                .width(Length::Fill),
+            );
+        if !video {
+            view = view
+                .push(
+                    form_action(
+                        Icon::Search,
+                        "以此图搜索相似图片",
+                        Message::Ai(AiMessage::ImageSearch),
+                        false,
+                    )
+                    .width(Length::Fill),
+                )
+                .push(
+                    form_action(
+                        Icon::Person,
+                        "管理人物",
+                        Message::Ai(AiMessage::People),
+                        false,
+                    )
+                    .width(Length::Fill),
+                );
+        }
         let choices: Vec<_> = self
             .manager
             .organizer
@@ -590,6 +721,18 @@ impl App {
         view.into()
     }
     pub(super) fn ai_recommendations(&self) -> Element<'_, Message> {
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|a| moriq_app::is_video_format(&a.format))
+        {
+            return column![
+                detail_heading(crate::icons::Icon::Search, "内容相似推荐"),
+                muted("相似图片推荐适用于照片，当前素材为视频。")
+            ]
+            .spacing(12)
+            .into();
+        }
         let mut view = column![
             heading("内容相似推荐", 14),
             muted("根据已建立的图片内容索引推荐。"),

@@ -125,3 +125,47 @@ fn new_query_discards_old_scroll_restoration_and_refresh_does_not_cancel_saved_n
     drop(app.navigation_loaded(id, 10, Ok(Some(saved))));
     assert!(app.query.text.is_empty());
 }
+
+#[test]
+fn reference_import_menu_sets_mode_and_cancel_clears_it() {
+    let mut app = crate::tests::app();
+    let task = app.update_inner(Message::Manage(ManageMessage::ReferenceImport));
+    drop(task);
+    assert!(app.manager.referenced_import);
+    assert!(app.manager.busy);
+    drop(app.update_inner(Message::PickedImages(None)));
+    assert!(!app.manager.referenced_import);
+    assert!(!app.manager.busy);
+}
+
+#[test]
+fn reduced_motion_navigation_commits_immediately_and_does_not_leave_stale_actions() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Assets;
+    drop(app.update(Message::Navigate(2)));
+    assert!(app.transition.as_ref().unwrap().pending.is_some());
+    drop(app.update(Message::ReducedMotion(true)));
+    assert_eq!(app.screen, Screen::Models);
+    assert!(app.transition.is_none());
+    drop(app.update(Message::Navigate(1)));
+    assert_eq!(app.screen, Screen::Assets);
+    assert!(app.transition.is_none());
+    drop(app.update(Message::ShowSettings));
+    assert_eq!(app.dialog, Some(Dialog::Settings));
+    assert!(app.surface_motion.is_none());
+}
+
+#[test]
+fn scrolling_or_replacing_query_clears_virtualized_card_feedback() {
+    let mut app = crate::tests::app();
+    let id = AssetId::default();
+    app.gallery_feedback
+        .set(id, true, std::time::Instant::now(), false);
+    assert!(app.gallery_feedback.active());
+    drop(app.update_inner(Message::Scrolled(120.0)));
+    assert!(!app.gallery_feedback.active());
+    app.gallery_feedback
+        .set(id, true, std::time::Instant::now(), false);
+    drop(app.reset_query());
+    assert!(!app.gallery_feedback.active());
+}

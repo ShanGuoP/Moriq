@@ -51,13 +51,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         match argument.to_str() {
             Some("--library")=>launch.library=Some(arguments.next().ok_or("--library requires a folder")?.into()),
             Some("--import")=>launch.import_paths.push(arguments.next().ok_or("--import requires a file or folder")?.into()),
+            #[cfg(feature = "capture")]
             Some("--panel")=>launch.panel=Some(arguments.next().ok_or("--panel requires a panel name")?.into_string().map_err(|_|"invalid panel name")?),
+            #[cfg(feature = "capture")]
             Some("--capture")=>launch.capture=Some(arguments.next().ok_or("--capture requires a PNG path")?.into()),
-            Some("--screen")=>launch.screen=match arguments.next().and_then(|s|s.into_string().ok()).as_deref(){Some("assets")=>1,Some("models")=>2,Some("overview")=>0,_=>return Err("--screen expects overview, assets or models".into())},
+            #[cfg(feature = "capture")]
+            Some("--screen")=>launch.screen=match arguments.next().and_then(|s|s.into_string().ok()).as_deref(){
+Some("assets")=>1,
+Some("models")=>2,
+Some("overview")=>0,
+_=>return Err("--screen expects overview, assets or models".into())}
+,
+
+            #[cfg(feature = "capture")]
             Some("--exit-after-capture")=>launch.exit_after_capture=true,
+            #[cfg(feature = "capture")]
             Some("--select-first")=>launch.select_first=true,
+            #[cfg(feature = "capture")]
             Some("--design-preview")=>launch.design_preview=true,
-            _=>return Err("Unknown argument. Use --library PATH, --capture PNG, --screen overview|assets|models, --exit-after-capture".into()),
+            _=>return Err("Unknown argument. Use --library PATH or --import PATH. Diagnostic flags require the capture feature.".into()),
         }
     }
     moriq_ui::run(launch)?;

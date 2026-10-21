@@ -258,11 +258,11 @@ fn decode_worker(path: &Path, edge: u32, raw: bool) -> Result<Decoded> {
             u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
         };
         let (width, height, w, h) = (number(8), number(12), number(16), number(20));
-        let bytes = u64::from(w) * u64::from(h) * 4;
+        let bytes = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4);
         if width == 0
             || height == 0
             || (edge > 0 && (w > edge || h > edge))
-            || bytes + 24 != length
+            || bytes.checked_add(24) != Some(length)
             || (edge > 0 && (w == 0 || h == 0))
         {
             return Err(Error::Invalid("系统解码尺寸声明无效".into()));

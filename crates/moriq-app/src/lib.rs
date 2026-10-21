@@ -1,9 +1,10 @@
 //! Bounded single-writer coordinator. UI never owns a DB connection or performs media I/O.
 use futures::{Stream, StreamExt, stream};
+mod cache;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod audit_round2;
-mod cache;
+mod export_budget_tests;
+mod launch;
 mod scan;
 mod scheduler;
 use moriq_domain::*;
@@ -28,29 +29,22 @@ pub fn model_directory() -> Result<PathBuf> {
     moriq_ai::model_root()
 }
 pub async fn open_models_directory() -> Result<()> {
-    tokio::task::spawn_blocking(|| {
+    let directory = tokio::task::spawn_blocking(|| {
         let directory = model_directory()?;
         std::fs::create_dir_all(&directory).map_err(|e| format!("无法创建模型文件夹：{e}"))?;
-        #[cfg(windows)]
-        let mut command = std::process::Command::new("explorer.exe");
-        #[cfg(target_os = "macos")]
-        let mut command = std::process::Command::new("open");
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let mut command = std::process::Command::new("xdg-open");
-        command
-            .arg(directory)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("无法打开模型文件夹：{e}"))
+        Ok::<_, String>(directory)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    launch::open(directory.into_os_string(), false).await
 }
 pub fn diagnostic_logging_enabled() -> bool {
     moriq_library::settings::load().is_ok_and(|settings| settings.diagnostic_logging)
 }
 pub fn is_video_format(format: &str) -> bool {
-    moriq_library::video::EXTENSIONS.contains(&format)
+    moriq_library::video::EXTENSIONS
+        .iter()
+        .any(|extension| format.eq_ignore_ascii_case(extension))
 }
 pub use moriq_ai::{DownloadControl, Hardware, ModelInfo};
 pub use moriq_library::orphans::Plan as OrphanPlan;
@@ -58,22 +52,9 @@ pub use moriq_library::region::Session as RegionSession;
 pub use moriq_library::video::Playback;
 
 pub async fn open_source_repository() -> Result<()> {
-    tokio::task::spawn_blocking(|| {
-        #[cfg(windows)]
-        let mut command = std::process::Command::new("explorer.exe");
-        #[cfg(target_os = "macos")]
-        let mut command = std::process::Command::new("open");
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let mut command = std::process::Command::new("xdg-open");
-        command
-            .arg(SOURCE_REPOSITORY_URL)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("无法打开项目开源地址：{e}"))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    launch::open(SOURCE_REPOSITORY_URL.into(), false).await
 }
+
 type Job = Box<dyn FnOnce(&mut Option<Library>) + Send>;
 
 #[derive(Clone)]
@@ -174,6 +155,12 @@ impl ImportControl {
     }
 }
 impl Service {
+    pub async fn reduced_motion(&self, enabled: bool) -> Result<UserSettings> {
+        self.call(move |_| {
+            moriq_library::settings::reduced_motion(enabled).map_err(|e| e.to_string())
+        })
+        .await
+    }
     pub async fn diagnostic_logging(&self, enabled: bool) -> Result<UserSettings> {
         self.call(move |_| {
             moriq_library::settings::diagnostic_logging(enabled).map_err(|e| e.to_string())
@@ -266,6 +253,16 @@ impl Service {
         asset: AssetId,
         version: AssetVersionId,
     ) -> Result<Arc<RegionSession>> {
+        self.region_session_cancellable(id, asset, version, Arc::new(AtomicBool::new(false)))
+            .await
+    }
+    pub async fn region_session_cancellable(
+        &self,
+        id: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Arc<RegionSession>> {
         self.read_plan(
             2048,
             move |active| {
@@ -273,7 +270,12 @@ impl Service {
                     .version_source(asset, version)
                     .map_err(|e| e.to_string())
             },
-            |source| source.regions().map(Arc::new).map_err(|e| e.to_string()),
+            move |source| {
+                source
+                    .regions_cancellable(cancelled)
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string())
+            },
         )
         .await
     }
@@ -283,13 +285,27 @@ impl Service {
         session: Arc<RegionSession>,
         region: ImageRegion,
     ) -> Result<Pixels> {
-        self.read_plan(
-            1024,
+        self.region_tile_cancellable(id, session, region, Arc::new(AtomicBool::new(false)))
+            .await
+    }
+    pub async fn region_tile_cancellable(
+        &self,
+        id: LibraryId,
+        session: Arc<RegionSession>,
+        region: ImageRegion,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Pixels> {
+        self.read_plan_sized(
+            |session: &Arc<RegionSession>| session.tile_memory_mib(),
             move |active| {
                 check(active, id)?;
                 Ok(session)
             },
-            move |session| session.tile(region).map_err(|e| e.to_string()),
+            move |session| {
+                session
+                    .tile_cancellable(region, cancelled)
+                    .map_err(|e| e.to_string())
+            },
         )
         .await
     }
@@ -768,8 +784,10 @@ impl Service {
         .await
     }
     pub async fn overview(&self, id: LibraryId) -> Result<LoadedOverview> {
-        self.read_plan(
-            64,
+        self.read_plan_sized(
+            |(_, _, _, thumbnails): &(_, _, _, moriq_library::media::Thumbnails)| {
+                thumbnails.memory_mib()
+            },
             move |active| {
                 let lib = check(active, id)?;
                 let favorites = lib
@@ -980,10 +998,6 @@ impl Service {
     }
     pub async fn remember(&self, name: String, path: PathBuf) -> Result<UserSettings> {
         self.call(move |_| moriq_library::settings::remember(name, path).map_err(|e| e.to_string()))
-            .await
-    }
-    pub async fn language(&self, english: bool) -> Result<UserSettings> {
-        self.call(move |_| moriq_library::settings::language(english).map_err(|e| e.to_string()))
             .await
     }
     pub async fn description(&self, id: LibraryId, value: String) -> Result<()> {
@@ -1426,46 +1440,20 @@ impl Service {
         .await
     }
     pub async fn reveal(&self, library: LibraryId) -> Result<()> {
-        self.call(move |active| {
-            let root = check(active, library)?.root().to_path_buf();
-            #[cfg(target_os = "windows")]
-            let mut command = std::process::Command::new("explorer.exe");
-            #[cfg(target_os = "macos")]
-            let mut command = std::process::Command::new("open");
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            let mut command = std::process::Command::new("xdg-open");
-            command
-                .arg(root)
-                .spawn()
-                .map_err(|error| format!("无法打开文件夹：{error}"))?;
-            Ok(())
-        })
-        .await
+        let path = self
+            .call(move |active| Ok(check(active, library)?.root().to_path_buf()))
+            .await?;
+        launch::open(path.into_os_string(), false).await
     }
     pub async fn reveal_asset(&self, library: LibraryId, asset: AssetId) -> Result<()> {
-        self.call(move |active| {
-            let path = check(active, library)?
-                .asset_path(asset)
-                .map_err(|e| e.to_string())?;
-            #[cfg(target_os = "windows")]
-            std::process::Command::new("explorer.exe")
-                .arg(format!("/select,{}", path.display()))
-                .spawn()
-                .map_err(|e| format!("无法定位文件：{e}"))?;
-            #[cfg(target_os = "macos")]
-            std::process::Command::new("open")
-                .arg("-R")
-                .arg(&path)
-                .spawn()
-                .map_err(|e| format!("无法定位文件：{e}"))?;
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            std::process::Command::new("xdg-open")
-                .arg(path.parent().ok_or("文件没有所属目录")?)
-                .spawn()
-                .map_err(|e| format!("无法定位文件：{e}"))?;
-            Ok(())
-        })
-        .await
+        let path = self
+            .call(move |active| {
+                check(active, library)?
+                    .asset_path(asset)
+                    .map_err(|e| e.to_string())
+            })
+            .await?;
+        launch::open(path.into_os_string(), true).await
     }
     pub async fn resources(
         &self,
@@ -1640,22 +1628,13 @@ impl Service {
         .await
     }
     pub async fn open_map(&self, id: LibraryId, location: AssetLocation) -> Result<()> {
-        self.call(move |active| {
-            check(active, id)?;
-            let url = location.map_url().ok_or("坐标无效")?;
-            #[cfg(windows)]
-            let mut command = std::process::Command::new("explorer.exe");
-            #[cfg(target_os = "macos")]
-            let mut command = std::process::Command::new("open");
-            #[cfg(not(any(windows, target_os = "macos")))]
-            let mut command = std::process::Command::new("xdg-open");
-            command
-                .arg(url)
-                .spawn()
-                .map_err(|e| format!("无法打开地图：{e}"))?;
-            Ok(())
-        })
-        .await
+        let url = self
+            .call(move |active| {
+                check(active, id)?;
+                location.map_url().ok_or_else(|| "坐标无效".into())
+            })
+            .await?;
+        launch::open(url.into(), false).await
     }
     pub async fn events(
         &self,
@@ -1727,8 +1706,8 @@ impl Service {
         offset: usize,
         limit: usize,
     ) -> Result<LoadedPage> {
-        self.read_plan(
-            128,
+        self.read_plan_sized(
+            |(_, thumbnails): &(_, moriq_library::media::Thumbnails)| thumbnails.memory_mib(),
             move |active| {
                 let lib = check(active, id)?;
                 let page = lib.page(&query, offset, limit).map_err(|e| e.to_string())?;
@@ -1760,8 +1739,11 @@ impl Service {
         anchor: AssetId,
         direction: i8,
     ) -> Result<Option<LoadedNeighborhood>> {
-        self.read_plan(
-            16,
+        self.read_plan_sized(
+            |plan: &Option<(_, moriq_library::media::Thumbnails)>| {
+                plan.as_ref()
+                    .map_or(16, |(_, thumbnails)| thumbnails.memory_mib())
+            },
             move |active| {
                 let lib = check(active, id)?;
                 let Some(result) = lib
@@ -2027,6 +2009,13 @@ impl Service {
         })
         .await
     }
+    #[cfg(feature = "capture")]
+    pub async fn save_capture_evidence(&self, path: PathBuf, text: String) -> Result<()> {
+        tokio::task::spawn_blocking(move || std::fs::write(path, text).map_err(|e| e.to_string()))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    #[cfg(feature = "capture")]
     pub async fn save_capture(
         &self,
         path: PathBuf,
@@ -2246,6 +2235,66 @@ fn check(active: &mut Option<Library>, expected: LibraryId) -> Result<&mut Libra
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_original_tiles_fit_the_small_interactive_budget() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let input = dir.path().join("original.png");
+            image::RgbaImage::from_pixel(1200, 800, image::Rgba([30, 70, 120, 160]))
+                .save(&input)
+                .unwrap();
+            let service = Service::start().unwrap();
+            let library = service
+                .create(dir.path().into(), "tiles".into())
+                .await
+                .unwrap();
+            let owner = library.info.id;
+            assert_eq!(
+                service
+                    .import_sources(owner, vec![input], None, ImportControl::default())
+                    .await
+                    .imported,
+                1
+            );
+            let asset = service
+                .page(owner, Query::default(), 0, 1)
+                .await
+                .unwrap()
+                .tiles
+                .remove(0)
+                .asset;
+            let session = service
+                .region_session(owner, asset.id, asset.version_id)
+                .await
+                .unwrap();
+            let occupied = service
+                .import_memory
+                .clone()
+                .acquire_many_owned(4080)
+                .await
+                .unwrap();
+            let tile = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                service.region_tile(
+                    owner,
+                    session,
+                    ImageRegion {
+                        x: 0,
+                        y: 0,
+                        width: 512,
+                        height: 512,
+                        level: 1,
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(&tile.rgba[..4], &[30, 70, 120, 160]);
+            drop(occupied);
+            service.close().await.unwrap();
+        });
+    }
     #[test]
     fn cached_preview_uses_small_budget_and_corrupt_cache_escalates_before_decoding() {
         use std::time::Duration;

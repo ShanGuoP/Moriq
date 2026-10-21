@@ -20,7 +20,9 @@ impl Library {
             "SELECT DISTINCT asset_id FROM project_assets WHERE project_id IN(SELECT id FROM tree) ORDER BY asset_id",
         )?;
         let assets = strings(
-            "SELECT DISTINCT pa.asset_id FROM project_assets pa WHERE pa.project_id IN(SELECT id FROM tree) AND NOT EXISTS(SELECT 1 FROM project_assets outside WHERE outside.asset_id=pa.asset_id AND outside.project_id NOT IN(SELECT id FROM tree)) ORDER BY pa.asset_id",
+            "SELECT DISTINCT pa.asset_id FROM project_assets pa WHERE pa.project_id IN(SELECT id FROM tree) AND \
+                NOT EXISTS(SELECT 1 FROM project_assets outside WHERE outside.asset_id=pa.asset_id AND \
+                outside.project_id NOT IN(SELECT id FROM tree)) ORDER BY pa.asset_id",
         )?;
         let exclusive: std::collections::HashSet<_> = assets.iter().cloned().collect();
         let shared = members
@@ -29,14 +31,26 @@ impl Library {
             .map(|s| parse_id(&s).map(AssetId))
             .collect::<Result<Vec<_>>>()?;
         let versions = strings(
-            "SELECT v.id FROM asset_versions v WHERE v.asset_id IN(SELECT pa.asset_id FROM project_assets pa WHERE pa.project_id IN(SELECT id FROM tree) AND NOT EXISTS(SELECT 1 FROM project_assets outside WHERE outside.asset_id=pa.asset_id AND outside.project_id NOT IN(SELECT id FROM tree))) ORDER BY v.id",
+            "SELECT v.id FROM asset_versions v WHERE v.asset_id IN(SELECT pa.asset_id FROM project_assets pa \
+                WHERE pa.project_id IN(SELECT id FROM tree) AND NOT EXISTS(SELECT 1 FROM project_assets outside \
+                WHERE outside.asset_id=pa.asset_id AND outside.project_id NOT IN(SELECT id FROM tree))) ORDER BY \
+                v.id",
         )?;
         // A shared asset's canonical path can live in this project's folder. Keep it;
         // only unlink aliases that no remaining version or project needs.
         let aliases = strings(
-            "SELECT pf.path FROM project_files pf WHERE pf.project_id IN(SELECT id FROM tree) AND NOT EXISTS(SELECT 1 FROM asset_versions v WHERE v.path=pf.path COLLATE NOCASE) AND NOT EXISTS(SELECT 1 FROM project_files other WHERE other.path=pf.path COLLATE NOCASE AND other.project_id NOT IN(SELECT id FROM tree)) ORDER BY pf.path",
+            "SELECT pf.path FROM project_files pf WHERE pf.project_id IN(SELECT id FROM tree) AND NOT \
+                EXISTS(SELECT 1 FROM asset_versions v WHERE v.path=pf.path COLLATE NOCASE) AND NOT EXISTS(SELECT 1 \
+                FROM project_files other WHERE other.path=pf.path COLLATE NOCASE AND other.project_id NOT IN(SELECT \
+                id FROM tree)) ORDER BY pf.path",
         )?;
-        let referenced = self.db.query_row(&format!("{TREE} SELECT count(*) FROM file_locations f JOIN asset_versions v ON v.id=f.version_id WHERE v.asset_id IN(SELECT pa.asset_id FROM project_assets pa WHERE pa.project_id IN(SELECT id FROM tree) AND NOT EXISTS(SELECT 1 FROM project_assets outside WHERE outside.asset_id=pa.asset_id AND outside.project_id NOT IN(SELECT id FROM tree)))"), [root.to_string()], |r| r.get(0))?;
+        let referenced = self.db.query_row(&format!("{TREE} SELECT count(*) FROM file_locations f JOIN asset_versions v ON v.id=f.version_id WHERE \
+                v.asset_id IN(SELECT pa.asset_id FROM project_assets pa WHERE pa.project_id IN(SELECT id FROM tree) \
+                AND NOT EXISTS(SELECT 1 FROM project_assets outside WHERE outside.asset_id=pa.asset_id AND \
+                outside.project_id NOT IN(SELECT id FROM tree)))"),
+ [root.to_string()],
+ |r| r.get(0))?;
+
         Ok(ProjectDeletionPlan {
             root,
             name,
@@ -59,8 +73,10 @@ impl Library {
     }
     pub fn delete_project_contents(&mut self, plan: &ProjectDeletionPlan) -> Result<PurgeReport> {
         self.recover_purges()?;
-        // Confirmation authorizes deleting this project, including its current contents.
         let current = self.project_deletion_plan(plan.root)?;
+        if &current != plan {
+            return Err(Error::Invalid("删除范围已改变，请刷新后重新确认".into()));
+        }
         self.run_purge(&current.assets, Some(&current))
     }
 }

@@ -178,6 +178,8 @@ impl App {
             if index < 3 {
                 view = view.push(
                     text_input("包含文字", &values[0])
+                        .style(crate::theme::input)
+                        .padding(10)
                         .on_input(move |v| Message::Metadata(MetadataMessage::Input(index, 0, v))),
                 );
             } else {
@@ -191,6 +193,8 @@ impl App {
                             },
                             &values[1]
                         )
+                        .style(crate::theme::input)
+                        .padding(10)
                         .on_input(move |v| Message::Metadata(MetadataMessage::Input(index, 1, v))),
                         text_input(
                             if index == 3 {
@@ -200,6 +204,8 @@ impl App {
                             },
                             &values[2]
                         )
+                        .style(crate::theme::input)
+                        .padding(10)
                         .on_input(move |v| Message::Metadata(MetadataMessage::Input(index, 2, v)))
                     ]
                     .spacing(8),

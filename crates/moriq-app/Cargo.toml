@@ -19,3 +19,7 @@ tempfile.workspace = true
 image.workspace = true
 [lints]
 workspace = true
+
+[features]
+default = []
+capture = ["moriq-library/capture"]

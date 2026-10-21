@@ -105,7 +105,14 @@ impl Plan {
         if identity != self.id.to_string() {
             return Err(Error::Invalid("资源库身份已改变".into()));
         }
-        let (managed,referenced)=source.query_row("SELECT coalesce(sum(CASE WHEN f.version_id IS NULL THEN v.bytes ELSE 0 END),0),coalesce(sum(CASE WHEN f.version_id IS NOT NULL THEN v.bytes ELSE 0 END),0) FROM asset_versions v LEFT JOIN file_locations f ON f.version_id=v.id",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let (managed,
+referenced)=source.query_row("SELECT coalesce(sum(CASE WHEN f.version_id IS NULL THEN v.bytes ELSE 0 END),0),coalesce(sum(CASE \
+                WHEN f.version_id IS NOT NULL THEN v.bytes ELSE 0 END),0) FROM asset_versions v LEFT JOIN \
+                file_locations f ON f.version_id=v.id",
+[],
+|r|Ok((r.get(0)?,
+r.get(1)?)))?;
+
         drop(connection);
         let mut result = StorageStats {
             managed_registered: managed,

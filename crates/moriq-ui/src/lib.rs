@@ -8,39 +8,39 @@ mod metadata;
 mod region_viewer;
 mod regions;
 mod uploads;
-pub use ai::AiMessage;
-pub use batch::BatchMessage;
-pub use folders::FolderMessage;
-pub use lifecycle::LifecycleMessage;
-pub use metadata::MetadataMessage;
-pub use regions::RegionMessage;
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod audit_round2;
+pub(crate) use ai::AiMessage;
+pub(crate) use batch::BatchMessage;
+pub(crate) use folders::FolderMessage;
+pub(crate) use lifecycle::LifecycleMessage;
+pub(crate) use metadata::MetadataMessage;
+pub(crate) use regions::RegionMessage;
 mod browsing;
 mod compare;
 mod deletion;
 mod popups;
 mod project_form;
+mod settings;
 mod surfaces;
 mod tasks;
-pub use deletion::DeletionMessage;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod ui_regression_tests;
+pub(crate) use deletion::DeletionMessage;
 mod components;
 mod gallery;
-pub use gallery::TagChoice;
-mod i18n;
+pub(crate) use gallery::TagChoice;
 mod icons;
 mod journal;
 mod rules;
-pub use compare::CompareMessage;
+pub(crate) use compare::CompareMessage;
 mod storage;
-pub use rules::RuleMessage;
-pub use storage::StorageMessage;
+pub(crate) use rules::RuleMessage;
+pub(crate) use storage::StorageMessage;
 mod manage;
 mod models;
 mod navigation;
-pub use journal::JournalMessage;
-pub use manage::ManageMessage;
+pub(crate) use journal::JournalMessage;
+pub(crate) use manage::ManageMessage;
 mod motion;
 mod overview;
 mod preview;
@@ -72,673 +72,10 @@ enum Dialog {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    pub(super) fn app() -> App {
-        let (mut app, task) = App::new(
-            Service::start().unwrap(),
-            LaunchOptions::default(),
-            std::sync::Arc::new(i18n::Locale::load().unwrap()),
-        );
-        drop(task);
-        app.library = Some(Opened {
-            root: PathBuf::from("test.moriq"),
-            info: LibraryInfo {
-                id: LibraryId::default(),
-                name: "Test".into(),
-                count: 100000,
-                favorites: 0,
-                bytes: 0,
-                created_at: 0,
-                updated_at: 0,
-                projects: vec![],
-            },
-        });
-        app.total = 100000;
-        app
-    }
-    #[test]
-    fn global_models_open_without_library_and_keep_library_actions_separate() {
-        let mut app = app();
-        app.library = None;
-        app.library_picker = true;
-        drop(app.update(Message::Navigate(2)));
-        assert_eq!(app.content_screen(), Some(Screen::Models));
-        assert!(!app.library_picker);
-        drop(app.shell());
-        let old_policy = app.on_demand_models;
-        drop(app.update(Message::ToggleModelPolicy));
-        assert_eq!(app.on_demand_models, !old_policy);
-        let control = moriq_app::DownloadControl::default();
-        app.ai.downloads.insert("faces".into(), control.clone());
-        drop(app.update(Message::Ai(AiMessage::Pause("faces".into()))));
-        assert!(control.stop.load(Ordering::Relaxed));
-        drop(app.update(Message::Ai(AiMessage::Category("人像".into()))));
-        drop(app.update(Message::Ai(AiMessage::People)));
-        assert_eq!(app.content_screen(), Some(Screen::Models));
-        assert!(app.manager.panel.is_none());
-        drop(app.update(Message::ShowLibraries));
-        assert_eq!(app.content_screen(), None);
-        assert_eq!(app.screen, Screen::Overview);
-        drop(app.update(Message::Navigate(2)));
-        assert_eq!(app.content_screen(), Some(Screen::Models));
-    }
-    #[test]
-    fn model_sidebar_has_all_libraries_and_switch_keeps_global_model_state() {
-        let mut app = app();
-        app.screen = Screen::Models;
-        let old = app.library.clone().unwrap();
-        app.preferences.recent = (0..18)
-            .map(|n| ("同名库".into(), PathBuf::from(format!("{n}.moriq"))))
-            .collect();
-        assert_eq!(app.model_libraries().len(), 19);
-        assert_eq!(
-            app.model_libraries()
-                .iter()
-                .filter(|(_, _, active)| *active)
-                .count(),
-            1
-        );
-        app.model_search = "CLIP".into();
-        app.ai.downloads.insert("faces".into(), Default::default());
-        let mut next = old.clone();
-        next.root = PathBuf::from("17.moriq");
-        next.info.id = LibraryId::default();
-        next.info.name = "新的名称".into();
-        app.switching = true;
-        drop(app.update(Message::Ai(AiMessage::LibraryOpened(Ok(next.clone())))));
-        assert_eq!(app.content_screen(), Some(Screen::Models));
-        assert!(!app.switching);
-        assert!(!app.library_picker);
-        assert_eq!(app.library.as_ref().unwrap().info.id, next.info.id);
-        assert_eq!(app.model_search, "CLIP");
-        assert!(app.ai.downloads.contains_key("faces"));
-        assert!(
-            app.model_libraries()
-                .iter()
-                .any(|(name, path, active)| name == "新的名称" && *path == next.root && *active)
-        );
-        drop(app.update(Message::Ai(AiMessage::LibraryOpened(Err(
-            "路径不存在".into(),
-        )))));
-        assert_eq!(app.library.as_ref().unwrap().info.id, next.info.id);
-        assert_eq!(app.content_screen(), Some(Screen::Models));
-        assert!(app.error.is_some());
-        app.manager.busy = true;
-        drop(app.update(Message::Ai(AiMessage::SwitchLibrary(old.root))));
-        assert!(!app.switching);
-    }
-    #[test]
-    fn changing_model_load_policy_keeps_selected_download_source() {
-        let mut app = app();
-        app.launch.design_preview = true;
-        assert!(app.preferences.ai.use_mirror);
-        drop(app.update(Message::ToggleModelMirror));
-        assert!(!app.preferences.ai.use_mirror);
-        drop(app.update(Message::ToggleModelPolicy));
-        drop(app.update(Message::ToggleRetainIndexes));
-        assert!(!app.preferences.ai.use_mirror);
-    }
-    #[test]
-    fn category_covers_reject_other_libraries_and_clear_when_category_is_empty() {
-        use moriq_app::LoadedOverview;
-        let mut app = app();
-        let owner = app.library.as_ref().unwrap().info.id;
-        let loaded = || LoadedOverview {
-            categories: vec![(
-                "风景".into(),
-                Some(moriq_app::Pixels {
-                    width: 1,
-                    height: 1,
-                    rgba: vec![10, 20, 30, 255].into(),
-                }),
-            )],
-            ..Default::default()
-        };
-        drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
-            LibraryId::default(),
-            app.projection_request,
-            Ok(loaded()),
-        ))));
-        assert!(app.manager.category_covers.is_empty());
-        drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
-            owner,
-            app.projection_request,
-            Ok(loaded()),
-        ))));
-        assert!(app.manager.category_covers.contains_key("风景"));
-        drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
-            owner,
-            app.projection_request,
-            Ok(LoadedOverview::default()),
-        ))));
-        assert!(app.manager.category_covers.is_empty());
-    }
-    #[test]
-    fn library_picker_keeps_gallery_state_and_returns_through_history() {
-        let mut app = app();
-        app.screen = Screen::Assets;
-        app.scroll_y = 640.0;
-        app.query.text = "旅行".into();
-        drop(app.commit_navigation(Message::ShowLibraries));
-        assert!(app.library_picker);
-        assert_eq!(app.query.text, "旅行");
-        drop(app.travel(false));
-        assert!(!app.library_picker);
-        assert_eq!(app.screen, Screen::Assets);
-        assert_eq!(app.scroll_y, 640.0);
-        assert_eq!(app.query.text, "旅行");
-        drop(app.travel(true));
-        assert!(app.library_picker);
-        drop(app.commit_navigation(Message::Navigate(2)));
-        assert!(!app.library_picker);
-        assert_eq!(app.screen, Screen::Models);
-    }
-    #[test]
-    fn maintenance_and_purge_receipts_cannot_reset_another_library_selection() {
-        let mut app = app();
-        let control = moriq_app::MaintenanceControl::default();
-        app.manager.maintenance = Some(control.clone());
-        app.manager.busy = true;
-        let selected = AssetId::default();
-        app.manager.selection.insert(selected);
-        let old = LibraryId::default();
-        drop(app.update(Message::Manage(ManageMessage::Checked(
-            old,
-            Ok(MaintenanceReport::default()),
-        ))));
-        drop(app.update(Message::Manage(ManageMessage::Purged(
-            old,
-            Ok(PurgeReport::default()),
-        ))));
-        drop(app.update(Message::Deletion(DeletionMessage::Finished(
-            old,
-            0,
-            Ok(PurgeReport::default()),
-        ))));
-        assert!(app.manager.busy);
-        assert!(app.manager.maintenance.is_some());
-        assert!(app.manager.selection.contains(&selected));
-        drop(app.update(Message::Manage(ManageMessage::CancelCheck)));
-        assert!(control.cancel.load(Ordering::Relaxed));
-    }
-    #[test]
-    fn page_chrome_is_identical_and_global_navigation_has_no_delayed_action() {
-        let mut app = app();
-        let mut metrics = Vec::new();
-        for screen in [Screen::Overview, Screen::Assets, Screen::Models] {
-            app.screen = screen;
-            metrics.push((
-                app.sidebar_width(),
-                app.frame_padding(),
-                app.titlebar_height(),
-            ));
-        }
-        assert!(metrics.windows(2).all(|pair| pair[0] == pair[1]));
-        app.library = None;
-        drop(app.update(Message::Navigate(0)));
-        drop(app.update(Message::Navigate(2)));
-        assert_eq!(app.screen, Screen::Models);
-        assert!(app.transition.as_ref().unwrap().pending.is_none());
-    }
-    #[test]
-    fn rapid_page_navigation_retargets_without_jumps_or_committing_old_destinations() {
-        use std::time::Duration;
-        let mut app = app();
-        app.screen = Screen::Overview;
-        drop(app.update(Message::Navigate(2)));
-        let start = app.transition.as_ref().unwrap().started;
-        assert_eq!(app.screen, Screen::Overview);
-        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(35))));
-        let alpha = app.transition.as_ref().unwrap().alpha();
-        assert!((alpha - 0.5).abs() < 0.01);
-        drop(app.update(Message::Navigate(1)));
-        assert_eq!(app.transition.as_ref().unwrap().alpha(), alpha);
-        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(70))));
-        assert_eq!(app.screen, Screen::Assets);
-        assert_eq!(app.transition.as_ref().unwrap().alpha(), 1.0);
-        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(180))));
-        assert!(app.transition.is_none());
-        drop(app.update(Message::Navigate(2)));
-        let start = app.transition.as_ref().unwrap().started;
-        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(35))));
-        drop(app.update(Message::Navigate(1)));
-        assert!(app.transition.as_ref().unwrap().pending.is_none());
-        let start = app.transition.as_ref().unwrap().started;
-        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(110))));
-        assert!(app.transition.is_none());
-        assert_eq!(app.screen, Screen::Assets);
-    }
-    #[test]
-    fn old_query_results_cannot_replace_new_view() {
-        let mut app = app();
-        app.generation = 3;
-        drop(app.update(Message::PageLoaded(
-            2,
-            Ok(LoadedPage {
-                total: 0,
-                offset: 0,
-                tiles: vec![],
-                warnings: 0,
-            }),
-        )));
-        assert_eq!(app.total, 100000);
-        assert_eq!(app.generation, 3);
-    }
-    #[test]
-    fn range_selection_receipts_obey_library_and_query_identity() {
-        let mut app = app();
-        let library = app.library.as_ref().unwrap().info.id;
-        let asset = AssetId::default();
-        app.manager.multiselect = true;
-        app.generation = 5;
-        drop(app.update(Message::Manage(ManageMessage::RangeSelected(
-            library,
-            4,
-            Ok(vec![asset]),
-        ))));
-        drop(app.update(Message::Manage(ManageMessage::RangeSelected(
-            LibraryId::default(),
-            5,
-            Ok(vec![asset]),
-        ))));
-        assert!(app.manager.selection.is_empty());
-        drop(app.update(Message::Manage(ManageMessage::RangeSelected(
-            library,
-            5,
-            Ok(vec![asset]),
-        ))));
-        assert!(app.manager.selection.contains(&asset));
-        app.manager.selection_anchor = Some(asset);
-        drop(app.reset_query());
-        assert!(app.manager.selection_anchor.is_none());
-    }
-    #[test]
-    fn large_displays_keep_viewport_inside_page_budget() {
-        let mut app = app();
-        for (width, height) in [(1360.0, 800.0), (3840.0, 2160.0), (7680.0, 4320.0)] {
-            app.viewport = Size::new(width, height);
-            for list in [false, true] {
-                app.list = list;
-                let grid = app.grid();
-                assert!(grid.visible(500000, 90000.0).len() <= 128);
-            }
-        }
-    }
-    #[test]
-    fn scroll_moved_during_load_requests_current_viewport() {
-        let mut app = app();
-        app.generation = 3;
-        app.loading = true;
-        app.scroll_y = 90000.0;
-        drop(app.update(Message::PageLoaded(
-            3,
-            Ok(LoadedPage {
-                total: 100000,
-                offset: 0,
-                tiles: vec![],
-                warnings: 0,
-            }),
-        )));
-        assert!(app.loading);
-        assert_eq!(app.generation, 4);
-    }
-    #[test]
-    fn saved_edit_survives_query_change_but_rejects_other_library() {
-        let mut app = app();
-        app.generation = 8;
-        let current = app.library.as_ref().unwrap().info.id;
-        drop(app.update(Message::Saved(
-            LibraryId::default(),
-            Err("stale failure".into()),
-        )));
-        assert!(app.error.is_none());
-        drop(app.update(Message::Saved(current, Ok(()))));
-        assert_eq!(app.generation, 9);
-        assert!(app.loading);
-    }
-    #[test]
-    fn background_save_does_not_close_settings_dialog() {
-        let mut app = app();
-        let id = app.library.as_ref().unwrap().info.id;
-        app.dialog = Some(Dialog::Settings);
-        drop(app.update(Message::Saved(id, Ok(()))));
-        assert_eq!(app.dialog, Some(Dialog::Settings));
-    }
-    pub(super) fn selected_asset() -> Asset {
-        Asset {
-            id: AssetId::default(),
-            version_id: AssetVersionId::default(),
-            name: "测试".into(),
-            format: "png".into(),
-            width: 20,
-            height: 12,
-            bytes: 30,
-            favorite: false,
-            rating: 0,
-            tags: vec![],
-            imported_at: 0,
-        }
-    }
-    #[test]
-    fn image_gestures_target_clicked_card_and_reject_missing_or_modal_targets() {
-        let mut app = app();
-        app.screen = Screen::Assets;
-        let first = selected_asset();
-        let second = selected_asset();
-        app.tiles = vec![
-            Tile {
-                asset: first.clone(),
-                handle: None,
-            },
-            Tile {
-                asset: second.clone(),
-                handle: None,
-            },
-        ];
-        app.selected = Some(first.clone());
-        app.manager.multiselect = true;
-        app.manager.selection.insert(first.id);
-        drop(app.update(Message::AssetContext(second.id)));
-        assert_eq!(app.selected.as_ref().unwrap().id, second.id);
-        assert_eq!(app.manager.panel, Some(manage::Panel::AssetMenu));
-        assert!(!app.manager.multiselect);
-        assert!(!app.preview_expanded);
-        drop(app.update(Message::OpenImage(first.id)));
-        assert_eq!(app.selected.as_ref().unwrap().id, second.id);
-        drop(app.update(Message::Manage(ManageMessage::Close)));
-        drop(app.update(Message::OpenImage(first.id)));
-        assert_eq!(app.selected.as_ref().unwrap().id, first.id);
-        assert!(app.preview_expanded);
-        drop(app.update(Message::OpenImage(AssetId::default())));
-        assert_eq!(app.selected.as_ref().unwrap().id, first.id);
-        app.dialog = Some(Dialog::Settings);
-        drop(app.update(Message::AssetContext(second.id)));
-        assert_eq!(app.selected.as_ref().unwrap().id, first.id);
-        assert!(app.manager.panel.is_none());
-    }
-    #[test]
-    fn journal_pages_and_related_asset_navigation_reject_stale_receipts() {
-        let mut app = app();
-        let id = app.library.as_ref().unwrap().info.id;
-        drop(app.update(Message::Journal(JournalMessage::Open(true))));
-        let page = EventPage {
-            unread: 8,
-            ..Default::default()
-        };
-        for (lib, request) in [(LibraryId::default(), 1), (id, 0)] {
-            drop(app.update(Message::Journal(JournalMessage::Loaded(
-                lib,
-                true,
-                request,
-                true,
-                Ok(page.clone()),
-            ))));
-        }
-        assert_eq!(app.journal.notifications.unread, 0);
-        drop(app.update(Message::Journal(JournalMessage::Loaded(
-            id,
-            true,
-            1,
-            true,
-            Ok(page.clone()),
-        ))));
-        assert_eq!(app.journal.notifications.unread, 8);
-        let reopened = app.library.clone().unwrap();
-        drop(app.update(Message::Opened(Ok(reopened))));
-        drop(app.update(Message::Journal(JournalMessage::Loaded(
-            id,
-            true,
-            1,
-            true,
-            Ok(page),
-        ))));
-        assert_eq!(app.journal.notifications.unread, 0);
-        let asset = AssetId::default();
-        drop(app.update(Message::Journal(JournalMessage::OpenAsset(asset))));
-        let request = app.browse_request;
-        drop(app.update(Message::Search("当前搜索".into())));
-        drop(app.update(Message::Journal(JournalMessage::Located(
-            id,
-            request,
-            asset,
-            Ok(Some(true)),
-        ))));
-        assert_eq!(app.query.text, "当前搜索");
-        assert!(!app.query.trash);
-    }
-    #[test]
-    fn project_menu_keeps_gallery_context_and_cancelled_or_stale_delete_preserves_data() {
-        let mut app = app();
-        let project = ProjectId::default();
-        let current = ProjectId::default();
-        app.library.as_mut().unwrap().info.projects.push(Project {
-            visited_at: 0,
-            id: project,
-            parent: None,
-            name: "空项目".into(),
-            count: 0,
-        });
-        app.query.project = Some(current);
-        app.screen = Screen::Assets;
-        let selected = selected_asset();
-        let id = selected.id;
-        app.selected = Some(selected);
-        drop(app.update(Message::Manage(ManageMessage::ProjectMenu(project))));
-        assert_eq!(app.query.project, Some(current));
-        assert_eq!(app.manager.project_target, Some(project));
-        assert_eq!(app.manager.label, "空项目");
-        assert_eq!(app.selected.as_ref().unwrap().id, id);
-        app.manager.busy = true;
-        drop(app.update(Message::Deletion(DeletionMessage::Planned(
-            LibraryId::default(),
-            0,
-            Err("已取消".into()),
-        ))));
-        drop(app.update(Message::Manage(ManageMessage::ProjectDeleted(
-            LibraryId::default(),
-            vec![current],
-            Ok(PurgeReport::default()),
-        ))));
-        assert!(app.manager.busy);
-        assert_eq!(app.query.project, Some(current));
-        app.manager.busy = false;
-        app.manager.panel = Some(manage::Panel::Delete);
-        drop(app.update(Message::Deletion(DeletionMessage::Cancel)));
-        assert!(!app.manager.busy);
-        assert_eq!(app.selected.as_ref().unwrap().id, id);
-    }
-    fn settle(app: &mut App) {
-        if let Some(t) = &app.transition {
-            let start = t.started;
-            drop(app.update(Message::TransitionFrame(start + Duration::from_millis(70))));
-        }
-        app.transition = None;
-    }
-    #[test]
-    fn history_restores_query_scroll_selection_and_draft_then_truncates_forward() {
-        let mut app = app();
-        app.screen = Screen::Assets;
-        app.query.tag = "人物".into();
-        app.scroll_y = 4500.0;
-        let asset = selected_asset();
-        let id = asset.id;
-        app.selected = Some(asset);
-        app.manager.selection.insert(id);
-        app.manager.selection_anchor = Some(id);
-        app.manager.multiselect = true;
-        app.manager.notes = "未保存备注".into();
-        app.manager.notes_dirty = true;
-        drop(app.update(Message::Favorites));
-        settle(&mut app);
-        assert!(app.history.can_back());
-        assert!(app.query.favorites_only);
-        drop(app.update(Message::Back));
-        settle(&mut app);
-        assert_eq!(app.query.tag, "人物");
-        assert_eq!(app.scroll_y, 4500.0);
-        assert!(app.manager.selection.contains(&id));
-        assert_eq!(app.manager.selection_anchor, Some(id));
-        assert!(app.manager.multiselect);
-        assert_eq!(app.restored_notes, Some((id, "未保存备注".into())));
-        assert!(app.history.can_forward());
-        drop(app.update(Message::Forward));
-        settle(&mut app);
-        assert!(app.query.favorites_only);
-        drop(app.update(Message::Back));
-        settle(&mut app);
-        drop(app.update(Message::Manage(ManageMessage::Tag("风景".into()))));
-        assert!(!app.history.can_forward());
-    }
-    #[test]
-    fn search_history_is_coalesced_and_new_library_clears_both_stacks() {
-        let mut app = app();
-        app.screen = Screen::Assets;
-        for text in ["日", "日落", "日落海边"] {
-            drop(app.update(Message::Search(text.into())));
-        }
-        drop(app.update(Message::Back));
-        settle(&mut app);
-        assert_eq!(app.query, Query::default());
-        assert!(!app.history.can_back());
-        assert!(app.history.can_forward());
-        let mut other = app.library.clone().unwrap();
-        other.info.id = LibraryId::default();
-        drop(app.update(Message::Opened(Ok(other))));
-        assert!(!app.history.can_back());
-        assert!(!app.history.can_forward());
-        assert!(app.pending_scroll.is_none());
-    }
-    #[test]
-    fn neighborhood_receipts_reject_old_requests_queries_and_libraries() {
-        let mut app = app();
-        app.screen = Screen::Assets;
-        let asset = selected_asset();
-        let id = asset.id;
-        let library = app.library.as_ref().unwrap().info.id;
-        let result = moriq_app::LoadedNeighborhood {
-            selected: id,
-            position: 128,
-            page: LoadedPage {
-                total: 300,
-                offset: 125,
-                tiles: vec![moriq_app::Tile {
-                    asset: asset.clone(),
-                    thumbnail: None,
-                }],
-                warnings: 0,
-            },
-        };
-        app.browse_request = 5;
-        for (lib, request) in [(library, 4), (LibraryId::default(), 5)] {
-            drop(app.update(Message::NeighborhoodLoaded(
-                lib,
-                request,
-                Ok(Some(result.clone())),
-            )));
-            assert!(app.selected.is_none());
-        }
-        drop(app.update(Message::NeighborhoodLoaded(
-            library,
-            5,
-            Ok(Some(result.clone())),
-        )));
-        assert_eq!(app.selected.as_ref().unwrap().id, id);
-        assert_eq!(app.neighbor_position, Some((128, 300)));
-        drop(app.update(Message::ClosePreview));
-        drop(app.update(Message::NeighborhoodLoaded(
-            library,
-            5,
-            Ok(Some(result.clone())),
-        )));
-        assert!(app.selected.is_none());
-        drop(app.update(Message::Search("新的查询".into())));
-        drop(app.update(Message::NeighborhoodLoaded(library, 5, Ok(Some(result)))));
-        assert!(app.selected.is_none());
-        assert!(app.neighbors.is_empty());
-    }
-    #[test]
-    fn changing_query_invalidates_pending_layout_and_version_receipt_does_not_reselect() {
-        let mut app = app();
-        let asset = selected_asset();
-        let id = asset.id;
-        app.selected = Some(asset);
-        let library = app.library.as_ref().unwrap().info.id;
-        drop(app.update(Message::Manage(ManageMessage::VersionSelected(
-            library,
-            AssetId::default(),
-            AssetVersionId::default(),
-            Ok(()),
-        ))));
-        assert_eq!(app.selected.as_ref().unwrap().id, id);
-        let generation = app.layout_generation;
-        drop(app.update(Message::Search("新查询".into())));
-        assert!(app.layout_generation > generation);
-        drop(app.update(Message::MasonryLoaded(
-            generation,
-            Ok(std::sync::Arc::new(moriq_render::MasonryIndex::new(
-                &[(10, 10)],
-                1,
-                100.0,
-                10.0,
-            ))),
-        )));
-        assert!(app.masonry.is_none());
-    }
-    #[test]
-    fn old_version_preview_cannot_replace_the_new_version() {
-        let mut app = app();
-        let id = app.library.as_ref().unwrap().info.id;
-        let asset = selected_asset();
-        let old = AssetVersionId::default();
-        app.selected = Some(asset.clone());
-        drop(app.update(Message::PreviewLoaded(
-            id,
-            asset.id,
-            old,
-            Ok(image::Handle::from_rgba(1, 1, vec![0; 4])),
-        )));
-        assert!(app.preview.is_none());
-    }
-    #[test]
-    fn background_details_and_save_receipts_preserve_newer_unsaved_notes() {
-        let mut app = app();
-        let id = app.library.as_ref().unwrap().info.id;
-        let asset = selected_asset();
-        app.selected = Some(asset.clone());
-        drop(app.update(Message::Manage(ManageMessage::Notes(
-            "用户刚输入的新内容".into(),
-        ))));
-        drop(app.update(Message::Manage(ManageMessage::DetailsLoaded(
-            id,
-            asset.id,
-            asset.version_id,
-            Ok(AssetDetails {
-                notes: "旧数据库内容".into(),
-                ..Default::default()
-            }),
-        ))));
-        drop(app.update(Message::Manage(ManageMessage::NotesSaved(
-            id,
-            asset.id,
-            "旧数据库内容".into(),
-            Ok(()),
-        ))));
-        assert_eq!(app.manager.notes, "用户刚输入的新内容");
-        assert!(app.manager.notes_dirty);
-        drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
-            LibraryId::default(),
-            app.projection_request,
-            Ok(Organizer {
-                trash_count: 100,
-                ..Default::default()
-            }),
-        ))));
-        assert_eq!(app.manager.organizer.trash_count, 0);
-    }
-}
+mod tests;
+
 #[derive(Debug, Clone)]
-pub enum Message {
+pub(crate) enum Message {
     DpiChanged(f32),
     Regions(RegionMessage),
     UploadTick,
@@ -804,12 +141,6 @@ pub enum Message {
     Zoom(f32),
     List(bool),
     Select(AssetId),
-    PreviewLoaded(
-        LibraryId,
-        AssetId,
-        AssetVersionId,
-        Result<image::Handle, String>,
-    ),
     FullPreviewLoaded(
         LibraryId,
         AssetId,
@@ -818,13 +149,6 @@ pub enum Message {
     ),
     ClosePreview,
     Jobs(tasks::JobMessage),
-    OriginalPreviewLoaded(
-        LibraryId,
-        AssetId,
-        AssetVersionId,
-        u64,
-        Result<(image::Handle, u32, u32), String>,
-    ),
     PlaybackStarted(
         LibraryId,
         AssetId,
@@ -832,8 +156,12 @@ pub enum Message {
         u64,
         Result<std::sync::Arc<moriq_app::Playback>, String>,
     ),
-    VideoBounds(AssetVersionId, iced::Rectangle),
-    VideoPositioned(AssetVersionId, Result<(), String>),
+    VideoFrame,
+    VideoUploaded(u64, Result<iced_runtime::image::Allocation, String>),
+    VideoPause,
+    VideoMute,
+    VideoSeek(f32),
+    VideoControlled(u64, Result<(), String>),
     ExpandPreview,
     Favorite(AssetId, bool),
     Rating(u8),
@@ -845,9 +173,14 @@ pub enum Message {
     CreateProject,
     ProjectCreated(LibraryId, Result<ProjectId, String>),
     Dismiss,
-    Language,
     DiagnosticLogging(bool),
+    ReducedMotion(bool),
+    CardHovered(AssetId, bool),
+    #[cfg(feature = "capture")]
     Captured(iced::window::Screenshot),
+    #[cfg(feature = "capture")]
+    VideoProof(iced::window::Screenshot),
+    #[cfg(feature = "capture")]
     CaptureSaved(Result<(), String>),
     ResourcesLoaded(Result<assets::Artwork, String>),
     MasonryLoaded(
@@ -861,13 +194,11 @@ pub enum Message {
     ShowCreate,
     HideCreate,
     ShowProject,
-    HideProject,
-    DesignPreview,
     Notice(String),
     DetailTab(u8),
-    ModelTab(u8),
     SetMasonry(bool),
     CopyLibraryPath,
+    CopyModelsPath,
     RevealLibrary,
     ToggleTagEditor,
     ToggleModelPolicy,
@@ -906,8 +237,9 @@ struct Tile {
     asset: Asset,
     handle: Option<image::Handle>,
 }
-pub struct App {
+pub(crate) struct App {
     dpi_scale: f32,
+    gallery_feedback: motion::HoverFeedback,
     regions: regions::Regions,
     uploads: std::collections::VecDeque<(AssetVersionId, moriq_app::Pixels)>,
     upload_generation: u64,
@@ -953,6 +285,13 @@ pub struct App {
     original_request: u64,
     original_size: Option<(u32, u32)>,
     playback: Option<std::sync::Arc<moriq_app::Playback>>,
+    video_paused: bool,
+    video_muted: bool,
+    video_presented: u64,
+    video_first_ready_ms: Option<u128>,
+    video_frame: Option<iced_runtime::image::Allocation>,
+    video_upload: bool,
+    video_control: u64,
     jobs: tasks::TaskState,
     compare: compare::Compare,
     tag_input: String,
@@ -964,14 +303,15 @@ pub struct App {
     viewport: Size,
     card_width: f32,
     list: bool,
-    english: bool,
     launch: LaunchOptions,
+    #[cfg(feature = "capture")]
     capture_ticks: u8,
+    #[cfg(feature = "capture")]
+    capture_stress_steps: u16,
     projection_request: u64,
     navigation_request: u64,
     page_task: Option<iced::task::Handle>,
     preview_task: Option<iced::task::Handle>,
-    locale: std::sync::Arc<i18n::Locale>,
     artwork: assets::Artwork,
     masonry: Option<std::sync::Arc<moriq_render::MasonryIndex>>,
     masonry_task: Option<iced::task::Handle>,
@@ -1010,14 +350,8 @@ pub fn run(launch: LaunchOptions) -> iced::Result {
     let initial_size = Size::new(1660.0, 940.0);
     let window_icon = launch.window_icon.clone();
     let service = Service::start().map_err(iced::Error::ExecutorCreationFailed)?;
-    let locale = std::sync::Arc::new(i18n::Locale::load().map_err(|error| {
-        iced::Error::ExecutorCreationFailed(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            error,
-        ))
-    })?);
     iced::application(
-        move || App::new(service.clone(), launch.clone(), locale.clone()),
+        move || App::new(service.clone(), launch.clone()),
         App::update,
         App::view,
     )
@@ -1045,11 +379,7 @@ pub fn run(launch: LaunchOptions) -> iced::Result {
     .run()
 }
 impl App {
-    fn new(
-        service: Service,
-        launch: LaunchOptions,
-        locale: std::sync::Arc<i18n::Locale>,
-    ) -> (Self, Task<Message>) {
+    fn new(service: Service, launch: LaunchOptions) -> (Self, Task<Message>) {
         let settings_service = service.clone();
         let settings = Task::perform(
             async move { settings_service.settings().await },
@@ -1127,7 +457,15 @@ impl App {
                 original_request: 0,
                 original_size: None,
                 playback: None,
+                video_paused: false,
+                video_muted: false,
+                video_presented: 0,
+                video_first_ready_ms: None,
+                video_frame: None,
+                video_upload: false,
+                video_control: 0,
                 dpi_scale: 1.0,
+                gallery_feedback: Default::default(),
                 regions: Default::default(),
                 uploads: Default::default(),
                 upload_generation: 0,
@@ -1150,14 +488,15 @@ impl App {
                 viewport: Size::new(1660.0, 940.0),
                 card_width: 210.0,
                 list: false,
-                english: false,
                 launch,
+                #[cfg(feature = "capture")]
                 capture_ticks: 0,
+                #[cfg(feature = "capture")]
+                capture_stress_steps: 0,
                 projection_request: 0,
                 navigation_request: 0,
                 page_task: None,
                 preview_task: None,
-                locale,
                 artwork: Default::default(),
                 masonry: None,
                 masonry_task: None,
@@ -1182,9 +521,6 @@ impl App {
                     .map(Message::DpiChanged),
             ]),
         )
-    }
-    fn tr<'a>(&'a self, key: &'a str) -> &'a str {
-        self.locale.text(self.english, key)
     }
     fn grid(&self) -> Grid {
         let available = self.gallery_width();
@@ -1256,6 +592,7 @@ impl App {
         })
     }
     fn reset_query(&mut self) -> Task<Message> {
+        self.gallery_feedback.clear();
         self.clear_browsing();
         self.pending_scroll = None;
         self.surfaces.restoring_gallery = None;
@@ -1298,8 +635,16 @@ impl App {
     }
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            if self.transition.is_some() || self.surface_motion.is_some() {
+            if self.transition.is_some()
+                || self.surface_motion.is_some()
+                || self.gallery_feedback.active()
+            {
                 iced::time::every(Duration::from_millis(16)).map(Message::TransitionFrame)
+            } else {
+                Subscription::none()
+            },
+            if self.playback.is_some() {
+                iced::time::every(Duration::from_millis(16)).map(|_| Message::VideoFrame)
             } else {
                 Subscription::none()
             },
@@ -1496,7 +841,7 @@ impl App {
             }
             Message::PageScrolled(_, _, _) => {}
             Message::Deletion(event) => return self.deletion_message(event),
-            event @ (Message::OpenImage(_) | Message::AssetContext(_)) => {
+            event @ (Message::OpenImage(id) | Message::AssetContext(id)) => {
                 if self.dialog.is_some()
                     || self.manager.panel.is_some()
                     || self.switching
@@ -1504,11 +849,7 @@ impl App {
                 {
                     return Task::none();
                 }
-                let (id, menu) = match event {
-                    Message::OpenImage(id) => (id, false),
-                    Message::AssetContext(id) => (id, true),
-                    _ => unreachable!(),
-                };
+                let menu = matches!(event, Message::AssetContext(_));
                 if !self
                     .tiles
                     .iter()
@@ -1608,7 +949,6 @@ impl App {
             Message::Manage(event) => return self.manage_message(event),
             Message::SettingsLoaded(result) => match result {
                 Ok(prefs) => {
-                    self.english = prefs.english;
                     self.on_demand_models = prefs.ai.on_demand;
                     self.retain_indexes = prefs.ai.retain_indexes;
                     let value = prefs.ai;
@@ -1690,6 +1030,8 @@ impl App {
                 return iced::window::oldest().and_then(iced::window::toggle_maximize);
             }
             Message::WindowClose => {
+                let playback = self.playback.take();
+                self.stop_viewer();
                 for control in self.ai.downloads.values() {
                     control.stop.store(true, Ordering::Relaxed);
                 }
@@ -1720,6 +1062,13 @@ impl App {
                     .map(|l| (l.info.id, self.navigation_snapshot()));
                 return Task::perform(
                     async move {
+                        if let Some(playback) = playback {
+                            tokio::task::spawn_blocking(move || {
+                                playback.stop().map_err(|e| e.to_string())
+                            })
+                            .await
+                            .map_err(|e| e.to_string())??;
+                        }
                         if let Some((owner, value)) = navigation
                             && let Err(error) = service.save_navigation(owner, value).await
                         {
@@ -1739,6 +1088,10 @@ impl App {
                     return iced::clipboard::write(components::display_path(&library.root));
                 }
             }
+            Message::CopyModelsPath => match moriq_app::model_directory() {
+                Ok(path) => return iced::clipboard::write(components::display_path(&path)),
+                Err(error) => self.error = Some(error),
+            },
             Message::RevealLibrary => {
                 if self.launch.design_preview {
                     self.error =
@@ -1800,7 +1153,7 @@ impl App {
                 self.name = "我的素材库".into();
                 self.dialog = Some(Dialog::CreateLibrary);
             }
-            Message::HideCreate | Message::HideProject => self.dialog = None,
+            Message::HideCreate => self.dialog = None,
             Message::ShowProject => {
                 self.manager.panel = None;
                 self.dialog = Some(Dialog::CreateProject);
@@ -1904,10 +1257,6 @@ impl App {
                 return self.update(Message::Saved(id, result));
             }
             Message::DetailTab(tab) => self.detail_tab = tab,
-            Message::ModelTab(tab) => {
-                self.model_tab = tab;
-                self.model_filter = if tab == 2 { 0 } else { 2 };
-            }
             Message::ModelSearch(query) => self.model_search = query,
             Message::ModelFilter(filter) => self.model_filter = filter,
             Message::SetMasonry(value) => {
@@ -1915,10 +1264,6 @@ impl App {
                 self.masonry_mode = value;
                 self.list = false;
                 return self.reset_query();
-            }
-            Message::DesignPreview => {
-                self.launch.design_preview = true;
-                return self.install_preview();
             }
             Message::ResourcesLoaded(result) => match result {
                 Ok(artwork) => {
@@ -2025,7 +1370,7 @@ impl App {
                         self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
                         self.query = Query::default();
                         self.error = None;
-                        self.status = self.tr("text_001").into();
+                        self.status = "资源库已就绪".into();
                         let imports = std::mem::take(&mut self.launch.import_paths);
                         return Task::batch([
                             self.reset_query(),
@@ -2289,6 +1634,8 @@ impl App {
                     .is_some_and(|p| !p.running().unwrap_or(false))
                 {
                     self.playback = None;
+                    self.video_frame = None;
+                    self.video_upload = false;
                     self.error = Some("内置播放器已停止。请重新打开视频；原文件保留。".into());
                 }
                 if !self.ai.loaded && !self.ai.loading {
@@ -2319,12 +1666,28 @@ impl App {
                 {
                     return self.manage_message(ManageMessage::SyncoPoll(false));
                 }
+                #[cfg(feature = "capture")]
                 if self.launch.capture.is_some()
                     && (!self.loading || self.import.is_some())
                     && !self.switching
                     && (!self.launch.design_preview || self.library.is_some())
                 {
                     self.capture_ticks = self.capture_ticks.saturating_add(1);
+                    if self.launch.panel.as_deref() == Some("video-motion")
+                        && self.capture_ticks == 6
+                    {
+                        return iced::window::oldest()
+                            .and_then(iced::window::screenshot)
+                            .map(Message::VideoProof);
+                    }
+                    if self.launch.panel.as_deref() == Some("video-controls") {
+                        match self.capture_ticks {
+                            4 | 8 => return self.update(Message::VideoPause),
+                            6 => return self.update(Message::VideoSeek(0.6)),
+                            9 | 10 => return self.update(Message::VideoMute),
+                            _ => {}
+                        }
+                    }
                     if matches!(
                         self.launch.panel.as_deref(),
                         Some("viewer-return" | "gallery-scroll")
@@ -2384,7 +1747,24 @@ impl App {
                     {
                         return self.commit_navigation(Message::Navigate(2));
                     }
+                    if self.capture_ticks == 8 {
+                        let scroll_target = match self.launch.panel.as_deref() {
+                            Some("settings-bottom") => Some(("management", 100000.0)),
+                            Some("details-ai") => Some(("details", 220.0)),
+                            Some("details-bottom") => Some(("details", 100000.0)),
+                            _ => None,
+                        };
+                        if let Some((id, y)) = scroll_target {
+                            return iced::widget::operation::scroll_to(
+                                id,
+                                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+                            );
+                        }
+                    }
                     if self.capture_ticks == 2 {
+                        if self.launch.panel.as_deref() == Some("details-ai") {
+                            self.detail_tab = 2;
+                        }
                         match self.launch.panel.as_deref() {
                             Some("ai-refresh") => {
                                 return self.job_message(tasks::JobMessage::Queue(
@@ -2450,7 +1830,10 @@ impl App {
                             Some("location") => {
                                 return self.manage_message(ManageMessage::Location);
                             }
-                            Some("expanded" | "actual-regions" | "viewer-leave") => {
+                            Some(
+                                "expanded" | "actual-regions" | "viewer-leave" | "video-motion"
+                                | "video-controls",
+                            ) => {
                                 return self.set_viewer(true);
                             }
                             Some("compare") => return self.compare_message(CompareMessage::Open),
@@ -2458,7 +1841,7 @@ impl App {
                             _ => {}
                         }
                         self.manager.panel = match self.launch.panel.as_deref() {
-                            Some("settings") => {
+                            Some("settings" | "settings-bottom") => {
                                 self.dialog = Some(Dialog::Settings);
                                 None
                             }
@@ -2480,6 +1863,28 @@ impl App {
                         };
                     }
                     if self.capture_ticks == 12 {
+                        if self.launch.panel.as_deref() == Some("browse-stress")
+                            && self.capture_stress_steps < 80
+                        {
+                            self.capture_ticks = 11;
+                            let step = self.capture_stress_steps;
+                            self.capture_stress_steps += 1;
+                            if let Some(id) = self
+                                .tiles
+                                .get(step as usize % self.tiles.len().max(1))
+                                .map(|t| t.asset.id)
+                            {
+                                return match step % 4 {
+                                    0 | 1 => {
+                                        let open = self.update(Message::OpenImage(id));
+                                        let zoom = self.region_message(RegionMessage::Actual);
+                                        Task::batch([open, zoom])
+                                    }
+                                    2 => self.set_viewer(false),
+                                    _ => self.update(Message::Select(id)),
+                                };
+                            }
+                        }
                         if self.launch.panel.as_deref() == Some("people")
                             && (self.manager.organizer.people.is_empty()
                                 || self
@@ -2508,41 +1913,66 @@ impl App {
                 }
                 return self.job_tick();
             }
+            #[cfg(feature = "capture")]
+            Message::VideoProof(screenshot) => {
+                if let Some(path) = self.launch.capture.as_ref() {
+                    let path = path.with_extension("early.png");
+                    let service = self.service.clone();
+                    let request = self.original_request;
+                    let state = format!(
+                        "presented_frames={} progress={:?}\n",
+                        self.video_presented,
+                        self.playback.as_ref().map(|p| p.progress())
+                    );
+                    return Task::perform(
+                        async move {
+                            service
+                                .save_capture_evidence(path.with_extension("txt"), state)
+                                .await?;
+                            service
+                                .save_capture(
+                                    path,
+                                    screenshot.size.width,
+                                    screenshot.size.height,
+                                    screenshot.rgba.to_vec(),
+                                )
+                                .await
+                        },
+                        move |r| Message::VideoControlled(request, r),
+                    );
+                }
+            }
+            #[cfg(feature = "capture")]
             Message::Captured(screenshot) => {
                 if let Some(path) = self.launch.capture.take() {
                     let service = self.service.clone();
                     let playback = self.playback.clone();
                     let playback_state = format!(
-                        "expanded={} request={} error={:?}\n",
-                        self.preview_expanded, self.original_request, self.error
+                        "expanded={} request={} error={:?} presented_frames={} first_gpu_ready_ms={:?}\n",
+                        self.preview_expanded,
+                        self.original_request,
+                        self.error,
+                        self.video_presented,
+                        self.video_first_ready_ms
                     );
                     return Task::perform(
                         async move {
                             let evidence = path.with_extension("playback.txt");
-                            if let Some(playback) = playback {
-                                tokio::task::spawn_blocking(move || -> Result<(), String> {
-                                    std::fs::write(
-                                        evidence,
-                                        format!(
-                                            "{playback_state}{}",
-                                            playback.diagnostics().map_err(|e| e.to_string())?
-                                        ),
-                                    )
-                                    .map_err(|e| e.to_string())
-                                })
-                                .await
-                                .map_err(|e| e.to_string())??;
-                            } else {
+                            let details = if let Some(playback) = playback {
                                 tokio::task::spawn_blocking(move || {
-                                    std::fs::write(
-                                        evidence,
-                                        format!("{playback_state}no playback session\n"),
-                                    )
+                                    playback.diagnostics().map_err(|e| e.to_string())
                                 })
                                 .await
-                                .map_err(|e| e.to_string())?
-                                .map_err(|e| e.to_string())?;
-                            }
+                                .map_err(|e| e.to_string())??
+                            } else {
+                                "no playback session\n".into()
+                            };
+                            service
+                                .save_capture_evidence(
+                                    evidence,
+                                    format!("{playback_state}{details}"),
+                                )
+                                .await?;
                             service
                                 .save_capture(
                                     path,
@@ -2556,6 +1986,7 @@ impl App {
                     );
                 }
             }
+            #[cfg(feature = "capture")]
             Message::CaptureSaved(result) => {
                 if let Err(error) = result {
                     self.error = Some(error);
@@ -2628,6 +2059,7 @@ impl App {
                 }
             }
             Message::Scrolled(y) => {
+                self.gallery_feedback.clear();
                 if self.preview_expanded
                     || ((self.pending_scroll.or(self.surfaces.restoring_gallery))
                         .is_some_and(|target| target > 0.0)
@@ -2678,18 +2110,6 @@ impl App {
                     .unwrap_or_else(Task::none);
                 return Task::batch([focus, self.load_neighborhood(id, 0)]);
             }
-            Message::PreviewLoaded(library, id, version, result)
-                if self.library.as_ref().is_some_and(|l| l.info.id == library)
-                    && self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|a| a.id == id && a.version_id == version) =>
-            {
-                match result {
-                    Ok(handle) => self.preview = Some(handle),
-                    Err(error) => self.error = Some(error),
-                }
-            }
             Message::FullPreviewLoaded(library, id, version, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == library)
                     && self
@@ -2708,52 +2128,94 @@ impl App {
                     Err(e) => self.error = Some(e),
                 }
             }
-            Message::OriginalPreviewLoaded(library, id, version, request, result)
-                if self.preview_expanded
-                    && self.original_request == request
-                    && self.library.as_ref().is_some_and(|l| l.info.id == library)
-                    && self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|a| a.id == id && a.version_id == version) =>
-            {
-                match result {
-                    Ok((image, w, h)) => {
-                        self.preview = Some(image);
-                        self.original_size = Some((w, h));
+            Message::VideoFrame if !self.video_upload => {
+                if let Some(playback) = &self.playback {
+                    match playback.take_frame() {
+                        Ok(Some(frame)) => {
+                            let request = self.original_request;
+                            self.video_upload = true;
+                            // Iced uploads large images asynchronously. Keep the last
+                            // allocation visible until this frame is ready on the GPU.
+                            return iced_runtime::image::allocate(image::Handle::from_rgba(
+                                frame.width,
+                                frame.height,
+                                frame.rgba,
+                            ))
+                            .map(move |r| {
+                                Message::VideoUploaded(request, r.map_err(|e| e.to_string()))
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            self.error = Some(error.to_string());
+                            self.playback = None;
+                            self.video_frame = None;
+                        }
                     }
-                    Err(e) => self.error = Some(e),
                 }
             }
-            Message::VideoBounds(version, bounds)
-                if self.preview_expanded
-                    && self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|a| a.version_id == version) =>
+            Message::VideoUploaded(request, result)
+                if request == self.original_request && self.playback.is_some() =>
             {
+                self.video_upload = false;
+                match result {
+                    Ok(frame) => {
+                        if self.video_first_ready_ms.is_none() {
+                            self.video_first_ready_ms =
+                                self.playback.as_ref().map(|p| p.elapsed_ms());
+                        }
+                        self.video_frame = Some(frame);
+                        self.video_presented += 1;
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.playback = None;
+                        self.video_frame = None;
+                    }
+                }
+            }
+            Message::VideoPause | Message::VideoMute | Message::VideoSeek(_) => {
                 if let Some(playback) = self.playback.clone() {
+                    let seek = match message {
+                        Message::VideoPause => {
+                            let (position, duration) = playback.progress();
+                            if duration > 0 && position + 80 >= duration {
+                                self.video_paused = false;
+                                Some(0)
+                            } else {
+                                self.video_paused = !self.video_paused;
+                                None
+                            }
+                        }
+                        Message::VideoMute => {
+                            self.video_muted = !self.video_muted;
+                            None
+                        }
+                        Message::VideoSeek(value) => {
+                            Some((value.clamp(0., 1.) * playback.progress().1 as f32) as u64)
+                        }
+                        _ => None,
+                    };
+                    self.video_control += 1;
+                    let revision = self.video_control;
+                    let (paused, muted, request) =
+                        (self.video_paused, self.video_muted, self.original_request);
                     return Task::perform(
                         async move {
                             tokio::task::spawn_blocking(move || {
                                 playback
-                                    .viewport(bounds.x, bounds.y, bounds.width, bounds.height)
+                                    .control(revision, paused, muted, seek)
                                     .map_err(|e| e.to_string())
                             })
                             .await
                             .map_err(|e| e.to_string())?
                         },
-                        move |r| Message::VideoPositioned(version, r),
+                        move |r| Message::VideoControlled(request, r),
                     );
                 }
             }
-            Message::VideoPositioned(version, Err(error))
-                if self
-                    .selected
-                    .as_ref()
-                    .is_some_and(|a| a.version_id == version) =>
-            {
-                tracing::warn!(%error,"video layout update deferred");
+            Message::VideoControlled(request, Err(error)) if request == self.original_request => {
+                self.error = Some(error);
             }
             Message::PlaybackStarted(library, id, version, request, result)
                 if self.preview_expanded
@@ -2766,7 +2228,15 @@ impl App {
                         .is_some_and(|a| a.id == id && a.version_id == version) =>
             {
                 match result {
-                    Ok(session) => self.playback = Some(session),
+                    Ok(session) => {
+                        self.video_paused = false;
+                        self.video_muted = false;
+                        self.video_presented = 0;
+                        self.video_first_ready_ms = None;
+                        self.video_frame = None;
+                        self.video_upload = false;
+                        self.playback = Some(session);
+                    }
                     Err(e) => self.error = Some(e),
                 }
             }
@@ -2850,7 +2320,7 @@ impl App {
             {
                 match result {
                     Ok(()) => {
-                        self.status = self.tr("text_002").into();
+                        self.status = "更改已保存到资源库".into();
                         let browse = self
                             .selected
                             .as_ref()
@@ -2918,7 +2388,37 @@ impl App {
                 }
             }
             Message::Dismiss => self.error = None,
-            Message::Language => self.english = !self.english,
+            Message::CardHovered(id, inside) => {
+                if inside && !self.tiles.iter().any(|tile| tile.asset.id == id) {
+                    return Task::none();
+                }
+                self.gallery_feedback.set(
+                    id,
+                    inside,
+                    std::time::Instant::now(),
+                    self.preferences.reduced_motion,
+                );
+            }
+            Message::ReducedMotion(enabled) => {
+                self.preferences.reduced_motion = enabled;
+                self.gallery_feedback.clear();
+                self.surface_motion = None;
+                let pending = self
+                    .transition
+                    .take()
+                    .and_then(|mut transition| transition.pending.take());
+                let navigation = pending
+                    .map(|message| self.commit_navigation(*message))
+                    .unwrap_or_else(Task::none);
+                let service = self.service.clone();
+                return Task::batch([
+                    navigation,
+                    Task::perform(
+                        async move { service.reduced_motion(enabled).await },
+                        Message::SettingsLoaded,
+                    ),
+                ]);
+            }
             Message::DiagnosticLogging(enabled) => {
                 self.preferences.diagnostic_logging = enabled;
                 let service = self.service.clone();
@@ -2927,7 +2427,31 @@ impl App {
                     Message::SettingsLoaded,
                 );
             }
-            _ => {}
+            // Disabled actions and receipts from an older request are intentionally ignored.
+            Message::ShowLibraries
+            | Message::OpenRecent(..)
+            | Message::AiPolicySaved(..)
+            | Message::LibraryRenamed(..)
+            | Message::AssetRenamed(..)
+            | Message::MasonryLoaded(..)
+            | Message::Create
+            | Message::Open
+            | Message::Import
+            | Message::PickedImages(..)
+            | Message::DpiChanged(..)
+            | Message::NavigationSaved(..)
+            | Message::PageLoaded(..)
+            | Message::FullPreviewLoaded(..)
+            | Message::VideoFrame
+            | Message::VideoUploaded(..)
+            | Message::VideoControlled(..)
+            | Message::PlaybackStarted(..)
+            | Message::Saved(..)
+            | Message::InfoLoaded(_, Err(_))
+            | Message::CreateProject
+            | Message::ProjectCreated(..)
+            | Message::Noop
+            | Message::TransitionFrame(_) => {}
         }
         Task::none()
     }

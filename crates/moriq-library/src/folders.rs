@@ -138,7 +138,13 @@ mod tests {
         let asset = lib.page(&Query::default(), 0, 1).unwrap().assets[0].id;
         lib.set_tags(asset, &["keep".into()]).unwrap();
         lib.enqueue_media_job("integrity", 0).unwrap();
-        lib.db.execute_batch("ALTER TABLE virtual_folders RENAME TO unavailable_folders; INSERT INTO smart_collections(id,name,query) VALUES('broken','bad','this is invalid TOML');").unwrap();
+        lib.db
+            .execute_batch(
+                "ALTER TABLE virtual_folders RENAME TO unavailable_folders; INSERT INTO \
+                smart_collections(id,name,query) VALUES('broken','bad','this is invalid TOML');",
+            )
+            .unwrap();
+
         let result = lib.organizer().unwrap();
         assert_eq!(result.errors.len(), 2);
         assert!(

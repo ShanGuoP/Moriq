@@ -43,6 +43,8 @@ impl App {
         self.original_request += 1;
         self.original_size = None;
         self.playback = None;
+        self.video_frame = None;
+        self.video_upload = false;
         self.surfaces.viewer_y = None;
         self.surfaces.restoring_gallery = None;
         self.compare.clear();
@@ -97,6 +99,8 @@ impl App {
         self.original_request += 1;
         self.original_size = None;
         self.playback = None;
+        self.video_frame = None;
+        self.video_upload = false;
         if let Some(handle) = self.preview_task.take() {
             handle.abort();
         }

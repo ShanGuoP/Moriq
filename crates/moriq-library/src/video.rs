@@ -22,7 +22,7 @@ pub(crate) fn sql_formats() -> String {
         .join(",")
 }
 pub fn tool(name: &str) -> Result<PathBuf> {
-    if !["ffmpeg", "ffprobe", "ffplay"].contains(&name) {
+    if !["ffmpeg", "ffprobe"].contains(&name) {
         return Err(Error::Invalid("媒体工具名称无效".into()));
     }
     let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
@@ -86,11 +86,120 @@ fn playback_worker() -> Result<PathBuf> {
     Err(Error::Invalid("此构建尚未包含本平台的视频播放组件".into()))
 }
 pub struct Playback {
-    child: Mutex<Child>,
-    input: Mutex<std::process::ChildStdin>,
-    _source: tempfile::TempPath,
-    _lease: Arc<File>,
-    diagnostics: tempfile::NamedTempFile,
+    child: Mutex<Option<Child>>,
+    input: Mutex<(std::process::ChildStdin, u64)>,
+    source: Option<tempfile::TempPath>,
+    lease: Option<Arc<File>>,
+    diagnostics: Option<tempfile::NamedTempFile>,
+    prepare_spawn_ms: f64,
+    requested: Instant,
+    frames: Arc<Mutex<PlaybackFrames>>,
+}
+pub struct PlaybackFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+#[derive(Default)]
+struct PlaybackFrames {
+    latest: Option<PlaybackFrame>,
+    received: u64,
+    position: u64,
+    duration: u64,
+    error: Option<String>,
+}
+fn receive_frames(mut pipe: impl Read, frames: &Mutex<PlaybackFrames>) -> std::io::Result<()> {
+    loop {
+        let mut header = [0_u8; 32];
+        pipe.read_exact(&mut header)?;
+        let width = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+        let height = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+        if &header[..8] != b"MORIQFR1" || width == 0 || height == 0 || width > 1920 || height > 1920
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "视频帧尺寸或协议无效",
+            ));
+        }
+        let mut rgba = vec![0; width as usize * height as usize * 4];
+        pipe.read_exact(&mut rgba)?;
+        let mut state = frames
+            .lock()
+            .map_err(|_| std::io::Error::other("视频帧状态锁失效"))?;
+        state.position = u64::from_le_bytes([
+            header[16], header[17], header[18], header[19], header[20], header[21], header[22],
+            header[23],
+        ]);
+        state.duration = u64::from_le_bytes([
+            header[24], header[25], header[26], header[27], header[28], header[29], header[30],
+            header[31],
+        ]);
+        state.received += 1;
+        // Replace, never queue: a slow renderer cannot retain minutes of decoded video.
+        state.latest = Some(PlaybackFrame {
+            width,
+            height,
+            rgba,
+        });
+    }
+}
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod frame_tests {
+    use super::*;
+    fn packet(width: u32, height: u32, position: u64, rgba: &[u8]) -> Vec<u8> {
+        let mut bytes = b"MORIQFR1".to_vec();
+        bytes.extend(width.to_le_bytes());
+        bytes.extend(height.to_le_bytes());
+        bytes.extend(position.to_le_bytes());
+        bytes.extend(5000_u64.to_le_bytes());
+        bytes.extend(rgba);
+        bytes
+    }
+    #[test]
+    fn frame_pipe_replaces_old_pixels_and_preserves_rgba_and_clock() {
+        let frames = Mutex::new(PlaybackFrames::default());
+        let mut bytes = packet(1, 1, 40, &[255, 0, 0, 255]);
+        bytes.extend(packet(2, 1, 80, &[0, 255, 0, 255, 0, 0, 255, 255]));
+        assert_eq!(
+            receive_frames(bytes.as_slice(), &frames)
+                .err()
+                .map(|e| e.kind()),
+            Some(std::io::ErrorKind::UnexpectedEof)
+        );
+        let state = frames.lock().expect("frame state");
+        assert_eq!(
+            (state.received, state.position, state.duration),
+            (2, 80, 5000)
+        );
+        let frame = state.latest.as_ref().expect("latest frame");
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.rgba, [0, 255, 0, 255, 0, 0, 255, 255]);
+    }
+    #[test]
+    fn frame_pipe_rejects_corrupt_and_oversized_packets_before_allocating() {
+        for mut bytes in [
+            packet(0, 1, 0, &[]),
+            packet(1921, 1, 0, &[]),
+            packet(u32::MAX, u32::MAX, 0, &[]),
+            packet(1, 1, 0, &[]),
+        ] {
+            if bytes[8..12] == 1_u32.to_le_bytes() {
+                bytes[0] = 0;
+            }
+            let frames = Mutex::new(PlaybackFrames::default());
+            assert_eq!(
+                receive_frames(bytes.as_slice(), &frames)
+                    .err()
+                    .map(|e| e.kind()),
+                Some(std::io::ErrorKind::InvalidData)
+            );
+            assert_eq!(frames.lock().expect("frame state").received, 0);
+        }
+        let frames = Mutex::new(PlaybackFrames::default());
+        assert!(receive_frames(packet(2, 2, 0, &[0; 4]).as_slice(), &frames).is_err());
+        assert!(frames.lock().expect("frame state").latest.is_none());
+    }
 }
 pub(crate) fn linked_snapshot(
     source: &Path,
@@ -138,45 +247,123 @@ impl std::fmt::Debug for Playback {
 }
 impl Drop for Playback {
     fn drop(&mut self) {
-        if let Ok(child) = self.child.get_mut() {
+        if let Some(mut child) = self.child.get_mut().ok().and_then(Option::take) {
             let _ = child.kill();
-            let _ = child.wait();
+            let source = self.source.take();
+            let lease = self.lease.take();
+            let diagnostics = self.diagnostics.take();
+            // Closing or switching media may drop the final Arc on the UI thread.
+            // Reap the worker before releasing its snapshot, without blocking that thread.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+                drop((source, lease, diagnostics));
+            });
         }
     }
 }
 impl Playback {
-    pub fn running(&self) -> Result<bool> {
-        self.child
-            .lock()
-            .map_err(|_| Error::Invalid("播放器状态锁失效".into()))?
-            .try_wait()
-            .map(|status| status.is_none())
-            .map_err(Error::from)
+    pub fn elapsed_ms(&self) -> u128 {
+        self.requested.elapsed().as_millis()
     }
-    pub fn viewport(&self, x: f32, y: f32, width: f32, height: f32) -> Result<()> {
-        if [x, y, width, height]
-            .iter()
-            .any(|v| !v.is_finite() || !(0.0..=100000.0).contains(v))
-        {
-            return Err(Error::Invalid("视频显示区域无效".into()));
+    pub fn take_frame(&self) -> Result<Option<PlaybackFrame>> {
+        let mut frames = self
+            .frames
+            .lock()
+            .map_err(|_| Error::Invalid("视频帧状态锁失效".into()))?;
+        if let Some(error) = frames.error.take() {
+            return Err(Error::Invalid(error));
         }
+        Ok(frames.latest.take())
+    }
+    pub fn progress(&self) -> (u64, u64) {
+        self.frames
+            .lock()
+            .map(|s| (s.position, s.duration))
+            .unwrap_or_default()
+    }
+    /// Controls are tiny writes; callers execute them outside the UI thread.
+    pub fn control(
+        &self,
+        revision: u64,
+        paused: bool,
+        muted: bool,
+        seek: Option<u64>,
+    ) -> Result<()> {
         let mut input = self
             .input
             .lock()
             .map_err(|_| Error::Invalid("播放器控制锁失效".into()))?;
-        writeln!(input, "RECT {x:.3} {y:.3} {width:.3} {height:.3}")?;
+        if revision <= input.1 {
+            return Ok(());
+        }
+        input.1 = revision;
+        let input = &mut input.0;
+        writeln!(
+            input,
+            "PAUSE {}\nMUTE {}",
+            u8::from(paused),
+            u8::from(muted)
+        )?;
+        if let Some(position) = seek {
+            writeln!(input, "SEEK {position}")?;
+        }
         input.flush()?;
         Ok(())
     }
+    /// Explicit shutdown runs on a blocking worker before the desktop exits.
+    pub fn stop(&self) -> Result<()> {
+        let child = self
+            .child
+            .lock()
+            .map_err(|_| Error::Invalid("播放器状态锁失效".into()))?
+            .take();
+        if let Some(mut child) = child {
+            let _ = child.kill();
+            child.wait()?;
+        }
+        if let Some(source) = &self.source {
+            match fs::remove_file(source) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+    pub fn running(&self) -> Result<bool> {
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| Error::Invalid("播放器状态锁失效".into()))?;
+        let Some(child) = child.as_mut() else {
+            return Ok(false);
+        };
+        child
+            .try_wait()
+            .map(|status| status.is_none())
+            .map_err(Error::from)
+    }
     pub fn diagnostics(&self) -> Result<String> {
-        let mut text = String::new();
+        let mut text = format!("rust_prepare_spawn_ms={:.3}\n", self.prepare_spawn_ms);
+        if let Ok(frames) = self.frames.lock() {
+            text.push_str(&format!(
+                "rust_received_frames={} position_ms={} frame_error={:?}\n",
+                frames.received, frames.position, frames.error
+            ));
+        }
         self.diagnostics
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("播放器诊断不可用".into()))?
             .reopen()?
             .take(65536)
             .read_to_string(&mut text)?;
         Ok(text)
     }
-    pub(crate) fn start(snapshot: tempfile::TempPath, lease: Arc<File>) -> Result<Arc<Self>> {
+    pub(crate) fn start(
+        snapshot: tempfile::TempPath,
+        lease: Arc<File>,
+        requested: Instant,
+    ) -> Result<Arc<Self>> {
         let diagnostics = tempfile::NamedTempFile::new()?;
         let mut cmd = Command::new(playback_worker()?);
         #[cfg(windows)]
@@ -201,23 +388,38 @@ impl Playback {
             .arg(std::process::id().to_string())
             .arg(diagnostics.path())
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
         let input = child
             .stdin
             .take()
             .ok_or_else(|| Error::Invalid("播放器控制通道不可用".into()))?;
-        std::thread::sleep(Duration::from_millis(350));
+        let output = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Invalid("播放器画面通道不可用".into()))?;
+        let frames = Arc::new(Mutex::new(PlaybackFrames::default()));
+        let received = frames.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = receive_frames(output, &received)
+                && let Ok(mut frames) = received.lock()
+            {
+                frames.error = Some(format!("视频画面通道已关闭：{error}"));
+            }
+        });
         if let Some(status) = child.try_wait()? {
             return Err(Error::Invalid(format!("内置播放器未能启动（{status}）")));
         }
         Ok(Arc::new(Self {
-            input: Mutex::new(input),
-            child: Mutex::new(child),
-            _source: snapshot,
-            _lease: lease,
-            diagnostics,
+            input: Mutex::new((input, 0)),
+            child: Mutex::new(Some(child)),
+            source: Some(snapshot),
+            lease: Some(lease),
+            diagnostics: Some(diagnostics),
+            prepare_spawn_ms: requested.elapsed().as_secs_f64() * 1000.0,
+            requested,
+            frames,
         }))
     }
 }
@@ -395,7 +597,20 @@ pub fn decode(path: &Path, edge: u32) -> Result<(crate::native::Decoded, Metadat
         0.0
     };
     let mut cmd = command("ffmpeg")?;
-    cmd.args(["-hide_banner","-loglevel","error","-nostdin","-y","-max_alloc","268435456","-threads","2","-protocol_whitelist","file,pipe","-format_whitelist","mov,matroska,webm,avi,mpegts","-ss"])
+    cmd.args(["-hide_banner",
+"-loglevel",
+"error",
+"-nostdin",
+"-y",
+"-max_alloc",
+"268435456",
+"-threads",
+"2",
+"-protocol_whitelist",
+"file,pipe",
+"-format_whitelist",
+"mov,matroska,webm,avi,mpegts",
+"-ss"])
        .arg(format!("{at:.3}")).arg("-i").arg(path)
        .args(["-map","0:v:0","-an","-sn","-dn","-frames:v","1","-vf"])
        .arg(format!("scale={max_edge}:{max_edge}:force_original_aspect_ratio=decrease:force_divisible_by=1,setsar=1"))

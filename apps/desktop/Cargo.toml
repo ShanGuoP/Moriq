@@ -15,3 +15,7 @@ embed-resource.workspace = true
 image = { workspace = true, features = ["ico"] }
 [lints]
 workspace = true
+
+[features]
+default = []
+capture = ["moriq-ui/capture"]

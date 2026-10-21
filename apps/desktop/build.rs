@@ -39,7 +39,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fs::write(
             &resource,
             format!(
-                "#pragma code_page(65001)\n1 ICON \"{}\"\n1 VERSIONINFO\nFILEVERSION {numeric}\nPRODUCTVERSION {numeric}\nFILEOS 0x40004\nFILETYPE 1\nBEGIN\n BLOCK \"StringFileInfo\"\n BEGIN\n  BLOCK \"040904b0\"\n  BEGIN\n   VALUE \"CompanyName\", \"杉果派\\0\"\n   VALUE \"ProductName\", \"Moriq Space\\0\"\n   VALUE \"FileDescription\", \"Moriq Space 本地素材管理器\\0\"\n   VALUE \"FileVersion\", \"{version}\\0\"\n   VALUE \"ProductVersion\", \"{version} ({identity})\\0\"\n   VALUE \"OriginalFilename\", \"Moriq Space.exe\\0\"\n  END\n END\n BLOCK \"VarFileInfo\"\n BEGIN\n  VALUE \"Translation\", 0x0409, 1200\n END\nEND\n",
+                "#pragma code_page(65001)\n1 ICON \"{}\"\n1 VERSIONINFO\nFILEVERSION {numeric}\nPRODUCTVERSION \
+                {numeric}\nFILEOS 0x40004\nFILETYPE 1\nBEGIN\n BLOCK \"StringFileInfo\"\n BEGIN\n  BLOCK \
+                \"040904b0\"\n  BEGIN\n   VALUE \"CompanyName\", \"杉果派\\0\"\n   VALUE \"ProductName\", \"Moriq \
+                Space\\0\"\n   VALUE \"FileDescription\", \"Moriq Space 本地素材管理器\\0\"\n   VALUE \"FileVersion\", \
+                \"{version}\\0\"\n   VALUE \"ProductVersion\", \"{version} ({identity})\\0\"\n   VALUE \
+                \"OriginalFilename\", \"Moriq Space.exe\\0\"\n  END\n END\n BLOCK \"VarFileInfo\"\n BEGIN\n  VALUE \
+                \"Translation\", 0x0409, 1200\n END\nEND\n",
                 icon.to_string_lossy().replace('\\', "/")
             ),
         )?;

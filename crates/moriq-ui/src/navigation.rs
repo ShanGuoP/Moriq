@@ -229,7 +229,6 @@ impl App {
                 )
                 | Message::ModelSearch(_)
                 | Message::ModelFilter(_)
-                | Message::ModelTab(_)
                 | Message::List(_)
                 | Message::SetMasonry(_)
                 | Message::TagFilter(TagChoice::All | TagChoice::Tag(_))

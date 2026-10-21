@@ -17,8 +17,12 @@ pub struct Source {
     extension: String,
     _lease: Arc<File>,
 }
+enum Thumbnail {
+    Cached(File),
+    Rebuild(Source),
+}
 pub struct Thumbnails {
-    files: Vec<std::result::Result<Option<File>, String>>,
+    files: Vec<std::result::Result<Thumbnail, String>>,
     _lease: Arc<File>,
 }
 #[derive(Clone)]
@@ -76,8 +80,23 @@ impl Library {
                 let path = safe_path(&self.root, &format!("thumbnails/256/{id}.png"))
                     .map_err(|e| e.to_string())?;
                 match File::open(path) {
-                    Ok(file) => Ok(Some(file)),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Ok(file) => Ok(Thumbnail::Cached(file)),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let asset: String = self
+                            .db
+                            .query_row(
+                                "SELECT asset_id FROM asset_versions WHERE id=?1",
+                                [id.to_string()],
+                                |r| r.get(0),
+                            )
+                            .map_err(|e| e.to_string())?;
+                        self.version_source(
+                            AssetId(parse_id(&asset).map_err(|e| e.to_string())?),
+                            *id,
+                        )
+                        .map(Thumbnail::Rebuild)
+                        .map_err(|e| e.to_string())
+                    }
                     Err(e) => Err(e.to_string()),
                 }
             })
@@ -99,14 +118,21 @@ impl Library {
             )
             .optional()?
             .unwrap_or_default();
-        let ai:Option<String>=self.db.query_row("SELECT ar.data FROM ai_results ar JOIN assets a ON a.display_version_id=ar.version_id WHERE a.id=?1 AND ar.model_id='florence' ORDER BY ar.created_at DESC LIMIT 1",[id.to_string()],|r|r.get(0)).optional()?;
+        let ai:Option<String>=self.db.query_row("SELECT ar.data FROM ai_results ar JOIN assets a ON a.display_version_id=ar.version_id WHERE a.id=?1 \
+                AND ar.model_id='florence' ORDER BY ar.created_at DESC LIMIT 1",
+[id.to_string()],
+|r|r.get(0)).optional()?;
+
         if let Some(data) = ai {
             let data: serde_json::Value =
                 serde_json::from_str(&data).map_err(|e| Error::Invalid(e.to_string()))?;
             metadata.ai_caption = data["caption"].as_str().unwrap_or("").into();
             metadata.ocr = data["ocr"].as_str().unwrap_or("").into();
         }
-        let video:Option<String>=self.db.query_row("SELECT m.json FROM video_metadata m JOIN assets a ON a.display_version_id=m.version_id WHERE a.id=?1",[id.to_string()],|r|r.get(0)).optional()?;
+        let video:Option<String>=self.db.query_row("SELECT m.json FROM video_metadata m JOIN assets a ON a.display_version_id=m.version_id WHERE a.id=?1",
+[id.to_string()],
+|r|r.get(0)).optional()?;
+
         if let Some(json) = video {
             let video: crate::video::Metadata =
                 serde_json::from_str(&json).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -134,6 +160,13 @@ impl Library {
     }
 }
 impl Source {
+    pub fn regions_cancellable(
+        self,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<crate::region::Session> {
+        let _scope = crate::cancel::Scope::enter(cancelled);
+        self.regions()
+    }
     pub(crate) fn verify_integrity(mut self) -> Result<()> {
         let mut hash = Sha256::new();
         let mut bytes = 0u64;
@@ -156,12 +189,20 @@ impl Source {
         Ok(())
     }
     pub fn regions(self) -> Result<crate::region::Session> {
+        crate::cancel::check()?;
         let root = self.root.clone();
         let version = self.version;
         let dimensions = self.dimensions;
         let extension = self.extension.clone();
         let cacheable = self.cacheable();
         let lease = self._lease.clone();
+        if cacheable
+            && let Ok(path) = crate::video::linked_snapshot(&self.path, &self.root, self.identity)
+        {
+            return crate::region::Session::open(
+                root, version, dimensions, extension, cacheable, path, lease,
+            );
+        }
         let (mut file, frozen) = self.frozen_file()?;
         let path = if let Some(file) = frozen {
             file.into_temp_path()
@@ -169,7 +210,7 @@ impl Source {
             let mut temporary = tempfile::Builder::new()
                 .suffix(&format!(".{extension}"))
                 .tempfile()?;
-            std::io::copy(&mut file, temporary.as_file_mut())?;
+            crate::cancel::copy(&mut file, temporary.as_file_mut())?;
             temporary.as_file().sync_all()?;
             temporary.into_temp_path()
         };
@@ -186,6 +227,7 @@ impl Source {
         crate::metadata::read(file)
     }
     pub fn playback(self) -> Result<Arc<crate::video::Playback>> {
+        let requested = std::time::Instant::now();
         if crate::video::extension(Path::new(&format!("video.{}", self.extension))).is_none() {
             return Err(Error::Invalid("所选素材不是视频".into()));
         }
@@ -194,14 +236,14 @@ impl Source {
             && let Ok(snapshot) =
                 crate::video::linked_snapshot(&self.path, &self.root, self.identity)
         {
-            return crate::video::Playback::start(snapshot, lease);
+            return crate::video::Playback::start(snapshot, lease, requested);
         }
         let (file, frozen) = self.frozen_file()?;
         let snapshot = match frozen {
             Some(frozen) => frozen.into_temp_path(),
             None => crate::video::copied_snapshot(file)?,
         };
-        crate::video::Playback::start(snapshot, lease)
+        crate::video::Playback::start(snapshot, lease, requested)
     }
     fn frozen_file(mut self) -> Result<(File, Option<tempfile::NamedTempFile>)> {
         if let Some(expected) = self.expected.take() {
@@ -309,7 +351,50 @@ fn preview_pixels(preview: image::DynamicImage) -> Result<Preview> {
         background: pixels(background),
     })
 }
+impl Source {
+    fn rebuild_thumbnail(self) -> Result<Pixels> {
+        let destination = safe_path(&self.root, &format!("thumbnails/256/{}.png", self.version))?;
+        let path = self.path.clone();
+        let lease = self._lease.clone();
+        let (file, _frozen) = self.frozen_file()?;
+        let image = raster(file, &path, 256)?
+            .image
+            .ok_or_else(|| Error::Invalid("缩略图解码无像素".into()))?;
+        let result = (|| -> Result<()> {
+            let mut temp = tempfile::NamedTempFile::new_in(
+                destination
+                    .parent()
+                    .ok_or_else(|| Error::Invalid("缩略图目录无效".into()))?,
+            )?;
+            image.write_to(&mut temp, ImageFormat::Png)?;
+            temp.as_file().sync_all()?;
+            if let Err(error) = temp.persist_noclobber(&destination)
+                && error.error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(error.error.into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!(%error, "rebuilt thumbnail cache write deferred");
+        }
+        drop(lease);
+        Ok(pixels(image))
+    }
+}
 impl Thumbnails {
+    pub fn memory_mib(&self) -> u32 {
+        if self
+            .files
+            .iter()
+            .any(|file| matches!(file, Ok(Thumbnail::Rebuild(_))))
+        {
+            1024
+        } else {
+            128
+        }
+    }
+
     pub fn read(self) -> (Vec<Option<Pixels>>, usize) {
         let mut warnings = 0;
         let images = self
@@ -317,8 +402,9 @@ impl Thumbnails {
             .into_iter()
             .map(|file| {
                 let result = (|| -> Result<Option<Pixels>> {
-                    let Some(file) = file.map_err(Error::Invalid)? else {
-                        return Ok(None);
+                    let file = match file.map_err(Error::Invalid)? {
+                        Thumbnail::Cached(file) => file,
+                        Thumbnail::Rebuild(source) => return source.rebuild_thumbnail().map(Some),
                     };
                     let mut reader =
                         ImageReader::new(BufReader::new(file)).with_guessed_format()?;
@@ -505,7 +591,15 @@ mod tests {
         image::RgbImage::from_pixel(20, 40, image::Rgb([90, 80, 70]))
             .save(&edited)
             .unwrap();
-        library.db.execute("INSERT INTO asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) VALUES(?1,?2,?3,'synco','versions/edit.png',?5,'png',20,40,?4)",params![version.to_string(),asset.id.to_string(),asset.version_id.to_string(),fs::metadata(&edited).unwrap().len(),organize::hash_file(&edited).unwrap()]).unwrap();
+        library.db.execute("INSERT INTO \
+                asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) \
+                VALUES(?1,?2,?3,'synco','versions/edit.png',?5,'png',20,40,?4)",
+params![version.to_string(),
+asset.id.to_string(),
+asset.version_id.to_string(),
+fs::metadata(&edited).unwrap().len(),
+organize::hash_file(&edited).unwrap()]).unwrap();
+
         assert!(library.version_source(AssetId::default(), version).is_err());
         let left = library.version_source(asset.id, asset.version_id).unwrap();
         let right = library.version_source(asset.id, version).unwrap();

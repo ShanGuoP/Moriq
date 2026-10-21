@@ -19,7 +19,7 @@ impl Plan {
         db.execute_batch("PRAGMA journal_mode=OFF;PRAGMA synchronous=OFF;PRAGMA cache_size=-2048; CREATE TABLE files(path TEXT PRIMARY KEY,bytes INTEGER,modified INTEGER);")?;
         let tx = db.transaction()?;
         let mut report = CacheReport::default();
-        for folder in ["previews"] {
+        for folder in ["previews", "thumbnails/256"] {
             let directory = safe_path(&self.root, folder)?;
             for entry in fs::read_dir(directory)? {
                 let entry = entry?;
@@ -39,7 +39,9 @@ impl Plan {
                 }
                 if !metadata.is_file()
                     || metadata.file_type().is_symlink()
-                    || !(name.ends_with(".png") || name.ends_with("-raw-flat1.rgba"))
+                    || !(name.ends_with(".png")
+                        || name.ends_with("-raw-flat1.rgba")
+                        || name.ends_with("-raster-flat1.rgba"))
                     || name.get(..36).is_none_or(|id| Uuid::parse_str(id).is_err())
                 {
                     report.skipped += 1;

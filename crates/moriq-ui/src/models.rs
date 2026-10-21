@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::grouped_number as number;
 use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
@@ -698,17 +699,7 @@ impl App {
         .into()
     }
 }
-fn number(value: u64) -> String {
-    let s = value.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
+
 fn model_description(id: &str) -> &'static str {
     match id {
         "chinese-clip" => "图像内容分类、中文语义检索与相似搜索。",

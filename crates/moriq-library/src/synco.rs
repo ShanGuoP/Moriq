@@ -10,7 +10,18 @@ type SavedReceipt = (
 );
 impl Library {
     pub fn synco_pending(&self) -> Result<Vec<SyncoTask>> {
-        self.db.prepare("SELECT t.id,a.name,t.state,t.error,t.request,t.ack FROM synco_tasks t JOIN assets a ON a.id=t.asset_id WHERE t.state IN ('queued','importing','editing','rendering','ready') OR t.ack IS NOT NULL ORDER BY t.created_at LIMIT 50")?.query_map([],|r|Ok(SyncoTask{id:r.get(0)?,name:r.get(1)?,state:r.get(2)?,error:r.get(3)?,request:r.get(4)?,ack:r.get(5)?}))?.collect::<std::result::Result<_,_>>().map_err(Error::from)
+        self.db.prepare("SELECT t.id,a.name,t.state,t.error,t.request,t.ack FROM synco_tasks t JOIN assets a ON \
+                a.id=t.asset_id WHERE t.state IN ('queued','importing','editing','rendering','ready') OR t.ack IS \
+                NOT NULL ORDER BY t.created_at LIMIT 50")?.query_map([],
+|r|Ok(SyncoTask{
+id:r.get(0)?,
+name:r.get(1)?,
+state:r.get(2)?,
+error:r.get(3)?,
+request:r.get(4)?,
+ack:r.get(5)?}
+))?.collect::<std::result::Result<_,
+_>>().map_err(Error::from)
     }
     pub fn versions(&self, id: AssetId) -> Result<Vec<AssetVersion>> {
         let rows=self.db.prepare("SELECT id,origin,parent_version_id FROM asset_versions WHERE asset_id=?1 ORDER BY rowid")?
@@ -45,7 +56,16 @@ impl Library {
     }
     pub fn synco_tasks(&self) -> Result<Vec<SyncoTask>> {
         self.db.prepare("SELECT t.id,a.name,t.state,t.error,t.request,t.ack FROM synco_tasks t JOIN assets a ON a.id=t.asset_id ORDER BY t.created_at DESC LIMIT 100")?
-            .query_map([],|r|Ok(SyncoTask{id:r.get(0)?,name:r.get(1)?,state:r.get(2)?,error:r.get(3)?,request:r.get(4)?,ack:r.get(5)?}))?.collect::<std::result::Result<_,_>>().map_err(Error::from)
+            .query_map([],
+|r|Ok(SyncoTask{
+id:r.get(0)?,
+name:r.get(1)?,
+state:r.get(2)?,
+error:r.get(3)?,
+request:r.get(4)?,
+ack:r.get(5)?}
+))?.collect::<std::result::Result<_,
+_>>().map_err(Error::from)
     }
     pub fn prepare_synco(&mut self, ids: &[AssetId], project: Option<ProjectId>) -> Result<()> {
         if ids.is_empty() || ids.len() > 100 {
@@ -53,7 +73,17 @@ impl Library {
         }
         for id in ids {
             let path = self.asset_path(*id)?;
-            let (version,format,hash):(String,String,String)=self.db.query_row("SELECT v.id,v.format,v.sha256 FROM asset_versions v JOIN assets a ON a.display_version_id=v.id WHERE a.id=?1 AND a.deleted_at IS NULL",[id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            let (version,
+format,
+hash):(String,
+String,
+String)=self.db.query_row("SELECT v.id,v.format,v.sha256 FROM asset_versions v JOIN assets a ON a.display_version_id=v.id \
+                WHERE a.id=?1 AND a.deleted_at IS NULL",
+[id.to_string()],
+|r|Ok((r.get(0)?,
+r.get(1)?,
+r.get(2)?)))?;
+
             if !["jpg", "png", "webp", "bmp"].contains(&format.as_str()) {
                 return Err(Error::Invalid(
                     "Synco v1 输入限 JPEG、PNG、WebP 和 BMP".into(),
@@ -76,8 +106,27 @@ impl Library {
             } else {
                 self.manifest.name.clone()
             };
-            let spec = json!({"task_id":task,"client_id":format!("moriq-{}",self.id()),"source_project_id":format!("{}:{}",self.id(),project.map(|p|p.to_string()).unwrap_or_else(||"library".into())),"project_name":project_name.chars().take(60).collect::<String>(),"source_image_id":format!("{}:{}",self.id(),id),"input":{"path":dest.to_str().ok_or_else(||Error::Invalid("Synco 协议不能表示此文件路径".into()))?,"sha256":hash},"output":{"format":"jpeg","quality":95},"open_in_editor":true});
-            self.db.execute("INSERT INTO synco_tasks(id,asset_id,sent_version_id,request,state,created_at) VALUES(?1,?2,?3,?4,'queued',?5)",params![task,id.to_string(),version,spec.to_string(),now_ms()?])?;
+            let source_project = project
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "library".into());
+            let input_path = dest
+                .to_str()
+                .ok_or_else(|| Error::Invalid("Synco 协议不能表示此文件路径".into()))?;
+            let spec = json!({
+                "task_id": task,
+                "client_id": format!("moriq-{}", self.id()),
+                "source_project_id": format!("{}:{source_project}", self.id()),
+                "project_name": project_name.chars().take(60).collect::<String>(),
+                "source_image_id": format!("{}:{}", self.id(), id),
+                "input": { "path": input_path, "sha256": hash },
+                "output": { "format": "jpeg", "quality": 95 },
+                "open_in_editor": true,
+            });
+            self.db.execute(
+                "INSERT INTO synco_tasks(id,asset_id,sent_version_id,request,state,created_at) \
+                VALUES(?1,?2,?3,?4,'queued',?5)",
+                params![task, id.to_string(), version, spec.to_string(), now_ms()?],
+            )?;
         }
         Ok(())
     }
@@ -89,7 +138,10 @@ impl Library {
         Ok(updated > 0)
     }
     pub fn synco_acked(&self, task: &str) -> Result<()> {
-        self.db.execute("UPDATE synco_tasks SET ack=NULL,state=CASE WHEN state='ready' THEN 'delivered' ELSE state END,error=CASE WHEN state IN('ready','delivered') THEN '' ELSE error END WHERE id=?1",[task])?;
+        self.db.execute("UPDATE synco_tasks SET ack=NULL,state=CASE WHEN state='ready' THEN 'delivered' ELSE state \
+                END,error=CASE WHEN state IN('ready','delivered') THEN '' ELSE error END WHERE id=?1",
+[task])?;
+
         self.cleanup_synco_copy(task)?;
         Ok(())
     }
@@ -97,7 +149,11 @@ impl Library {
         if Uuid::parse_str(task).is_err() {
             return Err(Error::Invalid("交接任务身份无效".into()));
         }
-        let request:Option<String>=self.db.query_row("SELECT request FROM synco_tasks WHERE id=?1 AND state IN('delivered','failed','cancelled') AND ack IS NULL AND copy_removed=0",[task],|r|r.get(0)).optional()?;
+        let request:Option<String>=self.db.query_row("SELECT request FROM synco_tasks WHERE id=?1 AND state IN('delivered','failed','cancelled') AND ack \
+                IS NULL AND copy_removed=0",
+[task],
+|r|r.get(0)).optional()?;
+
         let Some(request) = request else {
             return Ok(());
         };
@@ -122,7 +178,15 @@ impl Library {
         Ok(())
     }
     pub fn cleanup_synco_copies(&self) -> Result<usize> {
-        let tasks=self.db.prepare("SELECT id FROM synco_tasks WHERE copy_removed=0 AND ack IS NULL AND state IN('delivered','failed','cancelled') ORDER BY created_at LIMIT 100")?.query_map([],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let tasks = self
+            .db
+            .prepare(
+                "SELECT id FROM synco_tasks WHERE copy_removed=0 AND ack IS NULL AND state \
+                IN('delivered','failed','cancelled') ORDER BY created_at LIMIT 100",
+            )?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
         let mut cleaned = 0;
         for task in tasks {
             match self.cleanup_synco_copy(&task) {
@@ -133,7 +197,17 @@ impl Library {
         Ok(cleaned)
     }
     pub fn retry_synco(&mut self, old_task: &str) -> Result<String> {
-        let (asset,version,request):(String,String,String)=self.db.query_row("SELECT t.asset_id,t.sent_version_id,t.request FROM synco_tasks t JOIN assets a ON a.id=t.asset_id WHERE t.id=?1 AND t.state IN('failed','cancelled') AND a.deleted_at IS NULL",[old_task],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let (asset,
+version,
+request):(String,
+String,
+String)=self.db.query_row("SELECT t.asset_id,t.sent_version_id,t.request FROM synco_tasks t JOIN assets a ON a.id=t.asset_id \
+                WHERE t.id=?1 AND t.state IN('failed','cancelled') AND a.deleted_at IS NULL",
+[old_task],
+|r|Ok((r.get(0)?,
+r.get(1)?,
+r.get(2)?)))?;
+
         let mut request: Value =
             serde_json::from_str(&request).map_err(|e| Error::Invalid(e.to_string()))?;
         let (hash, format): (String, String) = self.db.query_row(
@@ -166,12 +240,28 @@ impl Library {
             .ok_or_else(|| Error::Invalid("交接路径不能表示".into()))?
             .into();
         request["input"]["sha256"] = hash.into();
-        if let Err(error)=self.db.execute("INSERT INTO synco_tasks(id,asset_id,sent_version_id,request,state,created_at) VALUES(?1,?2,?3,?4,'queued',?5)",params![task,asset,version,request.to_string(),now_ms()?]){let _=fs::remove_file(destination);return Err(error.into())}
+        if let Err(error) = self.db.execute(
+            "INSERT INTO synco_tasks(id,asset_id,sent_version_id,request,state,created_at) \
+                VALUES(?1,?2,?3,?4,'queued',?5)",
+            params![task, asset, version, request.to_string(), now_ms()?],
+        ) {
+            let _ = fs::remove_file(destination);
+            return Err(error.into());
+        }
+
         Ok(task)
     }
     /// Persist receipt and immutable version before the coordinator is allowed to ACK.
     pub fn receive_synco(&mut self, task: &str, response: &Value) -> Result<Option<Value>> {
-        let row:Option<SavedReceipt>=self.db.query_row("SELECT asset_id,sent_version_id,request,result_id,returned_version_id,ack FROM synco_tasks WHERE id=?1",[task],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+        let row:Option<SavedReceipt>=self.db.query_row("SELECT asset_id,sent_version_id,request,result_id,returned_version_id,ack FROM synco_tasks WHERE id=?1",
+[task],
+|r|Ok((r.get(0)?,
+r.get(1)?,
+r.get(2)?,
+r.get(3)?,
+r.get(4)?,
+r.get(5)?))).optional()?;
+
         // Deletion may finish while a status request is in flight. Never resurrect it.
         let Some((asset, parent, request, old_result, old_version, old_ack)) = row else {
             return Ok(None);
@@ -243,6 +333,26 @@ impl Library {
                     .as_str()
                     .ok_or_else(|| Error::Invalid("Synco 缺少成图路径".into()))?,
             );
+            // v1 results are immutable files under the peer's interop/returns directory.
+            // Validate the lexical path before any stat/open that could access a network share.
+            organize::reject_network_reference(&source)?;
+            import::validate_component(result)?;
+            let extension = if format == "png" { "png" } else { "jpg" };
+            let suffix = PathBuf::from("interop/returns").join(format!("{result}.{extension}"));
+            if !source.is_absolute() || !source.ends_with(&suffix) {
+                return Err(Error::Invalid("Synco 成图必须来自交接结果目录".into()));
+            }
+            let source = source.canonicalize()?;
+            organize::reject_network_reference(&source)?;
+            if !source.ends_with(&suffix)
+                || source.starts_with(&self.root)
+                || source.ancestors().any(|p| {
+                    p.extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("moriq"))
+                })
+            {
+                return Err(Error::Invalid("Synco 成图路径越界或指向资源库".into()));
+            }
             let bytes = output["bytes"]
                 .as_u64()
                 .ok_or_else(|| Error::Invalid("Synco 缺少成图大小".into()))?;
@@ -254,13 +364,19 @@ impl Library {
                 return Err(Error::Invalid("Synco 成图路径或大小无效".into()));
             }
             let version = AssetVersionId::default();
-            let extension = if format == "png" { "png" } else { "jpg" };
-            let staged = safe_path(&self.root, &format!("staging/{version}.synco"))?;
-            organize::copy_owned(&source, &staged)?;
-            if organize::hash_file(&staged)? != hash {
+            let staging = tempfile::NamedTempFile::new_in(safe_path(&self.root, "staging")?)?;
+            let input = File::open(&source)?;
+            let mut frozen = staging.reopen()?;
+            crate::cancel::copy(&mut input.take(bytes + 1), &mut frozen)?;
+            frozen.sync_all()?;
+            let staged = staging.path();
+            if fs::metadata(staged)?.len() != bytes {
+                return Err(Error::Invalid("Synco 成图在接收期间发生变化".into()));
+            }
+            if organize::hash_file(staged)? != hash {
                 return Err(Error::Invalid("Synco 成图校验失败，尚未确认接收".into()));
             }
-            let reader = ImageReader::open(&staged)?.with_guessed_format()?;
+            let reader = ImageReader::open(staged)?.with_guessed_format()?;
             if reader.format()
                 != Some(if extension == "png" {
                     ImageFormat::Png
@@ -278,7 +394,7 @@ impl Library {
             {
                 return Err(Error::Invalid("Synco 成图尺寸超出限制或声明不符".into()));
             }
-            let mut reader = ImageReader::open(&staged)?.with_guessed_format()?;
+            let mut reader = ImageReader::open(staged)?.with_guessed_format()?;
             reader.limits(decode_limits());
             let mut decoder = reader.into_decoder()?;
             let orientation = decoder.orientation()?;
@@ -286,7 +402,7 @@ impl Library {
             decoded.apply_orientation(orientation);
             let relative = format!("versions/{version}.{extension}");
             fs::create_dir_all(safe_path(&self.root, "versions")?)?;
-            fs::hard_link(&staged, safe_path(&self.root, &relative)?)?;
+            fs::hard_link(staged, safe_path(&self.root, &relative)?)?;
             let thumb = safe_path(&self.root, &format!("thumbnails/256/{version}.png"))?;
             let mut temp = tempfile::NamedTempFile::new_in(safe_path(&self.root, "staging")?)?;
             let thumbnail_image = resize::fit(&decoded, 256)?;
@@ -296,7 +412,19 @@ impl Library {
                 .map_err(|e| Error::Io(e.error))?;
             let ack = json!({"client_id":spec["client_id"],"result_id":result,"sha256":hash});
             let tx = self.db.transaction()?;
-            tx.execute("INSERT INTO asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) VALUES(?1,?2,?3,'synco',?4,?5,?6,?7,?8,?9)",params![version.to_string(),asset,parent,relative,hash,extension,width,height,bytes])?;
+            tx.execute("INSERT INTO \
+                asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) \
+                VALUES(?1,?2,?3,'synco',?4,?5,?6,?7,?8,?9)",
+params![version.to_string(),
+asset,
+parent,
+relative,
+hash,
+extension,
+width,
+height,
+bytes])?;
+
             tx.execute(
                 "UPDATE asset_versions SET dominant_color=?1 WHERE id=?2",
                 params![
@@ -304,12 +432,15 @@ impl Library {
                     version.to_string()
                 ],
             )?;
-            tx.execute("UPDATE synco_tasks SET state='ready',result_id=?1,returned_version_id=?2,ack=?3,error='' WHERE id=?4",params![result,version.to_string(),ack.to_string(),task])?;
+            tx.execute("UPDATE synco_tasks SET state='ready',result_id=?1,returned_version_id=?2,ack=?3,error='' WHERE id=?4",
+params![result,
+version.to_string(),
+ack.to_string(),
+task])?;
+
             tx.commit()?;
             self.snapshot = None;
-            if let Err(e) = fs::remove_file(staged) {
-                tracing::warn!(%e,"received Synco staging cleanup deferred");
-            }
+            // NamedTempFile removes staging on every success and failure path.
             return Ok(Some(ack));
         }
         let ack = if ["failed", "cancelled"].contains(&state) {
@@ -349,14 +480,20 @@ mod tests {
         (dir, library, asset, task, request)
     }
     fn ready(dir: &Path, request: &Value) -> Value {
-        let source = dir.join("Synco结果.png");
+        let source = dir.join("interop/returns/result-fixture.png");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
         image::RgbImage::from_pixel(24, 16, image::Rgb([220, 150, 80]))
             .save(&source)
             .unwrap();
         let mut result = request.clone();
         result["state"] = json!("ready");
         result["result_id"] = json!("result-fixture");
-        result["output"] = json!({"format":"png","path":source,"sha256":organize::hash_file(&source).unwrap(),"bytes":fs::metadata(source).unwrap().len(),"width":24,"height":16});
+        result["output"] = json!({
+            "format": "png", "path": source,
+            "sha256": organize::hash_file(&source).unwrap(),
+            "bytes": fs::metadata(source).unwrap().len(),
+            "width": 24, "height": 16,
+        });
         result
     }
     #[test]
@@ -419,6 +556,18 @@ mod tests {
         assert!(library.receive_synco(&task.id, &wrong).is_err());
         assert_eq!(library.versions(asset).unwrap().len(), 1);
         assert!(library.synco_pending().unwrap()[0].ack.is_none());
+        for path in [
+            library.asset_path(asset).unwrap(),
+            dir.path().join("missing.png"),
+        ] {
+            let mut wrong = response.clone();
+            wrong["output"]["path"] = json!(path);
+            assert!(library.receive_synco(&task.id, &wrong).is_err());
+        }
+        assert_eq!(
+            fs::read_dir(library.root.join("staging")).unwrap().count(),
+            0
+        );
         let mut failed = request;
         failed["state"] = json!("failed");
         let ack = library.receive_synco(&task.id, &failed).unwrap().unwrap();

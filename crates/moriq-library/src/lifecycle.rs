@@ -91,7 +91,9 @@ impl Library {
             return Err(Error::Invalid("原磁盘目录必须是没有 .. 的绝对路径".into()));
         }
         let new_root = new_root.canonicalize()?;
-        let mut statement=self.db.prepare("SELECT v.id,v.asset_id,v.sha256,f.platform,f.native_path FROM file_locations f JOIN asset_versions v ON v.id=f.version_id WHERE v.id>?1 ORDER BY v.id LIMIT 256")?;
+        let mut statement=self.db.prepare("SELECT v.id,v.asset_id,v.sha256,f.platform,f.native_path FROM file_locations f JOIN asset_versions \
+                v ON v.id=f.version_id WHERE v.id>?1 ORDER BY v.id LIMIT 256")?;
+
         let mut rows = statement.query([after])?;
         let mut cursor = after.to_string();
         let mut candidates = Vec::new();
@@ -145,7 +147,14 @@ impl Library {
         {
             return Ok(false);
         }
-        let current:Option<(String,Vec<u8>)>=self.db.query_row("SELECT v.sha256,f.native_path FROM file_locations f JOIN asset_versions v ON v.id=f.version_id WHERE v.id=?1 AND v.asset_id=?2",params![candidate.version,candidate.asset.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let current:Option<(String,
+Vec<u8>)>=self.db.query_row("SELECT v.sha256,f.native_path FROM file_locations f JOIN asset_versions v ON v.id=f.version_id \
+                WHERE v.id=?1 AND v.asset_id=?2",
+params![candidate.version,
+candidate.asset.to_string()],
+|r|Ok((r.get(0)?,
+r.get(1)?))).optional()?;
+
         if current
             .as_ref()
             .is_none_or(|(hash, path)| *hash != candidate.hash || *path != candidate.original)

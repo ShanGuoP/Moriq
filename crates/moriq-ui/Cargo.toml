@@ -9,9 +9,13 @@ moriq-domain.workspace = true
 moriq-app.workspace = true
 moriq-render.workspace = true
 iced.workspace = true
+iced_runtime.workspace = true
 tokio.workspace = true
 rfd.workspace = true
-toml.workspace = true
 chrono.workspace = true
 [lints]
 workspace = true
+
+[features]
+default = []
+capture = ["moriq-app/capture"]

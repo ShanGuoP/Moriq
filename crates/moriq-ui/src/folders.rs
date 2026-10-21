@@ -119,15 +119,27 @@ impl App {
     }
     pub(super) fn folders_panel(&self) -> Element<'_, Message> {
         let mut view = column![
-            heading("收藏分组与虚拟文件夹", 17),
-            muted("分组只保存素材引用，不复制原片。每个素材可以加入多个分组。"),
+            form_heading(
+                crate::icons::Icon::Folder,
+                "收藏分组与虚拟文件夹",
+                "分组只保存素材引用，不复制原片。每个素材可以加入多个分组。"
+            ),
             text_input("分组名称 / 新名称", &self.folders.name)
+                .style(crate::theme::input)
+                .padding(10)
                 .on_input(|v| Message::Folder(FolderMessage::Name(v))),
             row![
-                action("新建收藏分组", Message::Folder(FolderMessage::Create(true))),
-                action(
+                form_action(
+                    crate::icons::Icon::Plus,
+                    "新建收藏分组",
+                    Message::Folder(FolderMessage::Create(true)),
+                    false
+                ),
+                form_action(
+                    crate::icons::Icon::Folder,
                     "新建虚拟文件夹",
-                    Message::Folder(FolderMessage::Create(false))
+                    Message::Folder(FolderMessage::Create(false)),
+                    false
                 )
             ]
             .spacing(8)

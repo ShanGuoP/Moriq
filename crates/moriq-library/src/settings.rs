@@ -5,9 +5,9 @@ struct Stored {
     synco: SyncoPreferences,
     ai: AiPreferences,
     recent: Vec<Recent>,
-    english: bool,
     import: ImportPreferences,
     diagnostic_logging: bool,
+    reduced_motion: bool,
 }
 #[derive(Serialize, Deserialize)]
 struct Recent {
@@ -54,10 +54,10 @@ pub fn remember(name: String, path: PathBuf) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
-pub fn language(english: bool) -> Result<UserSettings> {
+pub fn reduced_motion(enabled: bool) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
-    prefs.english = english;
+    prefs.reduced_motion = enabled;
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
@@ -97,8 +97,8 @@ fn load_from(folder: &Path) -> Result<UserSettings> {
         synco: stored.synco,
         ai: stored.ai,
         recent,
-        english: stored.english,
         diagnostic_logging: stored.diagnostic_logging,
+        reduced_motion: stored.reduced_motion,
         import: stored
             .import
             .validated()
@@ -123,8 +123,8 @@ fn save_to(folder: &Path, prefs: &UserSettings) -> Result<()> {
         synco: prefs.synco.clone(),
         ai: prefs.ai,
         recent,
-        english: prefs.english,
         diagnostic_logging: prefs.diagnostic_logging,
+        reduced_motion: prefs.reduced_motion,
         import: prefs.import,
     };
     let serialized = toml::to_string_pretty(&stored).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -181,6 +181,7 @@ mod tests {
     fn registry_retains_more_than_twelve_libraries_and_same_names() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = UserSettings {
+            reduced_motion: true,
             recent: (0..24)
                 .map(|index| {
                     (
@@ -240,8 +241,8 @@ mod tests {
             synco: Default::default(),
             ai: Default::default(),
             recent: vec![("摄影".into(), dir.path().join("中文 库.moriq"))],
-            english: true,
             diagnostic_logging: true,
+            reduced_motion: true,
             import: ImportPreferences {
                 workers: 12,
                 memory_mib: 2048,
@@ -249,8 +250,8 @@ mod tests {
         };
         save_to(dir.path(), &prefs).unwrap();
         let loaded = load_from(dir.path()).unwrap();
+        assert!(loaded.reduced_motion);
         assert_eq!(loaded.recent, prefs.recent);
-        assert!(loaded.english);
         assert!(loaded.diagnostic_logging);
         assert_eq!(loaded.import, prefs.import);
         fs::write(dir.path().join("settings.toml"), "[broken").unwrap();

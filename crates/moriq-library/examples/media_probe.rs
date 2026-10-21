@@ -74,9 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if reopened.id() != id || reopened.info()?.count != 1 {
             return Err("reopen identity mismatch".into());
         }
-        Ok(
-            serde_json::json!({"status":"passed","format":asset.format,"width":asset.width,"height":asset.height,"preview":[preview.width,preview.height],"export":exported,"reopen":true}),
-        )
+        Ok(serde_json::json!({
+            "status": "passed", "format": asset.format,
+            "width": asset.width, "height": asset.height,
+            "preview": [preview.width, preview.height],
+            "export": exported, "reopen": true,
+        }))
     })();
     let unchanged = before == hash(&source)?;
     let report = match result {

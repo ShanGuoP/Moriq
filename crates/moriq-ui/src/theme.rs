@@ -1,14 +1,15 @@
 use iced::widget::{button, container, scrollable, slider, text_input};
 use iced::{Background, Border, Color, Theme};
-pub const BLUE: Color = Color::from_rgb8(16, 111, 255);
-pub const TEXT: Color = Color::from_rgb8(24, 32, 52);
-pub const MUTED: Color = Color::from_rgb8(130, 143, 169);
-pub const ICON: Color = Color::from_rgb8(81, 95, 126);
-pub const LINE: Color = Color::from_rgb8(233, 238, 246);
-pub const BG: Color = Color::from_rgb8(248, 250, 253);
-pub const PALE: Color = Color::from_rgb8(231, 240, 255);
+pub const BLUE: Color = Color::from_rgb8(36, 105, 230);
+pub const TEXT: Color = Color::from_rgb8(31, 38, 50);
+pub const MUTED: Color = Color::from_rgb8(107, 119, 138);
+pub const ICON: Color = Color::from_rgb8(88, 101, 122);
+pub const LINE: Color = Color::from_rgb8(229, 233, 239);
+pub const BG: Color = Color::from_rgb8(247, 248, 250);
+pub const PALE: Color = Color::from_rgb8(234, 241, 253);
 pub const GREEN: Color = Color::from_rgb8(0, 190, 144);
 pub const PURPLE: Color = Color::from_rgb8(126, 83, 255);
+pub const CONTROL_LINE: Color = Color::from_rgb8(216, 222, 232);
 pub fn application_theme() -> Theme {
     static THEME: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
         Theme::custom(
@@ -27,12 +28,12 @@ pub fn application_theme() -> Theme {
 }
 pub fn panel(_: &Theme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(254, 254, 255).into()),
+        background: Some(Color::WHITE.into()),
         text_color: Some(TEXT),
         border: Border {
             color: LINE,
             width: 1.0,
-            radius: 10.0.into(),
+            radius: 12.0.into(),
         },
         ..Default::default()
     }
@@ -46,12 +47,41 @@ pub fn sidebar(_: &Theme) -> container::Style {
 }
 pub fn modal(theme: &Theme) -> container::Style {
     container::Style {
+        background: Some(Color::WHITE.into()),
+        border: Border {
+            color: LINE,
+            width: 1.0,
+            radius: 16.0.into(),
+        },
         shadow: iced::Shadow {
-            color: Color::from_rgba8(24, 42, 72, 0.10),
-            offset: iced::Vector::new(0.0, 8.0),
-            blur_radius: 28.0,
+            color: Color::from_rgba8(26, 34, 48, 0.13),
+            offset: iced::Vector::new(0.0, 12.0),
+            blur_radius: 40.0,
         },
         ..panel(theme)
+    }
+}
+pub fn form_card_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb8(251, 252, 253).into()),
+        text_color: Some(TEXT),
+        border: Border {
+            color: LINE,
+            width: 1.0,
+            radius: 12.0.into(),
+        },
+        ..Default::default()
+    }
+}
+pub fn selected_row(theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(PALE.into()),
+        border: Border {
+            color: BLUE,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        ..secondary(theme, status)
     }
 }
 pub fn pale(_: &Theme) -> container::Style {
@@ -69,11 +99,11 @@ pub fn primary(_: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(
             if matches!(status, button::Status::Disabled) {
-                Color::from_rgb8(224, 235, 252)
+                Color::from_rgb8(232, 236, 242)
             } else if matches!(status, button::Status::Hovered) {
-                Color::from_rgb8(0, 95, 237)
+                Color::from_rgb8(28, 91, 213)
             } else if matches!(status, button::Status::Pressed) {
-                Color::from_rgb8(0, 78, 206)
+                Color::from_rgb8(25, 77, 183)
             } else {
                 BLUE
             }
@@ -88,6 +118,24 @@ pub fn primary(_: &Theme, status: button::Status) -> button::Style {
             radius: 7.0.into(),
             ..Default::default()
         },
+        shadow: if matches!(status, button::Status::Active | button::Status::Hovered) {
+            iced::Shadow {
+                color: Color::from_rgba8(
+                    36,
+                    105,
+                    230,
+                    if matches!(status, button::Status::Hovered) {
+                        0.18
+                    } else {
+                        0.10
+                    },
+                ),
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 5.0,
+            }
+        } else {
+            iced::Shadow::default()
+        },
         ..Default::default()
     }
 }
@@ -95,7 +143,7 @@ pub fn secondary(_: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(
             if matches!(status, button::Status::Hovered) {
-                BG
+                Color::from_rgb8(246, 248, 251)
             } else if matches!(status, button::Status::Pressed) {
                 PALE
             } else {
@@ -109,7 +157,11 @@ pub fn secondary(_: &Theme, status: button::Status) -> button::Style {
             TEXT
         },
         border: Border {
-            color: Color::from_rgb8(224, 231, 243),
+            color: if matches!(status, button::Status::Hovered) {
+                Color::from_rgb8(190, 201, 218)
+            } else {
+                CONTROL_LINE
+            },
             width: 1.0,
             radius: 7.0.into(),
         },
@@ -160,7 +212,7 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             } else if active {
                 PALE
             } else if matches!(status, button::Status::Hovered) {
-                Color::from_rgb8(239, 244, 251)
+                Color::from_rgb8(237, 241, 247)
             } else {
                 Color::TRANSPARENT
             }
@@ -176,14 +228,18 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 }
 pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
-        background: Color::from_rgb8(253, 254, 255).into(),
+        background: if matches!(status, text_input::Status::Focused { .. }) {
+            Color::WHITE.into()
+        } else {
+            Color::from_rgb8(251, 252, 254).into()
+        },
         border: Border {
             radius: 7.0.into(),
             width: 1.0,
             color: if matches!(status, text_input::Status::Focused { .. }) {
                 BLUE
             } else {
-                Color::from_rgb8(224, 231, 244)
+                CONTROL_LINE
             },
         },
         icon: MUTED,
@@ -194,8 +250,17 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
 }
 pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
     let mut style = scrollable::default(theme, status);
-    style.vertical_rail.background = Some(Color::from_rgb8(239, 242, 247).into());
-    style.vertical_rail.scroller.background = Background::Color(Color::from_rgb8(151, 164, 185));
+    style.vertical_rail.background = None;
+    style.vertical_rail.scroller.background = Background::Color(
+        if matches!(
+            status,
+            scrollable::Status::Hovered { .. } | scrollable::Status::Dragged { .. }
+        ) {
+            Color::from_rgba8(118, 131, 151, 0.75)
+        } else {
+            Color::from_rgba8(146, 157, 175, 0.42)
+        },
+    );
     style.vertical_rail.scroller.border.radius = 4.0.into();
     style
 }

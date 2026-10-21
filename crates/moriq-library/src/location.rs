@@ -1,7 +1,21 @@
 use super::*;
 impl Library {
     pub(super) fn manual_location(&self, asset: AssetId) -> Result<Option<AssetLocation>> {
-        Ok(self.db.query_row("SELECT l.latitude,l.longitude,l.label FROM version_locations l JOIN assets a ON a.display_version_id=l.version_id WHERE a.id=?1",[asset.to_string()],|r|Ok(AssetLocation{latitude:r.get(0)?,longitude:r.get(1)?,label:r.get(2)?})).optional()?)
+        Ok(self
+            .db
+            .query_row(
+                "SELECT l.latitude,l.longitude,l.label FROM version_locations l JOIN assets a ON \
+                a.display_version_id=l.version_id WHERE a.id=?1",
+                [asset.to_string()],
+                |r| {
+                    Ok(AssetLocation {
+                        latitude: r.get(0)?,
+                        longitude: r.get(1)?,
+                        label: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
     }
     pub fn set_location(
         &mut self,
@@ -26,7 +40,12 @@ impl Library {
             ));
         }
         if let Some(value) = value {
-            tx.execute("INSERT INTO version_locations VALUES(?1,?2,?3,?4) ON CONFLICT(version_id) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,label=excluded.label",params![version.to_string(),value.latitude,value.longitude,value.label])?;
+            tx.execute("INSERT INTO version_locations VALUES(?1,?2,?3,?4) ON CONFLICT(version_id) DO UPDATE SET \
+                latitude=excluded.latitude,longitude=excluded.longitude,label=excluded.label",
+params![version.to_string(),
+value.latitude,
+value.longitude,
+value.label])?;
         } else {
             tx.execute(
                 "DELETE FROM version_locations WHERE version_id=?1",
@@ -117,7 +136,13 @@ mod tests {
         );
         let version = AssetVersionId::default();
         fs::copy(&source, lib.root.join("versions/new.png")).unwrap();
-        lib.db.execute("INSERT INTO asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) SELECT ?1,asset_id,id,'synco','versions/new.png',sha256,format,width,height,bytes FROM asset_versions WHERE id=?2",params![version.to_string(),asset.version_id.to_string()]).unwrap();
+        lib.db.execute("INSERT INTO \
+                asset_versions(id,asset_id,parent_version_id,origin,path,sha256,format,width,height,bytes) SELECT \
+                ?1,asset_id,id,'synco','versions/new.png',sha256,format,width,height,bytes FROM asset_versions \
+                WHERE id=?2",
+params![version.to_string(),
+asset.version_id.to_string()]).unwrap();
+
         lib.display_version(asset.id, version).unwrap();
         assert!(lib.details(asset.id).unwrap().manual_location.is_none());
         assert!(lib.set_location(asset.id, asset.version_id, None).is_err());

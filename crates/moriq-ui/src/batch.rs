@@ -131,6 +131,68 @@ impl App {
             Some(self.batch.project.clone().unwrap_or(unchanged)),
             |v| Message::Batch(BatchMessage::Project(v)),
         );
-        column![project,muted(format!("当前选择 {} 项；全部查询结果 {} 项。任务创建时保存图片范围快照，之后新增素材不会自动加入。",self.selected_ids().len(),self.total)),checkbox(self.batch.all).label("选择全部查询结果（跨越所有分页）").on_toggle(|v|Message::Batch(BatchMessage::All(v))),choice(vec!["保持收藏状态".to_string(),"收藏".into(),"取消收藏".into()],Some(if self.batch.favorite.is_empty(){"保持收藏状态".into()}else{self.batch.favorite.clone()}),|v|Message::Batch(BatchMessage::Favorite(v))),choice(vec!["保持评分".to_string(),"0".into(),"1".into(),"2".into(),"3".into(),"4".into(),"5".into()],Some(if self.batch.rating.is_empty(){"保持评分".into()}else{self.batch.rating.clone()}),|v|Message::Batch(BatchMessage::Rating(v))),text_input("追加标签，逗号分隔",&self.batch.add_tags).on_input(|v|Message::Batch(BatchMessage::AddTags(v))),text_input("移除标签，逗号分隔",&self.batch.remove_tags).on_input(|v|Message::Batch(BatchMessage::RemoveTags(v))),text_input("人工分类（留空保持原值）",&self.batch.category).on_input(|v|Message::Batch(BatchMessage::Category(v))),checkbox(self.batch.replace_notes).label("替换备注（可留空清除）").on_toggle(|v|Message::Batch(BatchMessage::ReplaceNotes(v))),text_input("新的备注",&self.batch.notes).on_input(|v|Message::Batch(BatchMessage::Notes(v))),muted("以上字段一起保存；每个素材的修改在单个事务内完成。"),action("应用并加入后台任务",Message::Batch(BatchMessage::Apply))].spacing(12).into()
+        let scope = format!(
+            "当前选择 {} 项；全部查询结果 {} 项。任务创建时保存图片范围快照，之后新增素材不会自动加入。",
+            self.selected_ids().len(),
+            self.total,
+        );
+        let favorite = if self.batch.favorite.is_empty() {
+            "保持收藏状态".into()
+        } else {
+            self.batch.favorite.clone()
+        };
+        let rating = if self.batch.rating.is_empty() {
+            "保持评分".into()
+        } else {
+            self.batch.rating.clone()
+        };
+        column![
+            project,
+            muted(scope),
+            checkbox(self.batch.all)
+                .label("选择全部查询结果（跨越所有分页）")
+                .on_toggle(|v| Message::Batch(BatchMessage::All(v))),
+            choice(
+                vec!["保持收藏状态".into(), "收藏".into(), "取消收藏".into()],
+                Some(favorite),
+                |v| Message::Batch(BatchMessage::Favorite(v)),
+            ),
+            choice(
+                vec![
+                    "保持评分".into(),
+                    "0".into(),
+                    "1".into(),
+                    "2".into(),
+                    "3".into(),
+                    "4".into(),
+                    "5".into()
+                ],
+                Some(rating),
+                |v| Message::Batch(BatchMessage::Rating(v)),
+            ),
+            text_input("追加标签，逗号分隔", &self.batch.add_tags)
+                .style(crate::theme::input)
+                .padding(10)
+                .on_input(|v| Message::Batch(BatchMessage::AddTags(v))),
+            text_input("移除标签，逗号分隔", &self.batch.remove_tags)
+                .style(crate::theme::input)
+                .padding(10)
+                .on_input(|v| Message::Batch(BatchMessage::RemoveTags(v))),
+            text_input("人工分类（留空保持原值）", &self.batch.category)
+                .style(crate::theme::input)
+                .padding(10)
+                .on_input(|v| Message::Batch(BatchMessage::Category(v))),
+            checkbox(self.batch.replace_notes)
+                .label("替换备注（可留空清除）")
+                .on_toggle(|v| Message::Batch(BatchMessage::ReplaceNotes(v))),
+            text_input("新的备注", &self.batch.notes)
+                .style(crate::theme::input)
+                .padding(10)
+                .on_input(|v| Message::Batch(BatchMessage::Notes(v))),
+            muted("以上字段一起保存；每个素材的修改在单个事务内完成。"),
+            action("应用并加入后台任务", Message::Batch(BatchMessage::Apply)),
+        ]
+        .spacing(12)
+        .into()
     }
 }

@@ -52,6 +52,9 @@ pub enum Icon {
     External,
     Pin,
     Camera,
+    Save,
+    Globe,
+    Play,
 }
 pub fn icon<'a>(kind: Icon, size: f32, color: Color) -> Element<'a, Message> {
     if matches!(kind, Icon::Logo) {
@@ -146,6 +149,11 @@ pub fn icon<'a>(kind: Icon, size: f32, color: Color) -> Element<'a, Message> {
             r#"<path d="M19 9c0 6-7 13-7 13S5 15 5 9a7 7 0 0 1 14 0Z"/><circle cx="12" cy="9" r="2"/>"#
         }
         Icon::Camera => r#"<path d="M3 7h5l2-3h4l2 3h5v14H3Z"/><circle cx="12" cy="14" r="4"/>"#,
+        Icon::Save => r#"<path d="M4 3h14l3 3v15H3V3Zm3 0v6h10V3M7 21v-8h10v8"/>"#,
+        Icon::Globe => {
+            r#"<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>"#
+        }
+        Icon::Play => r#"<path d="m8 4 12 8-12 8Z"/>"#,
     };
     let markup = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#53617f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{body}</svg>"##

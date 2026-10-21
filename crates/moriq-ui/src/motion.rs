@@ -129,3 +129,119 @@ impl Widget<Message, Theme, Renderer> for Translated<'_> {
         )
     }
 }
+
+/// One transient card owns hover feedback; no animation state is kept per asset.
+pub(super) struct HoverFeedback {
+    id: Option<moriq_domain::AssetId>,
+    from: f32,
+    target: f32,
+    started: std::time::Instant,
+    sampled: std::time::Instant,
+}
+impl Default for HoverFeedback {
+    fn default() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            id: None,
+            from: 0.0,
+            target: 0.0,
+            started: now,
+            sampled: now,
+        }
+    }
+}
+impl HoverFeedback {
+    const DURATION: std::time::Duration = std::time::Duration::from_millis(120);
+    fn value(&self) -> f32 {
+        let t = (self
+            .sampled
+            .saturating_duration_since(self.started)
+            .as_secs_f32()
+            / Self::DURATION.as_secs_f32())
+        .clamp(0.0, 1.0);
+        let ease = 1.0 - (1.0 - t).powi(3);
+        self.from + (self.target - self.from) * ease
+    }
+    pub fn amount(&self, id: moriq_domain::AssetId) -> f32 {
+        if self.id == Some(id) {
+            self.value()
+        } else {
+            0.0
+        }
+    }
+    pub fn set(
+        &mut self,
+        id: moriq_domain::AssetId,
+        inside: bool,
+        now: std::time::Instant,
+        reduced: bool,
+    ) {
+        if !inside && self.id != Some(id) {
+            return;
+        }
+        self.sampled = now;
+        let from = self.amount(id);
+        self.id = Some(id);
+        self.target = if inside { 1.0 } else { 0.0 };
+        self.from = if reduced { self.target } else { from };
+        self.started = now;
+        if reduced {
+            self.sampled += Self::DURATION;
+        }
+    }
+    pub fn sample(&mut self, now: std::time::Instant) {
+        self.sampled = now;
+        if !self.active() && self.target == 0.0 {
+            self.id = None;
+        }
+    }
+    pub fn active(&self) -> bool {
+        self.id.is_some()
+            && (self.from - self.target).abs() > f32::EPSILON
+            && self.sampled.saturating_duration_since(self.started) < Self::DURATION
+    }
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use moriq_domain::AssetId;
+    use std::time::{Duration, Instant};
+    #[test]
+    fn hover_reverses_continuously_ignores_stale_exit_and_stops_at_rest() {
+        let mut motion = HoverFeedback::default();
+        let id = AssetId::default();
+        let other = AssetId::default();
+        let start = Instant::now();
+        motion.set(id, true, start, false);
+        assert!(motion.active());
+        motion.sample(start + Duration::from_millis(60));
+        let before = motion.amount(id);
+        assert!(before > 0.8 && before < 1.0);
+        motion.set(id, false, start + Duration::from_millis(60), false);
+        assert_eq!(motion.amount(id), before);
+        motion.sample(start + Duration::from_millis(180));
+        assert!(!motion.active());
+        assert_eq!(motion.amount(id), 0.0);
+        motion.set(other, true, start + Duration::from_millis(200), false);
+        motion.set(id, false, start + Duration::from_millis(210), false);
+        motion.sample(start + Duration::from_millis(340));
+        assert_eq!(motion.amount(other), 1.0);
+        assert!(!motion.active());
+    }
+    #[test]
+    fn reduced_motion_keeps_feedback_without_a_frame_subscription() {
+        let id = AssetId::default();
+        let mut motion = HoverFeedback::default();
+        motion.set(id, true, Instant::now(), true);
+        assert_eq!(motion.amount(id), 1.0);
+        assert!(!motion.active());
+        motion.set(id, false, Instant::now(), true);
+        assert_eq!(motion.amount(id), 0.0);
+        assert!(!motion.active());
+    }
+}

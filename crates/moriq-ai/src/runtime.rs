@@ -57,6 +57,10 @@ pub fn set_keep_loaded(value: bool) -> Result<()> {
     Ok(())
 }
 fn runtime_root() -> Result<PathBuf> {
+    static VERIFIED: OnceLock<Result<PathBuf>> = OnceLock::new();
+    VERIFIED.get_or_init(verify_runtime_root).clone()
+}
+fn verify_runtime_root() -> Result<PathBuf> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent = exe.parent().ok_or("程序目录不可用")?;
     let root = parent.join("ai");
@@ -86,7 +90,15 @@ fn start() -> Result<Worker> {
         if !std::fs::read(&path).is_ok_and(|data| Sha256::digest(data) == Sha256::digest(bytes)) {
             let mut file = tempfile::NamedTempFile::new_in(&folder).map_err(|e| e.to_string())?;
             file.write_all(bytes).map_err(|e| e.to_string())?;
-            file.persist(&path).map_err(|e| e.to_string())?;
+            file.as_file().sync_all().map_err(|e| e.to_string())?;
+            if let Err(error) = file.persist_noclobber(&path)
+                && error.error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(error.to_string());
+            }
+        }
+        if !std::fs::read(&path).is_ok_and(|data| Sha256::digest(data) == Sha256::digest(bytes)) {
+            return Err("AI 保护进程校验失败，请关闭其他实例并清理临时运行组件".into());
         }
         let mut command = Command::new(path);
         command

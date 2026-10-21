@@ -35,7 +35,16 @@ impl App {
         &'a self,
         mut view: iced::widget::Column<'a, Message>,
     ) -> Element<'a, Message> {
-        view=view.push(heading("孤儿文件清理",16)).push(muted("仅检查 assets / versions 中超过 24 小时且没有登记、导入日志或删除恢复记录引用的文件。先隔离，可恢复；永久清理隔离区才释放空间。" )).push(action("扫描孤儿文件",Message::Lifecycle(LifecycleMessage::ScanOrphans)));
+        let explanation = "仅检查 assets / versions 中超过 24 小时且没有登记、导入日志或删除恢复记录引用的文件。\
+            先隔离，可恢复；永久清理隔离区才释放空间。";
+        view = view
+            .push(heading("孤儿文件清理", 16))
+            .push(muted(explanation))
+            .push(action(
+                "扫描孤儿文件",
+                Message::Lifecycle(LifecycleMessage::ScanOrphans),
+            ));
+
         if self.lifecycle.orphan_owner == self.library.as_ref().map(|l| l.info.id)
             && let Some(plan) = &self.lifecycle.orphans
         {
@@ -222,7 +231,39 @@ impl App {
         Task::none()
     }
     pub(super) fn lifecycle_panel(&self) -> Element<'_, Message> {
-        let view=column![heading("资源库克隆与迁移",16),muted("独立克隆可与原库分别使用；迁移副本保留资源库身份，切换前需关闭原库。原库会保留，外部引用文件需另行迁移。"),row![action("创建独立克隆",Message::Lifecycle(LifecycleMessage::Copy(true))),action("创建迁移副本",Message::Lifecycle(LifecycleMessage::Copy(false)))].spacing(8),heading("离线磁盘重新关联",16),muted("磁盘盘符或目录改变后，按原目录结构映射到新位置。仅关联内容校验一致的文件。"),text_input("原目录，例如 E:\\Photos",&self.lifecycle.old_root).on_input(|v|Message::Lifecycle(LifecycleMessage::Old(v))),text_input("新目录，例如 F:\\Photos",&self.lifecycle.new_root).on_input(|v|Message::Lifecycle(LifecycleMessage::New(v))),action("校验并重新关联整个目录",Message::Lifecycle(LifecycleMessage::Reconnect))].spacing(10);
+        let description = "独立克隆可与原库分别使用；迁移副本保留资源库身份，切换前需关闭原库。\
+            原库会保留，外部引用文件需另行迁移。";
+        let view = column![
+            heading("资源库克隆与迁移", 16),
+            muted(description),
+            row![
+                action(
+                    "创建独立克隆",
+                    Message::Lifecycle(LifecycleMessage::Copy(true))
+                ),
+                action(
+                    "创建迁移副本",
+                    Message::Lifecycle(LifecycleMessage::Copy(false))
+                ),
+            ]
+            .spacing(8),
+            heading("离线磁盘重新关联", 16),
+            muted("磁盘盘符或目录改变后，按原目录结构映射到新位置。仅关联内容校验一致的文件。"),
+            text_input("原目录，例如 E:\\Photos", &self.lifecycle.old_root)
+                .style(crate::theme::input)
+                .padding(10)
+                .on_input(|v| Message::Lifecycle(LifecycleMessage::Old(v))),
+            text_input("新目录，例如 F:\\Photos", &self.lifecycle.new_root)
+                .style(crate::theme::input)
+                .padding(10)
+                .on_input(|v| Message::Lifecycle(LifecycleMessage::New(v))),
+            action(
+                "校验并重新关联整个目录",
+                Message::Lifecycle(LifecycleMessage::Reconnect)
+            ),
+        ]
+        .spacing(10);
+
         self.orphan_controls(view)
     }
 }

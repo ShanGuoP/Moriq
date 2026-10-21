@@ -42,7 +42,11 @@ fn orphan_scan_and_recheck_preserve_registered_project_aliases() {
     lib.db
         .execute(
             "INSERT INTO project_files VALUES(?1,?2,?3)",
-            params![project.to_string(), asset.version_id.to_string(), rogue],
+            params![
+                project.to_string(),
+                asset.version_id.to_string(),
+                rogue.to_uppercase()
+            ],
         )
         .unwrap();
     let report = lib.quarantine_orphans(&plan, page).unwrap();
@@ -287,4 +291,147 @@ fn conflicting_purge_recovery_keeps_both_files_and_allows_open_for_inspection() 
     assert!(lib.purge(&[asset.id]).is_err());
     assert!(root.join(source).is_file());
     assert!(root.join(target).is_file());
+}
+
+#[test]
+fn orphan_scan_preserves_registered_paths_with_different_case() {
+    let (_dir, lib, _source, asset) = fixture();
+    let path = lib.asset_path(asset.id).unwrap();
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(SystemTime::now() - std::time::Duration::from_secs(172800))
+        .unwrap();
+    lib.db
+        .execute(
+            "UPDATE asset_versions SET path=upper(path) WHERE id=?1",
+            [asset.version_id.to_string()],
+        )
+        .unwrap();
+    assert_eq!(lib.orphan_scan().run().unwrap().count, 0);
+}
+
+#[test]
+fn referenced_import_uses_production_ticket_and_survives_reopen_and_purge() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("external.png");
+    image::RgbImage::from_pixel(16, 12, image::Rgb([10, 20, 30]))
+        .save(&source)
+        .unwrap();
+    let original = fs::read(&source).unwrap();
+    let mut lib = Library::create(dir.path(), "references").unwrap();
+    let file = ImportFile {
+        path: source.clone(),
+        relative: PathBuf::from("external.png"),
+        project_name: None,
+    };
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let ticket = lib.begin_import(&file, None, true).unwrap();
+    ticket.copy(&cancel).unwrap();
+    let prepared = ticket.prepare(&cancel).unwrap();
+    assert!(lib.finish_import(ticket, prepared).unwrap());
+    let root = lib.root.clone();
+    drop(lib);
+    let mut lib = Library::open(&root).unwrap();
+    let page = lib
+        .page(
+            &Query {
+                storage: 2,
+                ..Default::default()
+            },
+            0,
+            10,
+        )
+        .unwrap();
+    assert_eq!(page.total, 1);
+    let asset = &page.assets[0];
+    assert_eq!(
+        lib.asset_path(asset.id).unwrap(),
+        source.canonicalize().unwrap()
+    );
+    lib.edit(&[asset.id], &Edit::Trash(true)).unwrap();
+    lib.purge(&[asset.id]).unwrap();
+    assert_eq!(fs::read(&source).unwrap(), original);
+}
+
+#[test]
+fn invalid_names_never_publish_unopenable_libraries_or_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["NUL", "COM¹", "a/b", "report\u{1}A"] {
+        assert!(Library::create(dir.path(), name).is_err(), "{name}");
+        assert!(!dir.path().join(format!("{name}.moriq")).exists());
+    }
+    let mut lib = Library::create(dir.path(), "valid").unwrap();
+    for name in ["CON", "a/b", "child\u{1}"] {
+        assert!(lib.create_project(name).is_err());
+        assert!(lib.create_child_project(name, None).is_err());
+        assert!(lib.update_profile(name, "").is_err());
+    }
+}
+
+#[test]
+fn cache_trim_rebuilds_thumbnails_on_demand_without_changing_originals() {
+    let (_dir, lib, _source, asset) = fixture();
+    let original = fs::read(lib.asset_path(asset.id).unwrap()).unwrap();
+    let cache = lib
+        .root
+        .join(format!("thumbnails/256/{}.png", asset.version_id));
+    assert!(cache.is_file());
+    let report = lib.cache_plan().trim(0).unwrap();
+    assert!(report.removed_files >= 1);
+    assert!(!cache.exists());
+    let plan = lib.thumbnail_plan(&[asset.version_id]).unwrap();
+    assert_eq!(plan.memory_mib(), 1024);
+    let (images, warnings) = plan.read();
+    assert_eq!(warnings, 0);
+    assert!(images[0].is_some());
+    assert!(cache.is_file());
+    assert_eq!(
+        lib.thumbnail_plan(&[asset.version_id])
+            .unwrap()
+            .memory_mib(),
+        128
+    );
+    assert_eq!(
+        fs::read(lib.asset_path(asset.id).unwrap()).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn completed_job_and_item_cleanup_commit_together() {
+    let (_dir, mut lib, _source, _asset) = fixture();
+    let id = lib.enqueue_media_job("integrity", 0).unwrap();
+    lib.db
+        .execute(
+            "UPDATE background_jobs SET checkpoint=total WHERE id=?1",
+            [&id],
+        )
+        .unwrap();
+    lib.db.execute_batch("CREATE TRIGGER fail_item_cleanup BEFORE DELETE ON background_job_items BEGIN SELECT RAISE(ABORT,'injected cleanup failure'); END;").unwrap();
+    assert!(lib.claim_job_step().is_err());
+    let state: String = lib
+        .db
+        .query_row(
+            "SELECT state FROM background_jobs WHERE id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "queued");
+    lib.db
+        .execute_batch("DROP TRIGGER fail_item_cleanup")
+        .unwrap();
+    assert!(lib.claim_job_step().unwrap().is_none());
+    assert_eq!(
+        lib.db
+            .query_row(
+                "SELECT count(*) FROM background_job_items WHERE job_id=?1",
+                [&id],
+                |r| r.get::<_, u64>(0)
+            )
+            .unwrap(),
+        0
+    );
 }
