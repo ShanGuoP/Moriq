@@ -276,6 +276,7 @@ impl App {
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.update_inner(message);
         if library != self.library.as_ref().map(|l| l.info.id) {
+            self.drop_import.clear();
             self.jobs = crate::tasks::TaskState {
                 request: self.jobs.request + 1,
                 ..Default::default()

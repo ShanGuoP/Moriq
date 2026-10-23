@@ -34,6 +34,15 @@ pub(super) fn walk(
             }
             continue;
         }
+        if path.is_file() && !moriq_library::native::supported_path(&path) {
+            if !emit(Err(format!(
+                "不支持的文件类型：{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ))) {
+                return;
+            }
+            continue;
+        }
         let folder = if path.is_dir() {
             path.as_path()
         } else {

@@ -132,6 +132,9 @@ impl App {
         }
     }
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
+        if let Message::Drop(event) = message {
+            return self.drop_message(event);
+        }
         if let Message::TransitionFrame(now) = message {
             self.gallery_feedback.sample(now);
             if let Some(entrance) = &mut self.surface_motion {

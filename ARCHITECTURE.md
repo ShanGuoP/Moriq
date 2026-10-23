@@ -49,6 +49,12 @@ tools and the app worker share one checking and repair engine.
 
 ## UI and motion
 
+Window file drops use a short quiet period and one timer to collect the platform's
+per-file events. Pending batches retain the receiving library and project, then
+reuse the picker import pipeline with managed copies. Cancellation and library
+changes invalidate pending drops and timer receipts. Hover feedback preserves the
+base widget tree; file inspection stays on the Service worker.
+
 Shared colors, borders and control states live in `moriq-ui/src/theme.rs`.
 Navigation transitions preserve the persistent shell and input/scroll state.
 Card hover feedback retains only the current and departing asset, reverses from

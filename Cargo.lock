@@ -2129,10 +2129,12 @@ dependencies = [
  "chrono",
  "iced",
  "iced_runtime",
+ "image",
  "moriq-app",
  "moriq-domain",
  "moriq-render",
  "rfd",
+ "tempfile",
  "tokio",
  "tracing",
 ]

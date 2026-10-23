@@ -19,3 +19,7 @@ workspace = true
 [features]
 default = []
 capture = ["moriq-app/capture"]
+
+[dev-dependencies]
+image.workspace = true
+tempfile.workspace = true

@@ -25,6 +25,8 @@ pub(crate) use regions::RegionMessage;
 mod browsing;
 mod compare;
 mod deletion;
+mod drop_import;
+use drop_import::DropMessage;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod interface_tests;
@@ -155,6 +157,7 @@ pub(crate) enum Message {
     AllAssets,
     Project(ProjectId),
     Import,
+    Drop(DropMessage),
     PickedImages(Option<Vec<PathBuf>>),
     ImportPreference(u8, String),
     SaveImportPreferences,
@@ -276,6 +279,7 @@ struct Tile {
     handle: Option<image::Handle>,
 }
 pub(crate) struct App {
+    drop_import: drop_import::State,
     viewer: viewer::ViewerState,
     dpi_scale: f32,
     gallery_feedback: motion::HoverFeedback,
@@ -419,6 +423,7 @@ impl App {
             .unwrap_or_else(Task::none);
         (
             Self {
+                drop_import: Default::default(),
                 viewer: Default::default(),
                 storage: Default::default(),
                 journal: Default::default(),
@@ -752,9 +757,7 @@ impl App {
                         },
                     ))
                 }
-                iced::Event::Window(iced::window::Event::FileDropped(path)) => {
-                    Some(Message::PickedImages(Some(vec![path])))
-                }
+                iced::Event::Window(event) => drop_import::window_event(event).map(Message::Drop),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
@@ -1021,6 +1024,7 @@ impl App {
                     self.interface.close_after_save = true;
                     return self.save_interface();
                 }
+                self.drop_import.clear();
                 let playback = self.viewer.playback.take();
                 self.lifecycle.cancel_copy();
                 self.stop_viewer();
@@ -1458,29 +1462,10 @@ impl App {
                 self.manager.referenced_import = false;
             }
             Message::PickedImages(Some(paths)) if self.import.is_none() && !self.switching => {
-                let Some(library) = &self.library else {
-                    return Task::none();
-                };
-                if paths.is_empty() {
-                    self.manager.busy = false;
-                    return Task::none();
-                }
-                let control = ImportControl {
-                    referenced: self.manager.referenced_import,
-                    ..ImportControl::with_preferences(self.preferences.import)
-                };
-                self.manager.busy = false;
-                self.manager.panel = None;
-                self.manager.import_seen = 0;
-                self.import = Some(control.clone());
-                let service = self.service.clone();
-                let id = library.info.id;
-                let project = self.query.project;
-                self.screen = Screen::Assets;
-                self.status = tr!(language, "正在扫描并导入，原文件保持不变…" => "Scanning and importing. Original files are preserved…").into();
-                return Task::perform(
-                    async move { service.import_sources(id, paths, project, control).await },
-                    Message::Imported,
+                return self.start_import(
+                    paths,
+                    self.query.project,
+                    self.manager.referenced_import,
                 );
             }
             Message::ImportPreference(field, value) => match field {
@@ -1509,12 +1494,21 @@ impl App {
                 _ => {}
             },
             Message::CancelImport => {
+                let pending = self.drop_import.pending_count();
+                self.drop_import.clear();
+                if self.import.is_none() && pending > 0 {
+                    self.status =
+                        tr!(language,"已取消待导入文件"=>"Queued import cancelled").into();
+                }
                 if let Some(import) = &self.import {
                     import.cancel.store(true, Ordering::Relaxed);
                     self.status = tr!(language, "正在完成当前文件，随后停止导入…" => "Finishing the current file, then stopping import…").into();
                 }
             }
             Message::Imported(report) => {
+                if report.cancelled {
+                    self.drop_import.clear();
+                }
                 let parallelism = self
                     .import
                     .as_ref()
@@ -1551,6 +1545,7 @@ impl App {
                     self.reset_query(),
                     self.refresh_info(),
                     self.refresh_catalog(),
+                    self.start_next_drop(),
                 ]);
             }
             Message::Jobs(event) => return self.job_message(event),
@@ -1580,6 +1575,9 @@ impl App {
             Message::Batch(event) => return self.batch_message(event),
             Message::Lifecycle(event) => return self.lifecycle_message(event),
             Message::Tick => {
+                if self.drop_import.has_ready() && self.import.is_none() && self.can_start_drop() {
+                    return self.start_next_drop();
+                }
                 if self.manager.panel != Some(manage::Panel::People) {
                     self.stop_people_portraits();
                 } else if self.ai.portrait_cancel.load(Ordering::Acquire) {
@@ -1767,6 +1765,11 @@ impl App {
                             self.detail_tab = 2;
                         }
                         match self.launch.panel.as_deref() {
+                            Some("drop-hover") => {
+                                return self.update(Message::Drop(DropMessage::Hover(
+                                    PathBuf::from("drop-feedback.png"),
+                                )));
+                            }
                             Some("ai-refresh") => {
                                 return self.job_message(tasks::JobMessage::Queue(
                                     JobKind::Analysis(ModelId::ChineseClip),
@@ -2253,6 +2256,10 @@ impl App {
                 }
             }
             Message::ClosePreview => {
+                if self.drop_import.hovering() {
+                    self.drop_import.clear_hover();
+                    return Task::none();
+                }
                 if self.surface_open() {
                     return self.close_surface();
                 }
@@ -2408,6 +2415,7 @@ impl App {
             | Message::Create
             | Message::Open
             | Message::Import
+            | Message::Drop(_)
             | Message::PickedImages(..)
             | Message::DpiChanged(..)
             | Message::NavigationSaved(..)

@@ -117,7 +117,13 @@ impl App {
                 .padding([4, 10]),
             );
         }
-        if self.import.is_some() {
+        let queued = self.drop_import.pending_count();
+        if queued > 0 {
+            footer = footer.push(muted(
+                trf!(language,"待导入 {queued} 项"=>"{queued} items queued"),
+            ));
+        }
+        if self.import.is_some() || queued > 0 {
             footer = footer.push(
                 action(
                     tr!(language, "停止导入" => "Stop import"),
@@ -367,7 +373,7 @@ impl App {
         } else {
             result
         };
-        container(result)
+        container(self.drop_overlay(result))
             .padding(self.frame_padding())
             .width(Length::Fill)
             .height(Length::Fill)
