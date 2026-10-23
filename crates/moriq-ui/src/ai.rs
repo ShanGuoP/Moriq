@@ -161,7 +161,7 @@ impl App {
                 let task = self.update_inner(Message::Opened(result));
                 if opened {
                     self.screen = Screen::Models;
-                    self.preview_expanded = false;
+                    self.viewer.preview_expanded = false;
                     self.library_picker = false;
                 }
                 return task;
@@ -171,20 +171,27 @@ impl App {
                     return Task::none();
                 };
                 let owner = library.info.id;
-                return Task::batch(self.ai.models.iter().filter(|model| model.installed).map(
-                    |model| {
-                        let service = service.clone();
-                        let kind = format!("analysis:{}", model.spec.id);
-                        Task::perform(
-                            async move { service.queue_media_job(owner, kind).await },
-                            move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
-                        )
-                    },
-                ));
+                return Task::batch(self.ai.models.iter().filter_map(|model| {
+                    if !model.installed {
+                        return None;
+                    }
+                    let model: ModelId = model.spec.id.parse().ok()?;
+                    let service = service.clone();
+                    Some(Task::perform(
+                        async move {
+                            service
+                                .queue_media_job(owner, JobKind::Analysis(model))
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
+                    ))
+                }));
             }
             AiMessage::Recommended(owner, asset, version, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == owner)
                     && self
+                        .viewer
                         .selected
                         .as_ref()
                         .is_some_and(|a| a.id == asset && a.version_id == version) =>
@@ -264,7 +271,7 @@ impl App {
                 };
                 let owner = library.info.id;
                 let image = matches!(event, AiMessage::ImageSearch);
-                let selected = self.selected.as_ref().map(|a| a.id);
+                let selected = self.viewer.selected.as_ref().map(|a| a.id);
                 if image && selected.is_none() {
                     return Task::none();
                 }
@@ -401,7 +408,7 @@ impl App {
                     self.error = Some(e)
                 }
                 return Task::batch([
-                    self.refresh_organizer(),
+                    self.refresh_catalog(),
                     self.refresh(),
                     self.refresh_details(),
                 ]);
@@ -644,6 +651,7 @@ impl App {
         use crate::icons::Icon;
         use iced::Length;
         let video = self
+            .viewer
             .selected
             .as_ref()
             .is_some_and(|a| moriq_app::is_video_format(&a.format));
@@ -738,6 +746,7 @@ impl App {
     pub(super) fn ai_recommendations(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         if self
+            .viewer
             .selected
             .as_ref()
             .is_some_and(|a| moriq_app::is_video_format(&a.format))
@@ -762,6 +771,7 @@ impl App {
         let mut found = false;
         if let Some((version, items)) = &self.ai.recommendations
             && self
+                .viewer
                 .selected
                 .as_ref()
                 .is_some_and(|a| a.version_id == *version)

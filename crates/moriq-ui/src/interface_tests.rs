@@ -138,17 +138,30 @@ fn closing_waits_until_the_latest_interface_choice_has_saved() {
 fn english_filters_and_export_options_keep_their_canonical_values() {
     let mut app = crate::tests::app();
     app.preferences.language = Language::English;
-    for (field, value) in [(0, "视频"), (4, "竖图"), (5, "评分最高"), (7, "红")] {
-        drop(app.manage_message(ManageMessage::Filter(field, value.into())));
+    for change in [
+        FilterChange::Media(filters::MediaChoice::Video),
+        FilterChange::Orientation(filters::Orientation::Portrait),
+        FilterChange::Sort(SortOrder::Rating),
+        FilterChange::Color(filters::ColorChoice::Red),
+    ] {
+        drop(app.manage_message(ManageMessage::Filter(change)));
     }
-    assert_eq!(app.manager.filter.media_kind, MediaKind::Video);
-    assert_eq!(app.manager.filter.orientation, 2);
-    assert_eq!(app.manager.filter.sort, SortOrder::Rating);
-    assert_eq!(app.manager.filter.color, "红");
-    drop(app.manage_message(ManageMessage::ExportOption(4, "双三次".into())));
-    drop(app.manage_message(ManageMessage::ExportOption(5, "按格式".into())));
-    assert_eq!(app.manager.export_options.resampling, Resampling::Bicubic);
-    assert_eq!(app.manager.export_options.layout, ExportLayout::Format);
+    assert_eq!(app.manager.filters.query.media_kind, MediaKind::Video);
+    assert_eq!(app.manager.filters.query.orientation, 2);
+    assert_eq!(app.manager.filters.query.sort, SortOrder::Rating);
+    assert_eq!(app.manager.filters.query.color, "红");
+    drop(
+        app.manage_message(ManageMessage::ExportOption(ExportChange::Resampling(
+            Resampling::Bicubic,
+        ))),
+    );
+    drop(
+        app.manage_message(ManageMessage::ExportOption(ExportChange::Layout(
+            ExportLayout::Format,
+        ))),
+    );
+    assert_eq!(app.manager.export.options.resampling, Resampling::Bicubic);
+    assert_eq!(app.manager.export.options.layout, ExportLayout::Format);
     assert_eq!(i18n::category(Language::English, "人像"), "People");
     assert_eq!(
         i18n::category(Language::English, "我自己的分类"),

@@ -7,7 +7,7 @@ pub(super) struct TaskState {
     pub error: Option<String>,
     pub request: u64,
     pub ticks: u8,
-    pub(super) analysis_progress: std::collections::HashMap<String, (u64, u64, String)>,
+    pub(super) analysis_progress: std::collections::HashMap<String, (u64, u64, JobState)>,
     pub(super) failures: Option<(LibraryId, String, Vec<JobFailure>)>,
 }
 
@@ -58,8 +58,8 @@ mod tests {
         app.jobs.request = 7;
         let mut job = BackgroundJob {
             id: "analysis-job".into(),
-            kind: "analysis:chinese-clip".into(),
-            state: "running".into(),
+            kind: JobKind::Analysis(ModelId::ChineseClip),
+            state: JobState::Running,
             priority: 0,
             completed: 0,
             total: 15,
@@ -87,7 +87,7 @@ mod tests {
             0
         );
         job.completed = 15;
-        job.state = "completed".into();
+        job.state = JobState::Completed;
         assert!(
             app.job_message(JobMessage::Refreshed(owner, 7, Ok(vec![job.clone()])))
                 .units()
@@ -102,7 +102,7 @@ mod tests {
 }
 #[derive(Debug, Clone)]
 pub enum JobMessage {
-    Queue(String),
+    Queue(JobKind),
     Control(String, JobCommand),
     Stored(LibraryId, Result<(), String>),
     Refreshed(LibraryId, u64, Result<Vec<BackgroundJob>, String>),
@@ -160,14 +160,24 @@ impl App {
             JobMessage::Queue(kind) => {
                 let service = self.service.clone();
                 return Task::perform(
-                    async move { service.queue_media_job(id, kind).await },
+                    async move {
+                        service
+                            .queue_media_job(id, kind)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
                     move |r| Message::Jobs(JobMessage::Stored(id, r)),
                 );
             }
             JobMessage::Control(job, command) => {
                 let service = self.service.clone();
                 return Task::perform(
-                    async move { service.control_job(id, job, command).await },
+                    async move {
+                        service
+                            .control_job(id, job, command)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
                     move |r| Message::Jobs(JobMessage::Stored(id, r)),
                 );
             }
@@ -185,18 +195,12 @@ impl App {
                     Ok(jobs) => {
                         let progress = jobs
                             .iter()
-                            .filter(|job| job.kind.starts_with("analysis:"))
-                            .map(|job| {
-                                (
-                                    job.id.clone(),
-                                    (job.completed, job.failed, job.state.clone()),
-                                )
-                            })
+                            .filter(|job| job.kind.model().is_some())
+                            .map(|job| (job.id.clone(), (job.completed, job.failed, job.state)))
                             .collect::<std::collections::HashMap<_, _>>();
                         let changed = progress.iter().any(|(id, value)| {
                             self.jobs.analysis_progress.get(id) != Some(value)
-                                && (value.0 > 0
-                                    || matches!(value.2.as_str(), "completed" | "cancelled"))
+                                && (value.0 > 0 || value.2.is_finished())
                         });
                         self.jobs.analysis_progress = progress;
                         self.manager.organizer.jobs = jobs;
@@ -215,7 +219,7 @@ impl App {
                                 Task::none()
                             };
                             return Task::batch([
-                                self.refresh_organizer(),
+                                self.refresh_catalog(),
                                 self.refresh_details(),
                                 gallery,
                             ]);
@@ -247,15 +251,15 @@ impl App {
         view = view
             .push(action(
                 tr!(language, "原文件完整性检查（可暂停与断点继续）" => "Original file integrity check (pause and resume supported)"),
-                Message::Jobs(JobMessage::Queue("integrity".into())),
+                Message::Jobs(JobMessage::Queue(JobKind::Integrity)),
             ))
             .push(crate::components::action(
                 tr!(language, "建立/更新近似图片索引" => "Build / update image similarity index"),
-                Message::Jobs(JobMessage::Queue("fingerprints".into())),
+                Message::Jobs(JobMessage::Queue(JobKind::Fingerprints)),
             ))
             .push(crate::components::action(
                 tr!(language, "重建全部图片缩略图" => "Rebuild all image thumbnails"),
-                Message::Jobs(JobMessage::Queue("thumbnails".into())),
+                Message::Jobs(JobMessage::Queue(JobKind::Thumbnails)),
             ))
             .push(muted(
                 tr!(language, "索引与缩略图任务按优先级逐项执行；暂停在当前图片完成后生效，重开资源库继续。" => "Indexing and thumbnail tasks run by priority, one image at a time. Pausing takes effect after the current image; reopen the library to resume."),
@@ -263,22 +267,23 @@ impl App {
         let mut count = 0;
         for job in &self.manager.organizer.jobs {
             count += 1;
-            let title = match job.kind.as_str() {
-                "integrity" => tr!(language, "原文件完整性检查" => "Original file integrity check"),
-                "batch" => tr!(language, "批量字段编辑" => "Batch field editing"),
-                "metadata" => tr!(language, "EXIF 与 GPS 索引" => "EXIF and GPS index"),
-                "fingerprints" => tr!(language, "近似图片索引" => "Image similarity index"),
-                "thumbnails" => tr!(language, "缩略图重建" => "Thumbnail rebuild"),
-                "analysis:chinese-clip" => {
+            let title = match job.kind {
+                JobKind::Integrity => {
+                    tr!(language, "原文件完整性检查" => "Original file integrity check")
+                }
+                JobKind::Batch => tr!(language, "批量字段编辑" => "Batch field editing"),
+                JobKind::Metadata => tr!(language, "EXIF 与 GPS 索引" => "EXIF and GPS index"),
+                JobKind::Fingerprints => tr!(language, "近似图片索引" => "Image similarity index"),
+                JobKind::Thumbnails => tr!(language, "缩略图重建" => "Thumbnail rebuild"),
+                JobKind::Analysis(ModelId::ChineseClip) => {
                     tr!(language, "自动分类与语义索引" => "Automatic categories and semantic index")
                 }
-                "analysis:florence" => {
+                JobKind::Analysis(ModelId::Florence) => {
                     tr!(language, "图片描述、OCR 与物体识别" => "Image descriptions, OCR and object recognition")
                 }
-                "analysis:faces" => {
+                JobKind::Analysis(ModelId::Faces) => {
                     tr!(language, "人脸识别与人物聚类" => "Face recognition and people clustering")
                 }
-                _ => tr!(language, "后台处理" => "Background processing"),
             };
             view = view
                 .push(heading(
@@ -298,7 +303,7 @@ impl App {
                     tr!(language, "查看失败明细（前100项）" => "View failures (first 100)"),
                     Message::Jobs(JobMessage::Failures(job.id.clone())),
                 ));
-                if matches!(job.state.as_str(), "completed" | "cancelled") {
+                if job.state.is_finished() {
                     view = view.push(action(
                         tr!(language, "仅重试失败素材" => "Retry failed assets only"),
                         Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::RetryFailed)),
@@ -319,15 +324,15 @@ impl App {
                     }
                 }
             }
-            if matches!(job.state.as_str(), "queued" | "running" | "paused") {
-                let command = if job.state == "paused" {
+            if job.state.is_active() {
+                let command = if job.state == JobState::Paused {
                     JobCommand::Resume
                 } else {
                     JobCommand::Pause
                 };
                 view = view
                     .push(crate::components::action(
-                        if job.state == "paused" {
+                        if job.state == JobState::Paused {
                             tr!(language, "继续任务" => "Resume task")
                         } else {
                             tr!(language, "暂停任务" => "Pause task")

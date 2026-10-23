@@ -3,12 +3,20 @@ use crate::components::*;
 use iced::widget::{column, row, text_input};
 #[derive(Default)]
 pub(super) struct LifecycleState {
+    pub copy: Option<moriq_app::BackupControl>,
     orphans: Option<std::sync::Arc<moriq_app::OrphanPlan>>,
     orphan_owner: Option<LibraryId>,
     purge_confirm: bool,
     purge_owner: Option<LibraryId>,
     old_root: String,
     new_root: String,
+}
+impl LifecycleState {
+    pub fn cancel_copy(&mut self) {
+        if let Some(control) = self.copy.take() {
+            control.cancel.store(true, Ordering::Release);
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub enum LifecycleMessage {
@@ -25,6 +33,7 @@ pub enum LifecycleMessage {
     Copy(bool),
     Picked(LibraryId, bool, Option<PathBuf>),
     Copied(LibraryId, Result<PathBuf, String>),
+    CancelCopy,
     Old(String),
     New(String),
     Reconnect,
@@ -98,6 +107,11 @@ impl App {
         let id = library.info.id;
         let service = self.service.clone();
         match event {
+            LifecycleMessage::CancelCopy => {
+                if let Some(control) = &self.lifecycle.copy {
+                    control.cancel.store(true, Ordering::Release);
+                }
+            }
             LifecycleMessage::ScanOrphans if !self.manager.busy => {
                 self.manager.busy = true;
                 self.lifecycle.orphans = None;
@@ -180,19 +194,25 @@ impl App {
                 if owner == id && !self.manager.busy =>
             {
                 self.manager.busy = true;
+                let control = moriq_app::BackupControl::default();
+                self.lifecycle.copy = Some(control.clone());
                 return Task::perform(
-                    async move {
-                        if independent {
-                            service.clone_library(id, path).await
-                        } else {
-                            service.backup(id, path).await
-                        }
-                    },
+                    async move { service.copy_library(id, path, independent, control).await },
                     move |r| Message::Lifecycle(LifecycleMessage::Copied(id, r)),
                 );
             }
             LifecycleMessage::Copied(owner, result) if owner == id => {
+                let cancelled = self
+                    .lifecycle
+                    .copy
+                    .take()
+                    .is_some_and(|control| control.cancel.load(Ordering::Acquire));
                 self.manager.busy = false;
+                if cancelled && result.is_err() {
+                    self.status =
+                        tr!(self.preferences.language, "备份已停止" => "Backup stopped").into();
+                    return Task::none();
+                }
                 match result {
                     Ok(path) => {
                         self.manager.report = format!(

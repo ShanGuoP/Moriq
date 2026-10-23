@@ -103,10 +103,10 @@ impl App {
     fn page_changes(&self, message: &Message) -> bool {
         match message {
             Message::Back => {
-                !self.surface_open() && !self.preview_expanded && self.history.can_back()
+                !self.surface_open() && !self.viewer.preview_expanded && self.history.can_back()
             }
             Message::Forward => {
-                !self.surface_open() && !self.preview_expanded && self.history.can_forward()
+                !self.surface_open() && !self.viewer.preview_expanded && self.history.can_forward()
             }
             Message::Navigate(to) => {
                 self.library_picker

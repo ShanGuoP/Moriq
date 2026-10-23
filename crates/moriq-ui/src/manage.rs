@@ -5,7 +5,6 @@ use iced::widget::{
     Column, Space, button, checkbox, container, mouse_area, row, stack, text, text_input,
 };
 use iced::{Alignment, Length};
-use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Panel {
@@ -52,9 +51,7 @@ impl std::fmt::Display for ProjectDestination {
 pub(super) struct Manager {
     pub similar: Vec<SimilarAsset>,
     pub panel: Option<Panel>,
-    pub selection: HashSet<AssetId>,
-    pub multiselect: bool,
-    pub selection_anchor: Option<AssetId>,
+    pub selection: selection::SelectionState,
     pub organizer: Organizer,
     pub favorites: Vec<Tile>,
     pub project_covers: std::collections::HashMap<ProjectId, image::Handle>,
@@ -70,15 +67,13 @@ pub(super) struct Manager {
     pub tag_new_name: String,
     pub new_project_name: String,
     pub active_tag: String,
-    pub date_start: String,
-    pub date_end: String,
-    pub export_options: ExportOptions,
+    pub export: export::ExportState,
     pub parent: Option<ProjectId>,
     pub project_target: Option<ProjectId>,
     pub latitude: String,
     pub longitude: String,
     pub location_label: String,
-    pub filter: Query,
+    pub filters: filters::FilterDraft,
     pub rule_draft: Option<Rule>,
     pub rule_in_filter: bool,
     pub busy: bool,
@@ -88,9 +83,7 @@ pub(super) struct Manager {
     pub import_refreshed: Option<std::time::Instant>,
     pub report: String,
     pub report_panel: Option<Panel>,
-    pub synco_running: bool,
-    pub synco_ticks: u16,
-    pub synco_backoff: u16,
+    pub synco: selection::SyncoState,
 }
 #[derive(Debug, Clone)]
 pub enum ManageMessage {
@@ -128,6 +121,7 @@ pub enum ManageMessage {
     Cover,
     PickedCover(LibraryId, Option<PathBuf>),
     CoverLoaded(LibraryId, u64, Result<Option<image::Handle>, String>),
+    CoverSaved(LibraryId, Result<(), String>),
     Close,
     Filters,
     Organize,
@@ -150,7 +144,7 @@ pub enum ManageMessage {
         AssetVersionId,
         Result<AssetDetails, String>,
     ),
-    Filter(u8, String),
+    Filter(FilterChange),
     ApplyFilter,
     ClearFilters,
     Untagged(bool),
@@ -173,9 +167,9 @@ pub enum ManageMessage {
     RelocateReference,
     PickedReference(LibraryId, AssetId, AssetVersionId, Option<PathBuf>),
     ExportMenu,
-    ExportOption(u8, String),
+    ExportOption(ExportChange),
     Date(u8, String),
-    Builtin(u8),
+    Builtin(Builtin),
     Edit(Edit),
     Edited(LibraryId, bool, Result<(), String>),
     RenameProject,
@@ -209,8 +203,6 @@ impl App {
         let service = self.service.clone();
         self.projection_request = self.projection_request.wrapping_add(1);
         let request = self.projection_request;
-        let overview_service = service.clone();
-        let cover_service = service.clone();
         let activity = if self.manager.panel == Some(Panel::Activity) {
             Task::none()
         } else {
@@ -224,26 +216,49 @@ impl App {
         Task::batch([
             activity,
             notices,
-            Task::perform(
-                async move { overview_service.overview(id).await },
-                move |r| Message::Manage(ManageMessage::OverviewLoaded(id, request, r)),
-            ),
             Task::perform(async move { service.organizer(id).await }, move |r| {
                 Message::Manage(ManageMessage::OrganizerLoaded(id, request, r))
             }),
-            Task::perform(
-                async move {
-                    cover_service
-                        .cover(id)
-                        .await
-                        .map(|p| p.map(|p| image::Handle::from_rgba(p.width, p.height, p.rgba)))
-                },
-                move |r| Message::Manage(ManageMessage::CoverLoaded(id, request, r)),
-            ),
         ])
     }
+    pub(super) fn refresh_visuals(&mut self) -> Task<Message> {
+        let Some(library) = &self.library else {
+            return Task::none();
+        };
+        let id = library.info.id;
+        let service = self.service.clone();
+        self.overview_request = self.overview_request.wrapping_add(1);
+        let request = self.overview_request;
+        Task::perform(async move { service.overview(id).await }, move |result| {
+            Message::Manage(ManageMessage::OverviewLoaded(id, request, result))
+        })
+    }
+    pub(super) fn refresh_cover(&mut self) -> Task<Message> {
+        let Some(library) = &self.library else {
+            return Task::none();
+        };
+        let id = library.info.id;
+        let service = self.service.clone();
+        self.cover_request = self.cover_request.wrapping_add(1);
+        let request = self.cover_request;
+        Task::perform(
+            async move {
+                service
+                    .cover(id)
+                    .await
+                    .map(|image| image.map(|p| image::Handle::from_rgba(p.width, p.height, p.rgba)))
+            },
+            move |result| Message::Manage(ManageMessage::CoverLoaded(id, request, result)),
+        )
+    }
+    pub(super) fn refresh_catalog(&mut self) -> Task<Message> {
+        Task::batch([self.refresh_organizer(), self.refresh_visuals()])
+    }
+    pub(super) fn refresh_library(&mut self) -> Task<Message> {
+        Task::batch([self.refresh_catalog(), self.refresh_cover()])
+    }
     pub(super) fn refresh_details(&self) -> Task<Message> {
-        let (Some(library), Some(asset)) = (&self.library, &self.selected) else {
+        let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) else {
             return Task::none();
         };
 
@@ -263,10 +278,10 @@ impl App {
         ])
     }
     pub(super) fn selected_ids(&self) -> Vec<AssetId> {
-        if self.manager.multiselect {
-            self.manager.selection.iter().copied().collect()
+        if self.manager.selection.enabled {
+            self.manager.selection.assets.iter().copied().collect()
         } else {
-            self.selected.iter().map(|a| a.id).collect()
+            self.viewer.selected.iter().map(|a| a.id).collect()
         }
     }
     pub(super) fn manage_message(&mut self, event: ManageMessage) -> Task<Message> {
@@ -316,11 +331,11 @@ impl App {
                 Ok(prefs) => self.apply_settings(prefs),
                 Err(e) => self.error = Some(e),
             },
-            SyncoRetry(task) if !self.manager.synco_running => {
+            SyncoRetry(task) if !self.manager.synco.running => {
                 if let Some(library) = &self.library {
                     let id = library.info.id;
                     let service = self.service.clone();
-                    self.manager.synco_running = true;
+                    self.manager.synco.running = true;
                     return Task::perform(
                         async move { service.retry_synco(id, task).await },
                         move |r| Message::Manage(SyncoPrepared(id, None, r)),
@@ -333,7 +348,7 @@ impl App {
             }
             Help => self.manager.panel = Some(Panel::Help),
             Similar => {
-                if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+                if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
                     let (id, asset) = (library.info.id, asset.id);
                     let service = self.service.clone();
                     self.manager.similar.clear();
@@ -346,7 +361,7 @@ impl App {
             }
             SimilarLoaded(id, asset, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == id)
-                    && self.selected.as_ref().is_some_and(|a| a.id == asset)
+                    && self.viewer.selected.as_ref().is_some_and(|a| a.id == asset)
                     && self.manager.panel == Some(Panel::Similar) =>
             {
                 match result {
@@ -375,7 +390,7 @@ impl App {
                 _ => self.manager.location_label = value,
             },
             SaveLocation | ClearLocation => {
-                if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+                if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
                     let value = if matches!(event, ClearLocation) {
                         None
                     } else {
@@ -400,7 +415,7 @@ impl App {
                     };
                     let id = library.info.id;
                     let asset = asset.id;
-                    let version = self.selected.as_ref().map(|a| a.version_id);
+                    let version = self.viewer.selected.as_ref().map(|a| a.version_id);
                     if let Some(version) = version {
                         let service = self.service.clone();
                         return Task::perform(
@@ -416,6 +431,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         if self
+                            .viewer
                             .selected
                             .as_ref()
                             .is_some_and(|a| a.id == asset && a.version_id == version)
@@ -484,16 +500,16 @@ impl App {
                         return Task::batch([
                             self.reset_query(),
                             self.refresh_info(),
-                            self.refresh_organizer(),
+                            self.refresh_catalog(),
                         ]);
                     }
                     Err(error) => self.error = Some(error),
                 }
             }
             ToggleTags => self.manager.tags_collapsed = !self.manager.tags_collapsed,
-            AssetMenu | AssetProjects | Versions if self.selected.is_some() => {
+            AssetMenu | AssetProjects | Versions if self.viewer.selected.is_some() => {
                 // These menus belong to the detail image, not to the batch selection.
-                self.manager.multiselect = false;
+                self.manager.selection.enabled = false;
                 self.manager.panel = Some(match event {
                     AssetProjects => Panel::AssetProjects,
                     Versions => Panel::Versions,
@@ -503,7 +519,7 @@ impl App {
             }
             ViewOptions => self.manager.panel = Some(Panel::ViewOptions),
             RevealAsset => {
-                if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+                if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
                     let library = library.info.id;
                     let asset = asset.id;
                     let service = self.service.clone();
@@ -533,9 +549,9 @@ impl App {
                 match result {
                     Ok(report) => {
                         self.manager.selection.clear();
-                        self.manager.selection_anchor = None;
-                        self.selected = None;
-                        self.preview = None;
+                        self.manager.selection.anchor = None;
+                        self.viewer.selected = None;
+                        self.viewer.preview = None;
                         self.manager.report = trf!(language, "已永久删除 {} 项。{}" => "Permanently deleted {} items. {}",
                             report.deleted,
                             if report.cleanup_pending {
@@ -548,7 +564,7 @@ impl App {
                         return Task::batch([
                             self.refresh(),
                             self.refresh_info(),
-                            self.refresh_organizer(),
+                            self.refresh_catalog(),
                             self.rebuild_masonry(),
                         ]);
                     }
@@ -601,7 +617,7 @@ impl App {
                 }
             }
             RelocateReference => {
-                if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+                if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
                     let (id, asset, version) = (library.info.id, asset.id, asset.version_id);
                     return Task::perform(
                         async move {
@@ -622,51 +638,15 @@ impl App {
                 });
             }
             ExportMenu => {
-                self.manager.export_options = Default::default();
+                self.manager.export.options = Default::default();
                 self.manager.panel = Some(Panel::ExportOptions);
             }
-            ExportOption(field, value) => {
-                let options = &mut self.manager.export_options;
-                match field {
-                    0 => {
-                        options.format = match value.as_str() {
-                            "JPEG" => ExportFormat::Jpeg,
-                            "PNG" => ExportFormat::Png,
-                            "WebP" => ExportFormat::Webp,
-                            "TIFF" => ExportFormat::Tiff,
-                            "BMP" => ExportFormat::Bmp,
-                            _ => ExportFormat::Original,
-                        }
-                    }
-                    1 => options.max_edge = value.parse().unwrap_or(0),
-                    2 => options.quality = value.parse().unwrap_or(90),
-                    3 => options.rotate = value.parse().unwrap_or(0),
-                    4 => {
-                        options.resampling = match value.as_str() {
-                            "Lanczos3" => Resampling::Lanczos3,
-                            "双三次" => Resampling::Bicubic,
-                            "最近邻" => Resampling::Nearest,
-                            _ => Resampling::Area,
-                        }
-                    }
-                    5 => {
-                        options.layout = match value.as_str() {
-                            "按格式" => ExportLayout::Format,
-                            "按导入日期" => ExportLayout::ImportDate,
-                            _ => ExportLayout::Flat,
-                        }
-                    }
-                    6 => options.metadata_sidecar = value == "附带整理信息 JSON",
-                    7 => options.preserve_exif = value == "true",
-                    8 => options.directory_template = value,
-                    _ => {}
-                }
-            }
+            ExportOption(change) => self.manager.export.apply(change),
             Date(field, value) => {
                 if field == 0 {
-                    self.manager.date_start = value;
+                    self.manager.filters.date_start = value;
                 } else {
-                    self.manager.date_end = value;
+                    self.manager.filters.date_end = value;
                 }
             }
 
@@ -675,7 +655,7 @@ impl App {
                 self.manager.panel = Some(Panel::Synco);
                 return self.refresh_organizer();
             }
-            SendSynco if !self.manager.synco_running => {
+            SendSynco if !self.manager.synco.running => {
                 if let Some(l) = &self.library {
                     let id = l.info.id;
                     let assets = self.selected_ids();
@@ -686,7 +666,7 @@ impl App {
                     };
                     let project = self.query.project;
                     let service = self.service.clone();
-                    self.manager.synco_running = true;
+                    self.manager.synco.running = true;
                     self.manager.panel = Some(Panel::Synco);
                     return Task::perform(
                         async move { service.prepare_synco(id, assets, project).await },
@@ -709,7 +689,7 @@ impl App {
                         self.persist_asset_notice(tr!(language, "Synco 发送失败" => "Failed to send to Synco"), e.clone(), 2, "synco", asset)
                     }
                 };
-                self.manager.synco_running = false;
+                self.manager.synco.running = false;
                 if let Err(e) = result {
                     self.error = Some(e);
                 }
@@ -719,12 +699,11 @@ impl App {
                     self.manage_message(SyncoPoll(true)),
                 ]);
             }
-            SyncoPoll(manual) if !self.manager.synco_running => {
+            SyncoPoll(manual) if !self.manager.synco.running => {
                 if let Some(l) = &self.library {
                     let id = l.info.id;
                     let service = self.service.clone();
-                    self.manager.synco_running = true;
-                    self.manager.synco_ticks = 0;
+                    self.manager.synco.start();
                     return Task::perform(async move { service.synco_poll(id).await }, move |r| {
                         Message::Manage(SyncoDone(id, manual, r))
                     });
@@ -746,25 +725,21 @@ impl App {
                     }
                     _ => Task::none(),
                 };
-                self.manager.synco_running = false;
-                self.manager.synco_ticks = 0;
+                self.manager.synco.finish(result.is_ok());
                 match result {
                     Ok(count) => {
-                        self.manager.synco_backoff = 8;
                         if manual || count > 0 {
                             self.manager.report = trf!(language, "Synco 检查完成，已确认接收 {count} 个通知" => "Synco check complete; acknowledged {count} notifications");
                         }
                     }
                     Err(e) => {
-                        self.manager.synco_backoff =
-                            (self.manager.synco_backoff.max(8) * 2).min(120);
                         self.manager.report = e;
                     }
                 }
-                return Task::batch([notice, self.refresh_organizer(), self.refresh_details()]);
+                return Task::batch([notice, self.refresh_catalog(), self.refresh_details()]);
             }
             Version(version) => {
-                if let (Some(l), Some(a)) = (&self.library, &self.selected) {
+                if let (Some(l), Some(a)) = (&self.library, &self.viewer.selected) {
                     let id = l.info.id;
                     let asset = a.id;
                     let service = self.service.clone();
@@ -780,7 +755,7 @@ impl App {
                 if let Err(e) = result {
                     self.error = Some(e);
                 } else {
-                    if self.selected.as_ref().is_some_and(|a| a.id == asset) {
+                    if self.viewer.selected.as_ref().is_some_and(|a| a.id == asset) {
                         // Resolve fresh dimensions and metadata; never reselect an older image.
                         return Task::batch([self.load_neighborhood(asset, 0), self.refresh()]);
                     }
@@ -813,16 +788,27 @@ impl App {
                 if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 let service = self.service.clone();
-                return self.mutation(async move { service.set_cover(id, path).await });
+                return Task::perform(async move { service.set_cover(id, path).await }, move |r| {
+                    Message::Manage(CoverSaved(id, r))
+                });
+            }
+            CoverSaved(id, result) if self.library.as_ref().is_some_and(|l| l.info.id == id) => {
+                let saved = result.is_ok();
+                let task = self.update(Message::Saved(id, result));
+                return if saved {
+                    Task::batch([task, self.refresh_cover()])
+                } else {
+                    task
+                };
             }
             CoverLoaded(id, request, Ok(handle))
-                if request == self.projection_request
+                if request == self.cover_request
                     && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.manager.cover = handle
             }
             CoverLoaded(id, request, Err(e))
-                if request == self.projection_request
+                if request == self.cover_request
                     && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.error = Some(e)
@@ -851,7 +837,7 @@ impl App {
                         return Task::batch([
                             self.refresh(),
                             self.refresh_info(),
-                            self.refresh_organizer(),
+                            self.refresh_catalog(),
                             self.rebuild_masonry(),
                         ]);
                     }
@@ -871,9 +857,9 @@ impl App {
                 return close;
             }
             Filters => {
-                self.manager.filter = self.query.clone();
-                self.manager.date_start = String::new();
-                self.manager.date_end = String::new();
+                self.manager.filters.query = self.query.clone();
+                self.manager.filters.date_start = String::new();
+                self.manager.filters.date_end = String::new();
                 self.manager.panel = Some(Panel::Filters);
             }
             Organize => self.manager.panel = Some(Panel::Organize),
@@ -915,23 +901,22 @@ impl App {
             }
             ToggleMulti => {
                 self.manager.panel = None;
-                self.manager.multiselect = !self.manager.multiselect;
-                self.manager.selection.clear();
+                self.manager.selection.toggle_mode();
             }
             RangeSelected(id, generation, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == id)
                     && self.generation == generation
-                    && self.manager.multiselect =>
+                    && self.manager.selection.enabled =>
             {
                 match result {
-                    Ok(ids) => self.manager.selection.extend(ids),
+                    Ok(ids) => self.manager.selection.assets.extend(ids),
                     Err(error) => self.error = Some(error),
                 }
             }
             Toggle(id) => {
                 if self.modifiers.shift()
                     && let (Some(anchor), Some(library)) =
-                        (self.manager.selection_anchor, &self.library)
+                        (self.manager.selection.anchor, &self.library)
                 {
                     let library = library.info.id;
                     let generation = self.generation;
@@ -942,17 +927,14 @@ impl App {
                         move |result| Message::Manage(RangeSelected(library, generation, result)),
                     );
                 }
-                self.manager.selection_anchor = Some(id);
-                if !self.manager.selection.remove(&id) {
-                    self.manager.selection.insert(id);
-                }
+                self.manager.selection.toggle(id);
             }
             SelectVisible => {
-                self.manager.multiselect = true;
+                self.manager.selection.enabled = true;
                 let range = self.visible_range();
                 for (i, tile) in self.tiles.iter().enumerate() {
                     if range.contains(&(i + self.offset)) {
-                        self.manager.selection.insert(tile.asset.id);
+                        self.manager.selection.assets.insert(tile.asset.id);
                     }
                 }
             }
@@ -965,7 +947,7 @@ impl App {
                 self.manager.notes_dirty = true;
             }
             OverviewLoaded(id, request, Ok(result))
-                if request == self.projection_request
+                if request == self.overview_request
                     && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.manager.favorites = result
@@ -999,7 +981,7 @@ impl App {
                     .collect();
             }
             OverviewLoaded(id, request, Err(e))
-                if request == self.projection_request
+                if request == self.overview_request
                     && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 self.manager.category_covers.clear();
@@ -1019,6 +1001,7 @@ impl App {
             DetailsLoaded(id, asset, version, Ok(result))
                 if self.library.as_ref().is_some_and(|l| l.info.id == id)
                     && self
+                        .viewer
                         .selected
                         .as_ref()
                         .is_some_and(|a| a.id == asset && a.version_id == version) =>
@@ -1043,78 +1026,12 @@ impl App {
             {
                 self.error = Some(e)
             }
-            Filter(field, value) => {
-                let q = &mut self.manager.filter;
-                match field {
-                    0 => {
-                        q.media_kind = if value == "RAW" {
-                            MediaKind::Raw
-                        } else if value == "视频" {
-                            MediaKind::Video
-                        } else {
-                            MediaKind::All
-                        };
-                        q.format = if value == "全部类型" || value == "RAW" || value == "视频"
-                        {
-                            String::new()
-                        } else {
-                            value.to_lowercase()
-                        }
-                    }
-                    1 => q.min_rating = value.parse().unwrap_or(0),
-                    2 => {
-                        q.since = chrono::Utc::now().timestamp_millis().max(0) as u64
-                            - match value.as_str() {
-                                "近 7 天" => 7 * 86400000,
-                                "近 30 天" => 30 * 86400000,
-                                _ => chrono::Utc::now().timestamp_millis().max(0) as u64,
-                            }
-                    }
-                    3 => {
-                        q.min_bytes = if value == "大于 10 MB" {
-                            10_000_000
-                        } else {
-                            0
-                        };
-                        q.max_bytes = if value == "小于 1 MB" { 1_000_000 } else { 0 };
-                    }
-                    4 => {
-                        q.orientation = match value.as_str() {
-                            "横图" => 1,
-                            "竖图" => 2,
-                            "方图" => 3,
-                            _ => 0,
-                        }
-                    }
-                    5 => {
-                        q.sort = match value.as_str() {
-                            "最早导入" => SortOrder::Oldest,
-                            "名称" => SortOrder::Name,
-                            "文件最大" => SortOrder::Largest,
-                            "评分最高" => SortOrder::Rating,
-                            _ => SortOrder::Newest,
-                        }
-                    }
-                    6 => q.min_width = value.parse().unwrap_or(0),
-                    8 => {
-                        q.storage = match value.as_str() {
-                            "托管导入" => 1,
-                            "外部引用" => 2,
-                            _ => 0,
-                        }
-                    }
-                    7 => {
-                        q.color = if value == "全部颜色" {
-                            String::new()
-                        } else {
-                            value
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Untagged(v) => self.manager.filter.untagged = v,
-            Unassigned(v) => self.manager.filter.unassigned = v,
+            Filter(change) => change.apply(
+                &mut self.manager.filters.query,
+                chrono::Utc::now().timestamp_millis().max(0) as u64,
+            ),
+            Untagged(v) => self.manager.filters.query.untagged = v,
+            Unassigned(v) => self.manager.filters.query.unassigned = v,
             ApplyFilter => {
                 use chrono::TimeZone;
                 let parse = |value: &str, end: bool| -> std::result::Result<u64, String> {
@@ -1137,16 +1054,16 @@ impl App {
                     u64::try_from(utc).map_err(|_| tr!(language, "日期不能早于 1970 年" => "Dates cannot be earlier than 1970").into())
                 };
                 for (value, end) in [
-                    (&self.manager.date_start, false),
-                    (&self.manager.date_end, true),
+                    (&self.manager.filters.date_start, false),
+                    (&self.manager.filters.date_end, true),
                 ] {
                     if !value.trim().is_empty() {
                         match parse(value.trim(), end) {
                             Ok(at) => {
                                 if end {
-                                    self.manager.filter.before = at
+                                    self.manager.filters.query.before = at
                                 } else {
-                                    self.manager.filter.since = at
+                                    self.manager.filters.query.since = at
                                 }
                             }
                             Err(e) => {
@@ -1156,13 +1073,13 @@ impl App {
                         }
                     }
                 }
-                if self.manager.filter.before > 0
-                    && self.manager.filter.before <= self.manager.filter.since
+                if self.manager.filters.query.before > 0
+                    && self.manager.filters.query.before <= self.manager.filters.query.since
                 {
                     self.error = Some(tr!(language, "结束日期应晚于或等于开始日期" => "The end date must be on or after the start date").into());
                     return Task::none();
                 }
-                self.query = self.manager.filter.clone();
+                self.query = self.manager.filters.query.clone();
                 self.manager.panel = None;
                 self.screen = Screen::Assets;
                 return self.reset_query();
@@ -1173,27 +1090,9 @@ impl App {
                 return self.reset_query();
             }
             Builtin(which) => {
-                self.query = Query::default();
+                self.query = which.query(chrono::Utc::now().timestamp_millis().max(0) as u64);
                 self.screen = Screen::Assets;
                 self.manager.panel = None;
-                match which {
-                    0 => {
-                        self.query.since = (chrono::Utc::now().timestamp_millis().max(0) as u64)
-                            .saturating_sub(7 * 86400000)
-                    }
-                    1 => self.query.untagged = true,
-                    2 => self.query.min_rating = 4,
-                    3 => self.query.trash = true,
-                    4 => self.query.unassigned = true,
-                    6 => self.query.media_kind = MediaKind::Raw,
-                    7 => self.query.media_kind = MediaKind::Video,
-                    5 => {
-                        self.query.edited_since = (chrono::Utc::now().timestamp_millis().max(0)
-                            as u64)
-                            .saturating_sub(7 * 86400000)
-                    }
-                    _ => {}
-                }
                 return self.reset_query();
             }
             Tag(tag) => {
@@ -1260,6 +1159,18 @@ impl App {
             Published(id, backup, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
+                if backup {
+                    let cancelled = self
+                        .lifecycle
+                        .copy
+                        .take()
+                        .is_some_and(|control| control.cancel.load(Ordering::Acquire));
+                    if cancelled && result.is_err() {
+                        self.manager.busy = false;
+                        self.status = tr!(language, "备份已停止" => "Backup stopped").into();
+                        return Task::none();
+                    }
+                }
                 self.manager.report_panel = Some(if backup {
                     Panel::Maintenance
                 } else {
@@ -1340,7 +1251,7 @@ impl App {
                                 notice,
                                 self.refresh(),
                                 self.refresh_info(),
-                                self.refresh_organizer(),
+                                self.refresh_catalog(),
                                 self.rebuild_masonry(),
                             ]);
                         }
@@ -1371,13 +1282,13 @@ impl App {
                     self.clear_browsing();
                     self.manager.panel = None;
                     self.manager.selection.clear();
-                    self.selected = None;
-                    self.preview = None;
+                    self.viewer.selected = None;
+                    self.viewer.preview = None;
                 }
-                return self.update(Message::Saved(id, result));
+                return self.update(Message::VisualsSaved(id, result));
             }
             SaveNotes => {
-                if let (Some(l), Some(a)) = (&self.library, &self.selected) {
+                if let (Some(l), Some(a)) = (&self.library, &self.viewer.selected) {
                     let id = l.info.id;
                     let asset = a.id;
                     let value = self.manager.notes.clone();
@@ -1397,7 +1308,7 @@ impl App {
                 if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
                 if result.is_ok()
-                    && self.selected.as_ref().is_some_and(|a| a.id == asset)
+                    && self.viewer.selected.as_ref().is_some_and(|a| a.id == asset)
                     && self.manager.notes == value
                 {
                     self.manager.notes_dirty = false;
@@ -1462,11 +1373,15 @@ impl App {
                     PickedDestination(_, backup, Some(parent)) if !self.manager.busy => {
                         self.manager.busy = true;
                         let ids = self.selected_ids();
-                        let options = self.manager.export_options.clone();
+                        let options = self.manager.export.options.clone();
+                        let control = moriq_app::BackupControl::default();
+                        if backup {
+                            self.lifecycle.copy = Some(control.clone());
+                        }
                         return Task::perform(
                             async move {
                                 if backup {
-                                    service.backup(id, parent).await
+                                    service.copy_library(id, parent, false, control).await
                                 } else {
                                     service.export_options(id, ids, parent, options).await
                                 }
@@ -1673,10 +1588,10 @@ impl App {
         .spacing(14)
         .align_y(Alignment::Center);
         let action = |label: &str, event| {
-            let selected = if self.manager.multiselect {
-                !self.manager.selection.is_empty()
+            let selected = if self.manager.selection.enabled {
+                !self.manager.selection.assets.is_empty()
             } else {
-                self.selected.is_some()
+                self.viewer.selected.is_some()
             };
             let available = match &event {
                 ManageMessage::CancelCheck => true,
@@ -1688,10 +1603,10 @@ impl App {
                 | ManageMessage::ExportMenu
                 | ManageMessage::Purge => !self.manager.busy && selected,
                 ManageMessage::SendSynco => {
-                    !self.manager.busy && !self.manager.synco_running && selected
+                    !self.manager.busy && !self.manager.synco.running && selected
                 }
                 ManageMessage::SaveNotes => {
-                    !self.manager.busy && self.selected.is_some() && self.manager.notes_dirty
+                    !self.manager.busy && self.viewer.selected.is_some() && self.manager.notes_dirty
                 }
                 ManageMessage::RenameTag => {
                     !self.manager.busy
@@ -1701,7 +1616,7 @@ impl App {
                 ManageMessage::DeleteTag => {
                     !self.manager.busy && !self.manager.active_tag.is_empty()
                 }
-                ManageMessage::SyncoPoll(_) => !self.manager.synco_running,
+                ManageMessage::SyncoPoll(_) => !self.manager.synco.running,
                 _ => !self.manager.busy,
             };
             button(text(label.to_string()).size(13))
@@ -1749,7 +1664,7 @@ impl App {
             }
             Some(Panel::Similar) => {
                 content=content.push(muted(tr!(language, "根据画面指纹、比例和颜色查找尺寸/压缩变体，最多显示100项；结果供人工判断，不自动合并或删除。" => "Find size and compression variants using visual fingerprints, aspect ratio and color. Up to 100 results are shown for manual review; nothing is merged or deleted automatically.")))
-                    .push(crate::components::action(tr!(language, "建立/更新全库近似索引" => "Build / update library similarity index"),Message::Jobs(crate::tasks::JobMessage::Queue("fingerprints".into()))));
+                    .push(crate::components::action(tr!(language, "建立/更新全库近似索引" => "Build / update library similarity index"),Message::Jobs(crate::tasks::JobMessage::Queue(JobKind::Fingerprints))));
                 if self.manager.similar.is_empty() {
                     content = content.push(muted(
                         tr!(language, "没有找到已索引的近似图片。旧图片可先建立索引，再重新查询。" => "No indexed similar images found. Build an index for older images and try again."),
@@ -1807,7 +1722,7 @@ impl App {
             Some(Panel::Activity) => content = content.push(self.event_list(false)),
             Some(Panel::Notifications) => content = content.push(self.event_list(true)),
             Some(Panel::AssetProjects) => {
-                if let Some(asset) = &self.selected {
+                if let Some(asset) = &self.viewer.selected {
                     content = content.push(heading(&asset.name, 15));
                     if self.manager.details.projects.is_empty() {
                         content = content.push(muted(tr!(language, "这张素材尚未加入项目" => "This asset does not belong to a project yet")));
@@ -1843,7 +1758,7 @@ impl App {
                         .style(secondary)
                         .on_press(Message::Compare(crate::compare::CompareMessage::Open)),
                 );
-                if let Some(asset) = &self.selected {
+                if let Some(asset) = &self.viewer.selected {
                     content = content.push(heading(&asset.name, 15));
                     for (index, version) in self.manager.details.versions.iter().enumerate() {
                         content = content.push(action(
@@ -1869,7 +1784,7 @@ impl App {
                     .push(muted(self.preferences.synco.executable.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||tr!(language, "自动查找安装位置" => "Find installation automatically").into())))
                     .push(muted(tr!(language, "需要 Synco 0.4.1 或更新版本。每张图片使用独立任务；精修结果保留为新版本，完成交接后自动回收发送副本。" => "Requires Synco 0.4.1 or later. Each image uses a separate task. Edits become new versions; sent copies are cleaned up after handoff.")))
                     .push(row![action(tr!(language, "发送选中图片" => "Send selected images"),SendSynco),action(tr!(language, "立即检查 / 重试连接" => "Check now / retry connection"),SyncoPoll(true))].spacing(8));
-                if self.manager.synco_running {
+                if self.manager.synco.running {
                     content = content.push(muted(
                         tr!(language, "正在与 Synco 交接…" => "Handing off to Synco…"),
                     ));
@@ -1895,197 +1810,33 @@ impl App {
                     tr!(language, "EXIF 与 GPS 高级检索" => "Advanced EXIF and GPS search"),
                     Message::Metadata(MetadataMessage::Open),
                 ));
-                let q = &self.manager.filter;
-                for (field, label, values, selected) in [
-                    (
-                        0,
-                        "格式",
-                        vec![
-                            "全部类型",
-                            "JPG",
-                            "PNG",
-                            "WEBP",
-                            "GIF",
-                            "BMP",
-                            "TIFF",
-                            "HEIC",
-                            "HEIF",
-                            "AVIF",
-                            "RAW",
-                            "视频",
-                            "MP4",
-                            "MOV",
-                            "MKV",
-                            "WEBM",
-                            "AVI",
-                        ],
-                        if q.media_kind == MediaKind::Raw {
-                            "RAW"
-                        } else if q.media_kind == MediaKind::Video {
-                            "视频"
-                        } else if q.format.is_empty() {
-                            "全部类型"
-                        } else {
-                            match q.format.as_str() {
-                                "jpg" => "JPG",
-                                "png" => "PNG",
-                                "webp" => "WEBP",
-                                "gif" => "GIF",
-                                "tiff" => "TIFF",
-                                "heic" => "HEIC",
-                                "heif" => "HEIF",
-                                "avif" => "AVIF",
-                                "mp4" => "MP4",
-                                "mov" => "MOV",
-                                "mkv" => "MKV",
-                                "webm" => "WEBM",
-                                "avi" => "AVI",
-                                _ => "BMP",
-                            }
-                        },
-                    ),
-                    (
-                        1,
-                        "最低评分",
-                        vec!["0", "1", "2", "3", "4", "5"],
-                        match q.min_rating {
-                            1 => "1",
-                            2 => "2",
-                            3 => "3",
-                            4 => "4",
-                            5 => "5",
-                            _ => "0",
-                        },
-                    ),
-                    (
-                        2,
-                        "导入时间",
-                        vec!["全部时间", "近 7 天", "近 30 天"],
-                        if q.since == 0 {
-                            "全部时间"
-                        } else {
-                            "近 7 天"
-                        },
-                    ),
-                    (
-                        3,
-                        "文件大小",
-                        vec!["全部大小", "小于 1 MB", "大于 10 MB"],
-                        if q.min_bytes > 0 {
-                            "大于 10 MB"
-                        } else if q.max_bytes > 0 {
-                            "小于 1 MB"
-                        } else {
-                            "全部大小"
-                        },
-                    ),
-                    (
-                        4,
-                        "图片比例",
-                        vec!["全部比例", "横图", "竖图", "方图"],
-                        match q.orientation {
-                            1 => "横图",
-                            2 => "竖图",
-                            3 => "方图",
-                            _ => "全部比例",
-                        },
-                    ),
-                    (
-                        5,
-                        "排序",
-                        vec!["最新导入", "最早导入", "名称", "文件最大", "评分最高"],
-                        match q.sort {
-                            SortOrder::Newest => "最新导入",
-                            SortOrder::Oldest => "最早导入",
-                            SortOrder::Name => "名称",
-                            SortOrder::Largest => "文件最大",
-                            SortOrder::Rating => "评分最高",
-                        },
-                    ),
-                ] {
+                for (label, values, selected) in filters::rows(&self.manager.filters.query) {
                     content = content.push(
                         row![
                             text(crate::i18n::option_label(language, label))
                                 .size(13)
-                                .width(100),
-                            pick_list(language, values, Some(selected), move |v| Message::Manage(
-                                Filter(field, v.into())
+                                .width(140),
+                            pick_list(language, values, selected, |choice| Message::Manage(
+                                Filter(choice)
                             ))
                             .width(Length::Fill)
                         ]
                         .align_y(Alignment::Center),
                     );
                 }
-                content = content
-                    .push(row![
-                        text(tr!(language, "最低宽度 / 像素" => "Minimum width / pixels")).size(13).width(140),
-                        pick_list(language,
-                            vec!["0", "1920", "3840", "7680"],
-                            Some(match q.min_width {
-                                1920 => "1920",
-                                3840 => "3840",
-                                7680 => "7680",
-                                _ => "0",
-                            }),
-                            |v| Message::Manage(Filter(6, v.into()))
-                        )
-                        .width(Length::Fill)
-                    ])
-                    .push(row![
-                        text(tr!(language, "主色调" => "Dominant color")).size(13).width(140),
-                        pick_list(language,
-                            vec![
-                                "全部颜色",
-                                "黑",
-                                "白",
-                                "灰",
-                                "红",
-                                "橙",
-                                "黄",
-                                "绿",
-                                "青",
-                                "蓝",
-                                "紫",
-                                "粉"
-                            ],
-                            Some(if q.color.is_empty() {
-                                "全部颜色"
-                            } else {
-                                q.color.as_str()
-                            }),
-                            |v| Message::Manage(Filter(7, v.into()))
-                        )
-                        .width(Length::Fill)
-                    ])
-                    .push(muted(tr!(language, "旧库如尚无颜色索引，请到备份与检查中运行修复。" => "If an older library has no color index, run repair in Backup and integrity.")));
-                content = content.push(row![
-                    text(tr!(language, "添加方式" => "Import method"))
-                        .size(13)
-                        .width(140),
-                    pick_list(
-                        language,
-                        vec!["全部方式", "托管导入", "外部引用"],
-                        Some(match q.storage {
-                            1 => "托管导入",
-                            2 => "外部引用",
-                            _ => "全部方式",
-                        }),
-                        |v| Message::Manage(Filter(8, v.into()))
-                    )
-                    .width(Length::Fill)
-                ]);
+                content=content.push(muted(tr!(language, "旧库如尚无颜色索引，请到备份与检查中运行修复。" => "If an older library has no color index, run repair in Backup and integrity.")));
                 content = content.push(
                     row![
                         text_input(
                             tr!(language, "开始日期 YYYY-MM-DD" => "Start date YYYY-MM-DD"),
-                            &self.manager.date_start
+                            &self.manager.filters.date_start
                         )
                         .style(crate::theme::input)
                         .padding(10)
                         .on_input(|v| Message::Manage(Date(0, v))),
                         text_input(
                             tr!(language, "结束日期 YYYY-MM-DD" => "End date YYYY-MM-DD"),
-                            &self.manager.date_end
+                            &self.manager.filters.date_end
                         )
                         .style(crate::theme::input)
                         .padding(10)
@@ -2095,12 +1846,12 @@ impl App {
                 );
                 content = content
                     .push(
-                        checkbox(q.untagged)
+                        checkbox(self.manager.filters.query.untagged)
                             .label(tr!(language, "只看未加标签" => "Untagged only"))
                             .on_toggle(|v| Message::Manage(Untagged(v))),
                     )
                     .push(
-                        checkbox(q.unassigned)
+                        checkbox(self.manager.filters.query.unassigned)
                             .label(tr!(language, "只看未归入项目" => "Without project only"))
                             .on_toggle(|v| Message::Manage(Unassigned(v))),
                     );
@@ -2220,92 +1971,27 @@ impl App {
                     .push(row![action(tr!(language, "重命名 / 合并" => "Rename / merge"),RenameTag),action(tr!(language, "删除标签及归类" => "Delete tag and memberships"),DeleteTag)].spacing(8));
             }
             Some(Panel::ExportOptions) => {
-                let options = self.manager.export_options.clone();
-                for (field, label, values, selected) in [
-                    (
-                        0,
-                        "格式",
-                        vec!["原文件", "JPEG", "PNG", "WebP", "TIFF", "BMP"],
-                        match options.format {
-                            ExportFormat::Original => "原文件",
-                            ExportFormat::Jpeg => "JPEG",
-                            ExportFormat::Png => "PNG",
-                            ExportFormat::Webp => "WebP",
-                            ExportFormat::Tiff => "TIFF",
-                            ExportFormat::Bmp => "BMP",
-                        }
-                        .to_string(),
-                    ),
-                    (
-                        1,
-                        "最长边 / 像素",
-                        vec!["0", "1280", "1920", "2560", "3840"],
-                        options.max_edge.to_string(),
-                    ),
-                    (
-                        2,
-                        "JPEG 质量",
-                        vec!["70", "80", "90", "95", "100"],
-                        options.quality.to_string(),
-                    ),
-                    (
-                        3,
-                        "顺时针旋转",
-                        vec!["0", "90", "180", "270"],
-                        options.rotate.to_string(),
-                    ),
-                    (
-                        4,
-                        "重采样",
-                        vec!["面积平均", "Lanczos3", "双三次", "最近邻"],
-                        match options.resampling {
-                            Resampling::Area => "面积平均",
-                            Resampling::Lanczos3 => "Lanczos3",
-                            Resampling::Bicubic => "双三次",
-                            Resampling::Nearest => "最近邻",
-                        }
-                        .into(),
-                    ),
-                    (
-                        5,
-                        "目录布局",
-                        vec!["平铺", "按格式", "按导入日期"],
-                        match options.layout {
-                            ExportLayout::Flat => "平铺",
-                            ExportLayout::Format => "按格式",
-                            ExportLayout::ImportDate => "按导入日期",
-                        }
-                        .into(),
-                    ),
-                    (
-                        6,
-                        "整理信息",
-                        vec!["不附带", "附带整理信息 JSON"],
-                        if options.metadata_sidecar {
-                            "附带整理信息 JSON"
-                        } else {
-                            "不附带"
-                        }
-                        .into(),
-                    ),
-                ] {
+                let options = self.manager.export.options.clone();
+                for (label, values, selected) in export::rows(&options) {
                     content = content.push(row![
                         text(crate::i18n::option_label(language, label))
                             .width(160)
                             .size(13),
-                        pick_list(
-                            language,
-                            values.into_iter().map(str::to_string).collect::<Vec<_>>(),
-                            Some(selected),
-                            move |v| Message::Manage(ExportOption(field, v))
-                        )
+                        pick_list(language, values, Some(selected), |choice| Message::Manage(
+                            ExportOption(choice)
+                        ))
                     ]);
                 }
-                content=content.push(checkbox(options.preserve_exif).label(tr!(language, "保留 EXIF（JPEG / PNG / WebP 嵌入，其他格式附带 .exif）" => "Preserve EXIF (embedded in JPEG / PNG / WebP; .exif sidecar for other formats)")).on_toggle(|v|Message::Manage(ExportOption(7,
-v.to_string()))))
+                content=content.push(
+                    checkbox(options.preserve_exif)
+                        .label(tr!(language, "保留 EXIF（JPEG / PNG / WebP 嵌入，其他格式附带 .exif）" => "Preserve EXIF (embedded in JPEG / PNG / WebP; .exif sidecar for other formats)"))
+                        .on_toggle(|v|Message::Manage(ExportOption(ExportChange::PreserveExif(v))))
+                )
                     .push(text_input(tr!(language, "目录模板，例如 {year}/{month}/{camera}" => "Folder template, e.g. {year}/{month}/{camera}"),
-&self.manager.export_options.directory_template).style(crate::theme::input).padding(10).on_input(|v|Message::Manage(ExportOption(8,
-v))))
+&self.manager.export.options.directory_template)
+                        .style(crate::theme::input)
+                        .padding(10)
+                        .on_input(|v|Message::Manage(ExportOption(ExportChange::Template(v)))))
                     .push(muted(tr!(language, "留空使用上方目录选择。变量：{date}、{year}、{month}、{day} 为导入日期，{format}、{camera}、{project}。转换图统一嵌入 sRGB；不复制私有 MakerNote 和旧缩略图。" => "Leave blank to use the layout above. Variables: {date}, {year}, {month}, {day} use import dates; also {format}, {camera}, {project}. Converted images embed sRGB. Private MakerNotes and old thumbnails are excluded.")))
                     .push(muted(tr!(language, "最长边 0 表示不缩放；原文件配合缩放或旋转时输出 PNG。JPEG 透明区域使用白色背景，WebP 为无损编码。" => "Set the longest edge to 0 to keep the original size. Resizing or rotating an original file produces PNG. JPEG uses white for transparency; WebP encoding is lossless.")))
                     .push(action(tr!(language, "选择位置并导出" => "Choose location and export"),Export));

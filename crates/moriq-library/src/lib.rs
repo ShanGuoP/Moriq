@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 const SCHEMA: u32 = 22;
 pub mod analysis;
+pub mod backup;
 mod batch;
 pub mod cache;
 mod cancel;
@@ -48,6 +49,7 @@ mod vector;
 pub mod video;
 pub use catalog::validate_reference;
 mod organize;
+pub mod overview;
 mod project_deletion;
 mod purge;
 mod resize;
@@ -690,8 +692,17 @@ rusqlite::params_from_iter(values))?;
                 {source} o JOIN assets a ON a.id=o.asset_id JOIN asset_versions v ON v.id=a.display_version_id \
                 WHERE o.position>=?1 AND o.position<?2 ORDER BY o.position {order}"
         );
-        let mut stmt = self.db.prepare(&sql)?;
-        let rows = stmt.query_map(params![start, end], |r| {
+        let assets = self.read_assets(&sql, params![start, end])?;
+        Ok(Page {
+            total,
+            offset,
+            assets,
+        })
+    }
+
+    fn read_assets(&self, sql: &str, parameters: impl rusqlite::Params) -> Result<Vec<Asset>> {
+        let mut stmt = self.db.prepare(sql)?;
+        let rows = stmt.query_map(parameters, |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -727,11 +738,7 @@ rusqlite::params_from_iter(values))?;
                 imported_at,
             });
         }
-        Ok(Page {
-            total,
-            offset,
-            assets,
-        })
+        Ok(assets)
     }
 
     pub fn import(&mut self, source: &Path, project: Option<ProjectId>) -> Result<bool> {

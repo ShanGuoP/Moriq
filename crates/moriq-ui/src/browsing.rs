@@ -13,11 +13,11 @@ fn selecting_and_opening_same_version_reuses_pending_and_completed_preview() {
     };
     app.tiles = vec![tile.clone()];
     drop(app.focus_tile(tile.clone()));
-    let request = app.original_request;
-    assert!(app.preview_task.is_some());
+    let request = app.viewer.original_request;
+    assert!(app.viewer.preview_task.is_some());
     drop(app.update(Message::OpenImage(asset.id)));
-    assert_eq!(app.original_request, request);
-    assert!(app.preview_task.is_some());
+    assert_eq!(app.viewer.original_request, request);
+    assert!(app.viewer.preview_task.is_some());
     let owner = app.library.as_ref().unwrap().info.id;
     drop(app.update(Message::FullPreviewLoaded(
         owner,
@@ -28,23 +28,18 @@ fn selecting_and_opening_same_version_reuses_pending_and_completed_preview() {
             image::Handle::from_rgba(1, 1, vec![0; 4]),
         )),
     )));
-    assert!(app.preview_task.is_none());
+    assert!(app.viewer.preview_task.is_none());
     assert_eq!(app.focus_tile(tile.clone()).units(), 0);
     let mut next = tile;
     next.asset.version_id = AssetVersionId::default();
     drop(app.focus_tile(next));
-    assert!(app.original_request > request);
-    assert!(app.preview_background.is_none());
+    assert!(app.viewer.original_request > request);
+    assert!(app.viewer.preview_background.is_none());
 }
 
 impl App {
     pub(super) fn clear_browsing(&mut self) {
-        self.regions.reset();
-        self.original_request += 1;
-        self.original_size = None;
-        self.playback = None;
-        self.video_frame = None;
-        self.video_upload = false;
+        self.viewer.clear();
         self.surfaces.viewer_y = None;
         self.surfaces.restoring_gallery = None;
         self.compare.clear();
@@ -56,12 +51,7 @@ impl App {
         self.neighbor_position = None;
         self.pending_scroll = None;
         self.restored_notes = None;
-        self.preview_expanded = false;
-        self.preview_background = None;
         self.editing_tags = false;
-        if let Some(handle) = self.preview_task.take() {
-            handle.abort();
-        }
     }
     pub(super) fn load_neighborhood(&mut self, anchor: AssetId, direction: i8) -> Task<Message> {
         let Some(library) = &self.library else {
@@ -85,52 +75,47 @@ impl App {
         task
     }
     pub(super) fn focus_tile(&mut self, tile: Tile) -> Task<Message> {
-        if self.selected.as_ref().is_some_and(|asset| {
+        if self.viewer.selected.as_ref().is_some_and(|asset| {
             asset.id == tile.asset.id && asset.version_id == tile.asset.version_id
-        }) && (self.preview_task.is_some() || self.preview_background.is_some())
+        }) && (self.viewer.preview_task.is_some() || self.viewer.preview_background.is_some())
         {
             // Selection, double-click and neighborhood receipts refer to the same load.
-            self.selected = Some(tile.asset);
+            self.viewer.selected = Some(tile.asset);
             return Task::none();
         }
-        self.regions.reset();
-        self.original_request += 1;
-        self.original_size = None;
-        self.playback = None;
-        self.video_frame = None;
-        self.video_upload = false;
-        if let Some(handle) = self.preview_task.take() {
-            handle.abort();
-        }
+        self.viewer.focus();
+
         let same = self
+            .viewer
             .selected
             .as_ref()
             .is_some_and(|a| a.id == tile.asset.id);
         let same_version = self
+            .viewer
             .selected
             .as_ref()
             .is_some_and(|a| a.version_id == tile.asset.version_id);
         if !same {
-            self.preview_background = None;
+            self.viewer.preview_background = None;
             self.manager.notes.clear();
             self.manager.notes_dirty = false;
             self.manager.details = Default::default();
             self.editing_tags = false;
         }
         if !same_version {
-            self.preview_background = None;
+            self.viewer.preview_background = None;
             self.manager.details = Default::default();
         }
         let asset = tile.asset;
         if !same || !self.editing_tags {
             self.tag_input = asset.tags.join(", ");
         }
-        if !same_version || self.preview.is_none() {
-            self.preview = tile.handle;
+        if !same_version || self.viewer.preview.is_none() {
+            self.viewer.preview = tile.handle;
         }
         let id = asset.id;
         let version = asset.version_id;
-        self.selected = Some(asset);
+        self.viewer.selected = Some(asset);
         if let Some((restored, notes)) = self.restored_notes.take()
             && restored == id
         {
@@ -162,8 +147,8 @@ impl App {
             move |result| Message::FullPreviewLoaded(library, id, version, result),
         )
         .abortable();
-        self.preview_task = Some(handle);
-        let enlarged = if self.preview_expanded {
+        self.viewer.preview_task = Some(handle);
+        let enlarged = if self.viewer.preview_expanded {
             self.set_viewer(true)
         } else {
             Task::none()
@@ -207,8 +192,8 @@ impl App {
                 }
             }
             Ok(None) => {
-                self.selected = None;
-                self.preview = None;
+                self.viewer.selected = None;
+                self.viewer.preview = None;
                 self.neighbors.clear();
                 self.neighbor_position = None;
                 self.restored_notes = None;

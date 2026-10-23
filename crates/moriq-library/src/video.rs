@@ -48,7 +48,7 @@ pub(crate) fn runtime_root() -> Result<PathBuf> {
         std::sync::OnceLock::new();
     let root = VERIFIED
         .get_or_init(|| {
-            moriq_ai::verify_runtime(
+            moriq_runtime::verify_runtime(
                 &root,
                 include_str!(concat!(env!("OUT_DIR"), "/codecs-checksums.json")),
                 &["libraw.dll"],

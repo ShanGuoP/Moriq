@@ -70,6 +70,15 @@ impl App {
                 import.peak.load(Ordering::Relaxed),
                 import.waiting_memory.load(Ordering::Relaxed)
             )
+        } else if let Some(control) = &self.lifecycle.copy {
+            if control.total.load(Ordering::Acquire) == 0 {
+                tr!(language, "正在准备备份…" => "Preparing backup…").into()
+            } else {
+                trf!(language, "备份 · {} / {} 个文件" => "Backup · {} / {} files",
+                    control.finished.load(Ordering::Acquire),
+                    control.total.load(Ordering::Acquire)
+                )
+            }
         } else if let Some(control) = &self.manager.maintenance {
             trf!(language, "{} · {} / {} 个版本" => "{} · {} / {} versions",
                 if control.cancel.load(Ordering::Relaxed) {
@@ -90,6 +99,15 @@ impl App {
             crate::i18n::status(language, &self.status).to_owned()
         };
         let mut footer = row![muted(status), Space::new().width(Length::Fill)];
+        if self.lifecycle.copy.is_some() {
+            footer = footer.push(
+                action(
+                    tr!(language, "停止备份" => "Stop backup"),
+                    Message::Lifecycle(LifecycleMessage::CancelCopy),
+                )
+                .padding([4, 10]),
+            );
+        }
         if !self.manager.organizer.errors.is_empty() {
             footer = footer.push(
                 action(
@@ -575,7 +593,7 @@ impl App {
                         (self.library.is_some()
                             && !self.switching
                             && !self.surface_open()
-                            && !self.preview_expanded
+                            && !self.viewer.preview_expanded
                             && self.history.can_forward())
                         .then_some(Message::Forward)
                     )
@@ -952,25 +970,25 @@ impl App {
                         Icon::Clock,
                         tr!(language, "最近导入" => "Recently imported"),
                         self.manager.organizer.recent_count,
-                        Message::Manage(ManageMessage::Builtin(0)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Recent)),
                     ),
                     (
                         Icon::Tag,
                         tr!(language, "未加标签" => "Untagged"),
                         self.manager.organizer.untagged_count,
-                        Message::Manage(ManageMessage::Builtin(1)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Untagged)),
                     ),
                     (
                         Icon::Star,
                         tr!(language, "高评分" => "Highly rated"),
                         self.manager.organizer.high_rating_count,
-                        Message::Manage(ManageMessage::Builtin(2)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::HighRating)),
                     ),
                     (
                         Icon::Raw,
                         tr!(language, "RAW 文件" => "RAW files"),
                         self.manager.organizer.raw_count,
-                        Message::Manage(ManageMessage::Builtin(6)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Raw)),
                     ),
                     (
                         Icon::Video,
@@ -1003,13 +1021,13 @@ impl App {
                         Icon::Clock,
                         tr!(language, "最近添加" => "Recently added"),
                         self.manager.organizer.recent_count,
-                        Message::Manage(ManageMessage::Builtin(0)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Recent)),
                     ),
                     (
                         Icon::Edit,
                         tr!(language, "最近编辑" => "Recently edited"),
                         self.manager.organizer.edited_count,
-                        Message::Manage(ManageMessage::Builtin(5)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Edited)),
                     ),
                     (
                         Icon::Heart,
@@ -1021,7 +1039,7 @@ impl App {
                         Icon::Raw,
                         tr!(language, "RAW 文件" => "RAW files"),
                         self.manager.organizer.raw_count,
-                        Message::Manage(ManageMessage::Builtin(6)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Raw)),
                     ),
                     (
                         Icon::Tag,
@@ -1050,13 +1068,13 @@ impl App {
                         Icon::Video,
                         tr!(language, "视频" => "Video"),
                         self.manager.organizer.video_count,
-                        Message::Manage(ManageMessage::Builtin(7)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Video)),
                     ),
                     (
                         Icon::Unsorted,
                         tr!(language, "未归类项目" => "Without project"),
                         self.manager.organizer.unassigned_count,
-                        Message::Manage(ManageMessage::Builtin(4)),
+                        Message::Manage(ManageMessage::Builtin(Builtin::Unassigned)),
                     ),
                 ]
             };
@@ -1093,15 +1111,25 @@ impl App {
                 let active = match &message {
                     Message::AllAssets => self.query == Query::default(),
                     Message::Favorites => self.query.favorites_only,
-                    Message::Manage(ManageMessage::Builtin(0)) => self.query.since > 0,
-                    Message::Manage(ManageMessage::Builtin(1)) => self.query.untagged,
-                    Message::Manage(ManageMessage::Builtin(2)) => self.query.min_rating >= 4,
-                    Message::Manage(ManageMessage::Builtin(4)) => self.query.unassigned,
-                    Message::Manage(ManageMessage::Builtin(5)) => self.query.edited_since > 0,
-                    Message::Manage(ManageMessage::Builtin(6)) => {
+                    Message::Manage(ManageMessage::Builtin(Builtin::Recent)) => {
+                        self.query.since > 0
+                    }
+                    Message::Manage(ManageMessage::Builtin(Builtin::Untagged)) => {
+                        self.query.untagged
+                    }
+                    Message::Manage(ManageMessage::Builtin(Builtin::HighRating)) => {
+                        self.query.min_rating >= 4
+                    }
+                    Message::Manage(ManageMessage::Builtin(Builtin::Unassigned)) => {
+                        self.query.unassigned
+                    }
+                    Message::Manage(ManageMessage::Builtin(Builtin::Edited)) => {
+                        self.query.edited_since > 0
+                    }
+                    Message::Manage(ManageMessage::Builtin(Builtin::Raw)) => {
                         self.query.media_kind == MediaKind::Raw
                     }
-                    Message::Manage(ManageMessage::Builtin(7)) => {
+                    Message::Manage(ManageMessage::Builtin(Builtin::Video)) => {
                         self.query.media_kind == MediaKind::Video
                     }
                     Message::Ai(AiMessage::People) => {
@@ -1135,7 +1163,7 @@ impl App {
                     Icon::Trash,
                     tr!(language, "回收站" => "Trash"),
                     Some(number(self.manager.organizer.trash_count)),
-                    Message::Manage(ManageMessage::Builtin(3)),
+                    Message::Manage(ManageMessage::Builtin(Builtin::Trash)),
                     self.query.trash,
                 ));
             }

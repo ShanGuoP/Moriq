@@ -2,20 +2,29 @@
 use super::*;
 
 #[derive(Default)]
-pub(super) struct Cancellation(std::sync::Mutex<Option<(LibraryId, String, Arc<AtomicBool>)>>);
+pub(super) struct Cancellation(
+    std::sync::Mutex<Vec<(LibraryId, String, std::sync::Weak<AtomicBool>)>>,
+);
 impl Cancellation {
     pub fn register(&self, owner: LibraryId, job: String) -> Arc<AtomicBool> {
-        let cancel = Arc::new(AtomicBool::new(false));
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((owner, job, cancel.clone()));
-        cancel
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        tasks.retain(|(_, _, flag)| flag.strong_count() > 0);
+        tasks.push((owner, job, Arc::downgrade(&flag)));
+        flag
     }
     pub fn stop(&self, target: Option<(LibraryId, &str)>) {
-        let current = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((owner, job, cancel)) = current.as_ref()
-            && target.is_none_or(|(id, name)| id == *owner && name == job)
-        {
-            cancel.store(true, Ordering::Release);
-        }
+        let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        tasks.retain(|(owner, job, flag)| {
+            if let Some(flag) = flag.upgrade() {
+                if target.is_none_or(|(id, name)| id == *owner && name == job) {
+                    flag.store(true, Ordering::Release);
+                }
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 
@@ -24,6 +33,7 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
     // stops scheduling and releases the active library after in-flight work settles.
     let queue = service.queue.downgrade();
     let media_cache = service.media_cache.clone();
+    let inference = service.inference.clone();
     let import_slots = service.import_slots.clone();
     let import_memory = service.import_memory.clone();
     let maintenance_slot = service.maintenance_slot.clone();
@@ -43,6 +53,7 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
                 let service = Service {
                     queue,
                     media_cache: media_cache.clone(),
+                    inference: inference.clone(),
                     import_slots: import_slots.clone(),
                     import_memory: import_memory.clone(),
                     maintenance_slot: maintenance_slot.clone(),
@@ -54,16 +65,22 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
                     let owner = service
                         .call(|active| Ok(active.as_ref().map(Library::id)))
                         .await
-                        .map_err(|e| (None, e))?;
+                        .map_err(|e| (None, TaskError::Storage(e)))?;
                     if let Some(id) = owner {
                         service
                             .drive_job_step(id)
                             .await
                             .map_err(|e| (Some(id), e))?;
                     }
-                    Ok::<_, (Option<LibraryId>, String)>(())
+                    Ok::<_, (Option<LibraryId>, TaskError)>(())
                 });
-                let delay = if let Err((owner, error)) = result {
+                let delay = if matches!(
+                    result,
+                    Err((_, TaskError::Cancelled | TaskError::StaleLibrary))
+                ) {
+                    failures = 0;
+                    250
+                } else if let Err((owner, error)) = result {
                     failures = failures.saturating_add(1);
                     tracing::warn!(%error, "background job scheduling failed");
                     if failures >= 5
@@ -95,6 +112,27 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn cancellation_keeps_multiple_tasks_and_targets_only_the_requested_job() {
+        let cancellation = Cancellation::default();
+        let owner = LibraryId::default();
+        let other = LibraryId::default();
+        let job = cancellation.register(owner, "job".into());
+        let interactive = cancellation.register(owner, "interactive".into());
+        let foreign = cancellation.register(other, "job".into());
+        cancellation.stop(Some((owner, "job")));
+        assert!(job.load(Ordering::Acquire));
+        assert!(!interactive.load(Ordering::Acquire));
+        assert!(!foreign.load(Ordering::Acquire));
+        drop(job);
+        cancellation.stop(None);
+        assert!(interactive.load(Ordering::Acquire));
+        assert!(foreign.load(Ordering::Acquire));
+        drop(interactive);
+        drop(foreign);
+        cancellation.stop(None);
+        assert!(cancellation.0.lock().unwrap().is_empty());
+    }
+    #[test]
     fn switching_library_during_budget_wait_rejects_old_result_and_recovers_checkpoint() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let dir = tempfile::tempdir().unwrap();
@@ -104,7 +142,7 @@ mod tests {
                 .unwrap();
             let mut library = Library::create(dir.path(), "旧库").unwrap();
             library.import(&source, None).unwrap();
-            library.enqueue_media_job("thumbnails", 0).unwrap();
+            library.enqueue_media_job(JobKind::Thumbnails, 0).unwrap();
             let root = library.root().to_path_buf();
             let id = library.id();
             drop(library);
@@ -117,7 +155,7 @@ mod tests {
                 .unwrap();
             service.open(root.clone()).await.unwrap();
             let started = Instant::now();
-            while service.background_jobs(id).await.unwrap()[0].state != "running" {
+            while service.background_jobs(id).await.unwrap()[0].state != JobState::Running {
                 assert!(started.elapsed() < Duration::from_secs(15));
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -138,7 +176,7 @@ mod tests {
             drop(memory);
             loop {
                 let jobs = service.background_jobs(id).await.unwrap();
-                if jobs[0].state == "completed" {
+                if jobs[0].state == JobState::Completed {
                     assert_eq!((jobs[0].completed, jobs[0].failed), (1, 0));
                     break;
                 }
@@ -171,7 +209,7 @@ mod tests {
                     .unwrap();
                 library.import(&source, None).unwrap();
             }
-            let job = library.enqueue_media_job("integrity", 0).unwrap();
+            let job = library.enqueue_media_job(JobKind::Integrity, 0).unwrap();
             let root = library.root().to_path_buf();
             drop(library);
             let db = rusqlite::Connection::open(root.join("catalog.db")).unwrap();
@@ -189,7 +227,7 @@ mod tests {
             let started = Instant::now();
             loop {
                 let jobs = service.background_jobs(id).await.unwrap();
-                if jobs[0].state == "running" {
+                if jobs[0].state == JobState::Running {
                     break;
                 }
                 assert!(started.elapsed() < Duration::from_secs(10));
@@ -214,7 +252,7 @@ mod tests {
                 .unwrap();
             loop {
                 let jobs = service.background_jobs(id).await.unwrap();
-                if jobs[0].state == "completed" {
+                if jobs[0].state == JobState::Completed {
                     assert_eq!((jobs[0].completed, jobs[0].failed), (3, 0));
                     break;
                 }

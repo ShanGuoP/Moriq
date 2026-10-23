@@ -189,7 +189,7 @@ impl App {
             muted(tr!(language, "条件同时满足。经纬度填写常用度数；拍摄日期支持起止范围，结束日期包含当天。" => "All conditions must match. Enter coordinates in degrees. Capture dates support ranges; the end date includes the entire day.")),
             action(
                 tr!(language, "为已有素材建立 / 更新 EXIF 索引" => "Build / update EXIF index for existing assets"),
-                Message::Jobs(tasks::JobMessage::Queue("metadata".into()))
+                Message::Jobs(tasks::JobMessage::Queue(JobKind::Metadata))
             )
         ]
         .spacing(12);

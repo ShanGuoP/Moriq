@@ -71,7 +71,7 @@ self.revision],
 fn vector_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
-fn vector(value: &serde_json::Value) -> Result<Vec<f32>> {
+pub fn query_vector(value: &serde_json::Value) -> Result<Vec<f32>> {
     let raw = value
         .as_array()
         .ok_or_else(|| Error::Invalid("AI 向量缺失".into()))?;
@@ -111,44 +111,48 @@ pub fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>> {
     }
     Ok(values)
 }
-pub fn model_revision(id: &str) -> Result<String> {
-    moriq_ai::registry()
-        .map_err(Error::Invalid)?
-        .into_iter()
-        .find(|m| m.id == id)
-        .map(|m| m.revision)
-        .ok_or_else(|| Error::Invalid("模型未登记".into()))
+pub struct PreparedImage(tempfile::NamedTempFile);
+impl PreparedImage {
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
 }
-pub fn run(source: media::Source, model: &str) -> std::result::Result<serde_json::Value, String> {
-    run_controlled(source, model, &std::sync::atomic::AtomicBool::new(false))
+#[derive(Debug, Clone)]
+pub struct InferenceResult {
+    pub model: ModelId,
+    pub revision: String,
+    pub data: serde_json::Value,
 }
-pub fn run_controlled(
-    source: media::Source,
-    model: &str,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> std::result::Result<serde_json::Value, String> {
-    let preview = source.preview_edge(1024).map_err(|e| e.to_string())?.image;
-    let temp = tempfile::Builder::new()
-        .suffix(".png")
-        .tempfile()
-        .map_err(|e| e.to_string())?;
+impl InferenceResult {
+    pub fn checked(self, expected: ModelId) -> TaskResult<Self> {
+        if self.model != expected || self.revision.trim().is_empty() || self.revision.len() > 256 {
+            return Err(TaskError::InvalidInput("分析回执模型身份或修订无效".into()));
+        }
+        Ok(self)
+    }
+}
+pub fn prepare_image(source: media::Source) -> Result<PreparedImage> {
+    let preview = source.preview_edge(1024)?.image;
+    let temp = tempfile::Builder::new().suffix(".png").tempfile()?;
     image::save_buffer(
         temp.path(),
         &preview.rgba,
         preview.width,
         preview.height,
         image::ColorType::Rgba8,
-    )
-    .map_err(|e| e.to_string())?;
-    moriq_ai::infer_controlled(model, serde_json::json!({"image":temp.path()}), cancel)
+    )?;
+    Ok(PreparedImage(temp))
 }
 pub(crate) fn store(
     tx: &Connection,
     version: &str,
     model: &str,
+    revision: &str,
     result: &serde_json::Value,
 ) -> Result<()> {
-    let revision = model_revision(model)?;
+    if revision.is_empty() || revision.len() > 256 {
+        return Err(Error::Invalid("AI 结果缺少有效模型修订".into()));
+    }
     let data = serde_json::to_string(result).map_err(|e| Error::Invalid(e.to_string()))?;
     if data.len() > 1024 * 1024 {
         return Err(Error::Invalid("AI 分析回执过大".into()));
@@ -172,7 +176,7 @@ data,
 now_ms()?])?;
 
     if model == "chinese-clip" {
-        let embedding = vector(&result["image_vector"])?;
+        let embedding = query_vector(&result["image_vector"])?;
         tx.execute("INSERT INTO ai_embeddings VALUES(?1,?2,?3,?4) ON CONFLICT(version_id,model_id,revision) DO UPDATE \
                 SET vector=excluded.vector",
 params![version,
@@ -185,14 +189,15 @@ vector_bytes(&embedding)])?;
             .and_then(|l| l.first())
             .and_then(|l| l["label"].as_str())
         {
-            tx.execute("INSERT INTO asset_classification(asset_id,category,manual) VALUES(?1,?2,0) ON CONFLICT(asset_id) DO \
+            tx.execute("INSERT INTO asset_classification(asset_id,category,manual) SELECT id,?2,0 FROM assets WHERE id=?1 AND display_version_id=?3 ON CONFLICT(asset_id) DO \
                 UPDATE SET category=excluded.category WHERE manual=0",
 params![asset,
-category])?;
+category,
+version])?;
         }
     }
     if model == "faces" {
-        store_faces(tx, version, &revision, result)?;
+        store_faces(tx, version, revision, result)?;
     }
     Ok(())
 }
@@ -205,6 +210,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 pub(crate) fn suggest_people(
     pool: &std::sync::Arc<read_pool::ReadPool>,
     version: &str,
+    revision: &str,
     result: &mut serde_json::Value,
 ) -> Result<()> {
     let Some(faces) = result["faces"].as_array_mut() else {
@@ -213,7 +219,7 @@ pub(crate) fn suggest_people(
     let vectors = faces
         .iter()
         .take(64)
-        .map(|f| vector(&f["vector"]))
+        .map(|f| query_vector(&f["vector"]))
         .collect::<Result<Vec<_>>>()?;
     let mut best: Vec<Option<(String, f32)>> = vec![None; vectors.len()];
     let lease = pool.checkout()?;
@@ -221,7 +227,7 @@ pub(crate) fn suggest_people(
     let mut stmt = db.prepare("SELECT p.person_id,p.vector FROM person_vectors p WHERE p.revision=?1 AND NOT EXISTS(SELECT 1 FROM \
                 detected_faces f WHERE f.version_id=?2 AND f.person_id=p.person_id)")?;
 
-    let mut rows = stmt.query(params![model_revision("faces")?, version])?;
+    let mut rows = stmt.query(params![revision, version])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let bytes: Vec<u8> = row.get(1)?;
@@ -349,7 +355,7 @@ fn store_faces(
         .filter_map(|f| f.person.clone())
         .collect::<std::collections::HashSet<_>>();
     for face in result["faces"].as_array().into_iter().flatten().take(64) {
-        let embedding = vector(&face["vector"])?;
+        let embedding = query_vector(&face["vector"])?;
         let bounds: [f32; 4] = serde_json::from_value(face["box"].clone())
             .map_err(|e| Error::Invalid(e.to_string()))?;
         if bounds
@@ -423,12 +429,12 @@ person])?;
     Ok(())
 }
 impl Library {
-    pub fn semantic_plan(&self) -> Result<SemanticPlan> {
+    pub fn semantic_plan(&self, revision: String) -> Result<SemanticPlan> {
         let db = self.readers.checkout()?;
         Ok(SemanticPlan {
             db,
             _lease: self._lock.clone(),
-            revision: model_revision("chinese-clip")?,
+            revision,
         })
     }
     pub fn set_category(&mut self, ids: &[AssetId], category: &str) -> Result<()> {
@@ -583,5 +589,64 @@ _>>().map_err(Error::from)
         tx.commit()?;
         self.snapshot = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn late_old_version_analysis_cannot_classify_the_new_display_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("source.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([5, 10, 15]))
+            .save(&input)
+            .unwrap();
+        let mut library = Library::create(dir.path(), "版本边界").unwrap();
+        library.import(&input, None).unwrap();
+        let asset = library
+            .page(&Query::default(), 0, 1)
+            .unwrap()
+            .assets
+            .remove(0);
+        let new_version = AssetVersionId::default();
+        library.db.execute("INSERT INTO asset_versions(id,asset_id,path,sha256,bytes,width,height,format,origin) SELECT ?1,asset_id,'originals/new-version.png',sha256,bytes,width,height,format,origin FROM asset_versions WHERE id=?2",params![new_version.to_string(),asset.version_id.to_string()]).unwrap();
+        library.display_version(asset.id, new_version).unwrap();
+        let result = serde_json::json!({"image_vector":[1.0,0.0],"labels":[{"label":"旧分类"}]});
+        store(
+            &library.db,
+            &asset.version_id.to_string(),
+            "chinese-clip",
+            "injected-revision",
+            &result,
+        )
+        .unwrap();
+        assert!(library.details(asset.id).unwrap().category.is_empty());
+        assert!(
+            library
+                .semantic_plan("injected-revision".into())
+                .unwrap()
+                .search(&[1.0, 0.0], None)
+                .unwrap()
+                .is_empty()
+        );
+        library.display_version(asset.id, asset.version_id).unwrap();
+        assert_eq!(
+            library
+                .semantic_plan("injected-revision".into())
+                .unwrap()
+                .search(&[1.0, 0.0], None)
+                .unwrap(),
+            vec![asset.id]
+        );
+        assert!(
+            library
+                .semantic_plan("different-revision".into())
+                .unwrap()
+                .search(&[1.0, 0.0], None)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

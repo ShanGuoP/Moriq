@@ -111,7 +111,8 @@ impl App {
                 if self.manager.rule_in_filter {
                     self.manager.rule_draft = self
                         .manager
-                        .filter
+                        .filters
+                        .query
                         .rule
                         .clone()
                         .or(Some(Rule::All(vec![Rule::Favorite])));
@@ -126,7 +127,7 @@ impl App {
                     return Task::none();
                 }
                 if self.manager.rule_in_filter {
-                    self.manager.filter.rule = self.manager.rule_draft.clone();
+                    self.manager.filters.query.rule = self.manager.rule_draft.clone();
                     self.manager.panel = Some(Panel::Filters);
                     return Task::none();
                 }
@@ -137,7 +138,7 @@ impl App {
             }
             Clear => {
                 if self.manager.rule_in_filter {
-                    self.manager.filter.rule = None;
+                    self.manager.filters.query.rule = None;
                     self.manager.panel = Some(Panel::Filters);
                     return Task::none();
                 }

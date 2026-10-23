@@ -161,7 +161,7 @@ fn maintenance_and_purge_receipts_cannot_reset_another_library_selection() {
     app.manager.maintenance = Some(control.clone());
     app.manager.busy = true;
     let selected = AssetId::default();
-    app.manager.selection.insert(selected);
+    app.manager.selection.assets.insert(selected);
     let old = LibraryId::default();
     drop(app.update(Message::Manage(ManageMessage::Checked(
         old,
@@ -178,7 +178,7 @@ fn maintenance_and_purge_receipts_cannot_reset_another_library_selection() {
     ))));
     assert!(app.manager.busy);
     assert!(app.manager.maintenance.is_some());
-    assert!(app.manager.selection.contains(&selected));
+    assert!(app.manager.selection.assets.contains(&selected));
     drop(app.update(Message::Manage(ManageMessage::CancelCheck)));
     assert!(control.cancel.load(Ordering::Relaxed));
 }
@@ -250,7 +250,7 @@ fn range_selection_receipts_obey_library_and_query_identity() {
     let mut app = app();
     let library = app.library.as_ref().unwrap().info.id;
     let asset = AssetId::default();
-    app.manager.multiselect = true;
+    app.manager.selection.enabled = true;
     app.generation = 5;
     drop(app.update(Message::Manage(ManageMessage::RangeSelected(
         library,
@@ -262,16 +262,16 @@ fn range_selection_receipts_obey_library_and_query_identity() {
         5,
         Ok(vec![asset]),
     ))));
-    assert!(app.manager.selection.is_empty());
+    assert!(app.manager.selection.assets.is_empty());
     drop(app.update(Message::Manage(ManageMessage::RangeSelected(
         library,
         5,
         Ok(vec![asset]),
     ))));
-    assert!(app.manager.selection.contains(&asset));
-    app.manager.selection_anchor = Some(asset);
+    assert!(app.manager.selection.assets.contains(&asset));
+    app.manager.selection.anchor = Some(asset);
     drop(app.reset_query());
-    assert!(app.manager.selection_anchor.is_none());
+    assert!(app.manager.selection.anchor.is_none());
 }
 #[test]
 fn large_displays_keep_viewport_inside_page_budget() {
@@ -356,25 +356,25 @@ fn image_gestures_target_clicked_card_and_reject_missing_or_modal_targets() {
             handle: None,
         },
     ];
-    app.selected = Some(first.clone());
-    app.manager.multiselect = true;
-    app.manager.selection.insert(first.id);
+    app.viewer.selected = Some(first.clone());
+    app.manager.selection.enabled = true;
+    app.manager.selection.assets.insert(first.id);
     drop(app.update(Message::AssetContext(second.id)));
-    assert_eq!(app.selected.as_ref().unwrap().id, second.id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, second.id);
     assert_eq!(app.manager.panel, Some(manage::Panel::AssetMenu));
-    assert!(!app.manager.multiselect);
-    assert!(!app.preview_expanded);
+    assert!(!app.manager.selection.enabled);
+    assert!(!app.viewer.preview_expanded);
     drop(app.update(Message::OpenImage(first.id)));
-    assert_eq!(app.selected.as_ref().unwrap().id, second.id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, second.id);
     drop(app.update(Message::Manage(ManageMessage::Close)));
     drop(app.update(Message::OpenImage(first.id)));
-    assert_eq!(app.selected.as_ref().unwrap().id, first.id);
-    assert!(app.preview_expanded);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, first.id);
+    assert!(app.viewer.preview_expanded);
     drop(app.update(Message::OpenImage(AssetId::default())));
-    assert_eq!(app.selected.as_ref().unwrap().id, first.id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, first.id);
     app.dialog = Some(Dialog::Settings);
     drop(app.update(Message::AssetContext(second.id)));
-    assert_eq!(app.selected.as_ref().unwrap().id, first.id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, first.id);
     assert!(app.manager.panel.is_none());
 }
 #[test]
@@ -443,12 +443,12 @@ fn project_menu_keeps_gallery_context_and_cancelled_or_stale_delete_preserves_da
     app.screen = Screen::Assets;
     let selected = selected_asset();
     let id = selected.id;
-    app.selected = Some(selected);
+    app.viewer.selected = Some(selected);
     drop(app.update(Message::Manage(ManageMessage::ProjectMenu(project))));
     assert_eq!(app.query.project, Some(current));
     assert_eq!(app.manager.project_target, Some(project));
     assert_eq!(app.manager.label, "空项目");
-    assert_eq!(app.selected.as_ref().unwrap().id, id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, id);
     app.manager.busy = true;
     drop(app.update(Message::Deletion(DeletionMessage::Planned(
         LibraryId::default(),
@@ -466,7 +466,7 @@ fn project_menu_keeps_gallery_context_and_cancelled_or_stale_delete_preserves_da
     app.manager.panel = Some(manage::Panel::Delete);
     drop(app.update(Message::Deletion(DeletionMessage::Cancel)));
     assert!(!app.manager.busy);
-    assert_eq!(app.selected.as_ref().unwrap().id, id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, id);
 }
 fn settle(app: &mut App) {
     if let Some(t) = &app.transition {
@@ -483,10 +483,10 @@ fn history_restores_query_scroll_selection_and_draft_then_truncates_forward() {
     app.scroll_y = 4500.0;
     let asset = selected_asset();
     let id = asset.id;
-    app.selected = Some(asset);
-    app.manager.selection.insert(id);
-    app.manager.selection_anchor = Some(id);
-    app.manager.multiselect = true;
+    app.viewer.selected = Some(asset);
+    app.manager.selection.assets.insert(id);
+    app.manager.selection.anchor = Some(id);
+    app.manager.selection.enabled = true;
     app.manager.notes = "未保存备注".into();
     app.manager.notes_dirty = true;
     drop(app.update(Message::Favorites));
@@ -497,9 +497,9 @@ fn history_restores_query_scroll_selection_and_draft_then_truncates_forward() {
     settle(&mut app);
     assert_eq!(app.query.tag, "人物");
     assert_eq!(app.scroll_y, 4500.0);
-    assert!(app.manager.selection.contains(&id));
-    assert_eq!(app.manager.selection_anchor, Some(id));
-    assert!(app.manager.multiselect);
+    assert!(app.manager.selection.assets.contains(&id));
+    assert_eq!(app.manager.selection.anchor, Some(id));
+    assert!(app.manager.selection.enabled);
     assert_eq!(app.restored_notes, Some((id, "未保存备注".into())));
     assert!(app.history.can_forward());
     drop(app.update(Message::Forward));
@@ -556,14 +556,14 @@ fn neighborhood_receipts_reject_old_requests_queries_and_libraries() {
             request,
             Ok(Some(result.clone())),
         )));
-        assert!(app.selected.is_none());
+        assert!(app.viewer.selected.is_none());
     }
     drop(app.update(Message::NeighborhoodLoaded(
         library,
         5,
         Ok(Some(result.clone())),
     )));
-    assert_eq!(app.selected.as_ref().unwrap().id, id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, id);
     assert_eq!(app.neighbor_position, Some((128, 300)));
     drop(app.update(Message::ClosePreview));
     drop(app.update(Message::NeighborhoodLoaded(
@@ -571,10 +571,10 @@ fn neighborhood_receipts_reject_old_requests_queries_and_libraries() {
         5,
         Ok(Some(result.clone())),
     )));
-    assert!(app.selected.is_none());
+    assert!(app.viewer.selected.is_none());
     drop(app.update(Message::Search("新的查询".into())));
     drop(app.update(Message::NeighborhoodLoaded(library, 5, Ok(Some(result)))));
-    assert!(app.selected.is_none());
+    assert!(app.viewer.selected.is_none());
     assert!(app.neighbors.is_empty());
 }
 #[test]
@@ -582,7 +582,7 @@ fn changing_query_invalidates_pending_layout_and_version_receipt_does_not_resele
     let mut app = app();
     let asset = selected_asset();
     let id = asset.id;
-    app.selected = Some(asset);
+    app.viewer.selected = Some(asset);
     let library = app.library.as_ref().unwrap().info.id;
     drop(app.update(Message::Manage(ManageMessage::VersionSelected(
         library,
@@ -590,7 +590,7 @@ fn changing_query_invalidates_pending_layout_and_version_receipt_does_not_resele
         AssetVersionId::default(),
         Ok(()),
     ))));
-    assert_eq!(app.selected.as_ref().unwrap().id, id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, id);
     let generation = app.layout_generation;
     drop(app.update(Message::Search("新查询".into())));
     assert!(app.layout_generation > generation);
@@ -611,7 +611,7 @@ fn old_version_preview_cannot_replace_the_new_version() {
     let id = app.library.as_ref().unwrap().info.id;
     let asset = selected_asset();
     let old = AssetVersionId::default();
-    app.selected = Some(asset.clone());
+    app.viewer.selected = Some(asset.clone());
     drop(app.update(Message::FullPreviewLoaded(
         id,
         asset.id,
@@ -621,14 +621,14 @@ fn old_version_preview_cannot_replace_the_new_version() {
             image::Handle::from_rgba(1, 1, vec![0; 4]),
         )),
     )));
-    assert!(app.preview.is_none());
+    assert!(app.viewer.preview.is_none());
 }
 #[test]
 fn background_details_and_save_receipts_preserve_newer_unsaved_notes() {
     let mut app = app();
     let id = app.library.as_ref().unwrap().info.id;
     let asset = selected_asset();
-    app.selected = Some(asset.clone());
+    app.viewer.selected = Some(asset.clone());
     drop(app.update(Message::Manage(ManageMessage::Notes(
         "用户刚输入的新内容".into(),
     ))));

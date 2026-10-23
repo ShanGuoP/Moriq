@@ -137,7 +137,7 @@ mod tests {
         lib.import(&source, None).unwrap();
         let asset = lib.page(&Query::default(), 0, 1).unwrap().assets[0].id;
         lib.set_tags(asset, &["keep".into()]).unwrap();
-        lib.enqueue_media_job("integrity", 0).unwrap();
+        lib.enqueue_media_job(JobKind::Integrity, 0).unwrap();
         lib.db
             .execute_batch(
                 "ALTER TABLE virtual_folders RENAME TO unavailable_folders; INSERT INTO \
@@ -165,7 +165,7 @@ mod tests {
         let work = lib.claim_job_step().unwrap().unwrap();
         lib.finish_job_step(work.run()).unwrap();
         assert!(lib.claim_job_step().unwrap().is_none());
-        assert_eq!(lib.background_jobs().unwrap()[0].state, "completed");
+        assert_eq!(lib.background_jobs().unwrap()[0].state, JobState::Completed);
         lib.db.execute_batch("ALTER TABLE unavailable_folders RENAME TO virtual_folders; DELETE FROM smart_collections WHERE id='broken';").unwrap();
         assert!(lib.organizer().unwrap().errors.is_empty());
     }

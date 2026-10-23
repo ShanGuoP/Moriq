@@ -16,7 +16,7 @@ mod tests {
         let pair = [AssetVersionId::default(), AssetVersionId::default()];
         let library = app.library.as_ref().map(|l| l.info.id).unwrap_or_default();
         let asset = AssetId::default();
-        app.selected = Some(Asset {
+        app.viewer.selected = Some(Asset {
             id: asset,
             version_id: pair[0],
             name: "sample".into(),
@@ -91,7 +91,7 @@ impl App {
         match event {
             CompareMessage::Open => {
                 self.compare.clear();
-                let Some(asset) = &self.selected else {
+                let Some(asset) = &self.viewer.selected else {
                     return Task::none();
                 };
                 self.compare.choices = self
@@ -133,7 +133,7 @@ impl App {
             }
             CompareMessage::Loaded(library, asset, pair, request, result) => {
                 if self.library.as_ref().is_some_and(|l| l.info.id == library)
-                    && self.selected.as_ref().is_some_and(|a| a.id == asset)
+                    && self.viewer.selected.as_ref().is_some_and(|a| a.id == asset)
                     && self.manager.panel == Some(Panel::Compare)
                     && self.compare.request == request
                     && self.compare.pair == Some(pair)
@@ -149,7 +149,7 @@ impl App {
             }
         }
         let (Some(lib), Some(asset), Some(pair)) =
-            (&self.library, &self.selected, self.compare.pair)
+            (&self.library, &self.viewer.selected, self.compare.pair)
         else {
             return Task::none();
         };

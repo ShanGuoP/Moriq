@@ -59,17 +59,17 @@ fn leaving_assets_stops_viewer_and_rejects_late_worker_receipts() {
     for destination in [Message::Navigate(2), Message::ShowLibraries] {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
-        app.selected = Some(crate::tests::selected_asset());
+        app.viewer.selected = Some(crate::tests::selected_asset());
         app.scroll_y = 320.;
         drop(app.set_viewer(true));
         drop(app.region_message(RegionMessage::Actual));
-        let selected = app.selected.clone().unwrap();
+        let selected = app.viewer.selected.clone().unwrap();
         let owner = app.library.as_ref().unwrap().info.id;
-        let request = app.original_request;
+        let request = app.viewer.original_request;
         drop(app.commit_navigation(destination));
-        assert!(!app.preview_expanded);
-        assert!(app.regions.session.is_none());
-        assert!(app.original_request > request);
+        assert!(!app.viewer.preview_expanded);
+        assert!(app.viewer.regions.session.is_none());
+        assert!(app.viewer.original_request > request);
         drop(app.update(Message::PlaybackStarted(
             owner,
             selected.id,
@@ -77,7 +77,7 @@ fn leaving_assets_stops_viewer_and_rejects_late_worker_receipts() {
             request,
             Err("late".into()),
         )));
-        assert!(app.playback.is_none());
+        assert!(app.viewer.playback.is_none());
         assert!(app.error.is_none());
     }
 }
@@ -87,6 +87,7 @@ fn stale_organizer_and_cover_projections_cannot_overwrite_newer_counts() {
     let mut app = crate::tests::app();
     let id = app.library.as_ref().unwrap().info.id;
     app.projection_request = 8;
+    app.overview_request = 8;
     app.manager.organizer.trash_count = 3;
     drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
         id,
@@ -103,6 +104,73 @@ fn stale_organizer_and_cover_projections_cannot_overwrite_newer_counts() {
         Err("old error".into()),
     ))));
     assert!(app.error.is_none());
+}
+
+#[test]
+fn metadata_saves_preserve_inflight_images_and_visual_changes_only_reload_images() {
+    let mut app = crate::tests::app();
+    let owner = app.library.as_ref().unwrap().info.id;
+    drop(app.refresh_library());
+    let images = app.overview_request;
+    let cover = app.cover_request;
+    let metadata = app.projection_request;
+    // A rating/tag/notes receipt must not reload unchanged category photos,
+    // or discard an image projection which started before the metadata save.
+    drop(app.update(Message::Saved(owner, Ok(()))));
+    assert!(app.projection_request > metadata);
+    assert_eq!(app.overview_request, images);
+    assert_eq!(app.cover_request, cover);
+    drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
+        owner,
+        images,
+        Ok(moriq_app::LoadedOverview {
+            favorites: Vec::new(),
+            projects: Vec::new(),
+            categories: vec![(
+                "风景".into(),
+                Some(moriq_app::Pixels {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![10, 20, 30, 255].into(),
+                }),
+            )],
+        }),
+    ))));
+    assert!(app.manager.category_covers.contains_key("风景"));
+    drop(app.update(Message::VisualsSaved(owner, Ok(()))));
+    assert!(app.overview_request > images);
+    assert_eq!(app.cover_request, cover);
+    drop(app.update(Message::Manage(ManageMessage::OverviewLoaded(
+        owner,
+        images,
+        Err("old image receipt".into()),
+    ))));
+    assert!(app.error.is_none());
+    let latest = app.overview_request;
+    drop(app.update(Message::VisualsSaved(owner, Err("save failed".into()))));
+    assert_eq!(app.overview_request, latest);
+    assert!(app.manager.category_covers.contains_key("风景"));
+}
+
+#[test]
+fn backup_cancel_and_library_switch_stop_copy_without_releasing_busy_before_completion() {
+    let mut app = crate::tests::app();
+    let owner = app.library.as_ref().unwrap().info.id;
+    let control = moriq_app::BackupControl::default();
+    app.lifecycle.copy = Some(control.clone());
+    app.manager.busy = true;
+    drop(app.lifecycle_message(LifecycleMessage::CancelCopy));
+    assert!(control.cancel.load(Ordering::Acquire));
+    assert!(app.manager.busy);
+    drop(app.lifecycle_message(LifecycleMessage::Copied(owner, Err("cancelled".into()))));
+    assert!(!app.manager.busy);
+    assert!(app.lifecycle.copy.is_none());
+    assert!(app.error.is_none());
+    let other = moriq_app::BackupControl::default();
+    app.lifecycle.copy = Some(other.clone());
+    app.lifecycle.cancel_copy();
+    assert!(other.cancel.load(Ordering::Acquire));
+    assert!(app.lifecycle.copy.is_none());
 }
 
 #[test]

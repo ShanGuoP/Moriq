@@ -26,7 +26,7 @@ impl std::fmt::Display for TagChoice {
 impl App {
     pub(super) fn assets(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
-        if self.preview_expanded && self.selected.is_some() {
+        if self.viewer.preview_expanded && self.viewer.selected.is_some() {
             return self.large_preview();
         }
         let title = if self.query.media_kind == MediaKind::Raw {
@@ -181,7 +181,7 @@ impl App {
         center = center.push(
             row![
                 action(
-                    if self.manager.multiselect {
+                    if self.manager.selection.enabled {
                         tr!(language, "退出多选" => "Exit selection")
                     } else {
                         tr!(language, "多选" => "Select")
@@ -190,10 +190,10 @@ impl App {
                 ),
                 action(
                     &trf!(language, "整理 {} 张" => "Organize {}",
-                        if self.manager.multiselect {
-                            self.manager.selection.len()
+                        if self.manager.selection.enabled {
+                            self.manager.selection.assets.len()
                         } else {
-                            usize::from(self.selected.is_some())
+                            usize::from(self.viewer.selected.is_some())
                         }
                     ),
                     Message::Manage(ManageMessage::Organize)
@@ -326,10 +326,11 @@ impl App {
         let Some(tile) = tile else {
             return photo(None, Length::Fill, height);
         };
-        let selected = if self.manager.multiselect {
-            self.manager.selection.contains(&tile.asset.id)
+        let selected = if self.manager.selection.enabled {
+            self.manager.selection.assets.contains(&tile.asset.id)
         } else {
-            self.selected
+            self.viewer
+                .selected
                 .as_ref()
                 .is_some_and(|asset| asset.id == tile.asset.id)
         };
@@ -424,7 +425,7 @@ impl App {
                     ..Default::default()
                 }),
         )
-        .on_press(if self.manager.multiselect {
+        .on_press(if self.manager.selection.enabled {
             Message::Manage(ManageMessage::Toggle(tile.asset.id))
         } else {
             Message::Select(tile.asset.id)
@@ -440,10 +441,11 @@ impl App {
             return photo(None, Length::Fill, 72.0);
         };
         let hover = self.gallery_feedback.amount(tile.asset.id);
-        let selected = if self.manager.multiselect {
-            self.manager.selection.contains(&tile.asset.id)
+        let selected = if self.manager.selection.enabled {
+            self.manager.selection.assets.contains(&tile.asset.id)
         } else {
-            self.selected
+            self.viewer
+                .selected
                 .as_ref()
                 .is_some_and(|asset| asset.id == tile.asset.id)
         };
@@ -498,7 +500,7 @@ impl App {
                 ..Default::default()
             }),
         )
-        .on_press(if self.manager.multiselect {
+        .on_press(if self.manager.selection.enabled {
             Message::Manage(ManageMessage::Toggle(tile.asset.id))
         } else {
             Message::Select(tile.asset.id)
@@ -511,7 +513,7 @@ impl App {
     }
     pub(super) fn details(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
-        let Some(asset) = &self.selected else {
+        let Some(asset) = &self.viewer.selected else {
             return column![
                 heading(tr!(language, "素材详情" => "Asset details"), 16),
                 container(
@@ -531,7 +533,7 @@ impl App {
         };
         let video = moriq_app::is_video_format(&asset.format);
         let cover = stack![
-            button(photo(self.preview.as_ref(), Length::Fill, 188.0))
+            button(photo(self.viewer.preview.as_ref(), Length::Fill, 188.0))
                 .padding(0)
                 .style(flat)
                 .on_press(Message::ExpandPreview),
@@ -1033,30 +1035,35 @@ impl App {
     fn large_preview(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let video = self
+            .viewer
             .selected
             .as_ref()
             .is_some_and(|a| moriq_app::is_video_format(&a.format));
         let handle = if video {
-            self.video_frame
+            self.viewer
+                .video_frame
                 .as_ref()
                 .map(|a| a.handle())
-                .or(self.preview.as_ref())
+                .or(self.viewer.preview.as_ref())
         } else {
-            self.preview.as_ref()
+            self.viewer.preview.as_ref()
         };
         let art: Element<'_, Message> = if let Some(handle) = handle {
-            if let Some(asset) = &self.selected
+            if let Some(asset) = &self.viewer.selected
                 && !moriq_app::is_video_format(&asset.format)
             {
-                let (width, height) = self.original_size.unwrap_or((asset.width, asset.height));
+                let (width, height) = self
+                    .viewer
+                    .original_size
+                    .unwrap_or((asset.width, asset.height));
                 crate::region_viewer::Viewer {
-                    zoom_request: self.regions.zoom_request,
-                    target_scale: self.regions.target_scale,
+                    zoom_request: self.viewer.regions.zoom_request,
+                    target_scale: self.viewer.regions.target_scale,
                     key: asset.version_id,
                     handle: handle.clone(),
                     width,
                     height,
-                    tiles: self.regions.images(),
+                    tiles: self.viewer.regions.images(),
                 }
                 .into()
             } else {
@@ -1069,7 +1076,8 @@ impl App {
         } else {
             Space::new().into()
         };
-        let background: Element<'_, Message> = if let Some(handle) = &self.preview_background {
+        let background: Element<'_, Message> = if let Some(handle) = &self.viewer.preview_background
+        {
             image(handle.clone())
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -1110,7 +1118,7 @@ impl App {
         let content = column![
             row![
                 container(heading(
-                    self.selected
+                    self.viewer.selected
                         .as_ref()
                         .map(|a| a.name.as_str())
                         .unwrap_or_default(),
@@ -1139,17 +1147,17 @@ impl App {
             row![
                 muted(
                     match self
-                        .original_size
-                        .or_else(|| self.selected.as_ref().map(|a| (a.width, a.height)))
+                        .viewer.original_size
+                        .or_else(|| self.viewer.selected.as_ref().map(|a| (a.width, a.height)))
                     {
                         Some((w, h)) if video => trf!(language, "视频 {w} × {h}" => "Video {w} × {h}"),
                         Some((w, h)) => trf!(language, "原尺寸 {w} × {h} · 滚轮缩放 · 拖动平移" => "Original {w} × {h} · Scroll to zoom · Drag to pan"),
                         None => tr!(language, "预览" => "Preview").into(),
                     }
                 ),
-                muted(if self.regions.is_loading() {
+                muted(if self.viewer.regions.is_loading() {
                     tr!(language, "正在读取原尺寸区域…" => "Loading full resolution region…")
-                } else if self.preview_task.is_some() {
+                } else if self.viewer.preview_task.is_some() {
                     tr!(language, "正在读取清晰预览…" => "Loading clear preview…")
                 } else {
                     ""
@@ -1170,6 +1178,7 @@ impl App {
         ];
         let content = if video {
             let (position, duration) = self
+                .viewer
                 .playback
                 .as_ref()
                 .map(|p| p.progress())
@@ -1182,23 +1191,23 @@ impl App {
             content.push(
                 row![
                     action(
-                        if self.video_paused {
+                        if self.viewer.video_paused {
                             tr!(language, "播放" => "Play")
                         } else {
                             tr!(language, "暂停" => "Pause")
                         },
                         Message::VideoPause
                     )
-                    .on_press_maybe(self.playback.as_ref().map(|_| Message::VideoPause)),
+                    .on_press_maybe(self.viewer.playback.as_ref().map(|_| Message::VideoPause)),
                     action(
-                        if self.video_muted {
+                        if self.viewer.video_muted {
                             tr!(language, "取消静音" => "Unmute")
                         } else {
                             tr!(language, "静音" => "Mute")
                         },
                         Message::VideoMute
                     )
-                    .on_press_maybe(self.playback.as_ref().map(|_| Message::VideoMute)),
+                    .on_press_maybe(self.viewer.playback.as_ref().map(|_| Message::VideoMute)),
                     muted(format!(
                         "{}:{:02} / {}:{:02}",
                         position / 60000,

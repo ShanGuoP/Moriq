@@ -3,12 +3,18 @@
 mod i18n;
 mod ai;
 mod batch;
+mod export;
+mod filters;
 mod folders;
+use export::ExportChange;
+use filters::{Builtin, FilterChange};
 mod lifecycle;
 mod metadata;
 mod region_viewer;
 mod regions;
+mod selection;
 mod uploads;
+mod viewer;
 pub(crate) use ai::AiMessage;
 pub(crate) use batch::BatchMessage;
 pub(crate) use folders::FolderMessage;
@@ -81,6 +87,18 @@ enum Dialog {
 #[allow(clippy::unwrap_used)]
 mod tests;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shortcut {
+    SelectVisible,
+    Trash,
+    Viewer,
+    Help,
+    BatchAll,
+    Export,
+    Favorite,
+    Batch,
+    Rating(u8),
+}
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     DpiChanged(f32),
@@ -104,7 +122,7 @@ pub(crate) enum Message {
     OpenImage(AssetId),
     AssetContext(AssetId),
     Compare(CompareMessage),
-    Shortcut(u8),
+    Shortcut(Shortcut),
     Rules(RuleMessage),
     Storage(StorageMessage),
     Journal(JournalMessage),
@@ -175,6 +193,7 @@ pub(crate) enum Message {
     Tags(String),
     SaveTags,
     Saved(LibraryId, Result<(), String>),
+    VisualsSaved(LibraryId, Result<(), String>),
     InfoLoaded(u64, Result<LibraryInfo, String>),
     ProjectName(String),
     CreateProject,
@@ -250,9 +269,9 @@ struct Tile {
     handle: Option<image::Handle>,
 }
 pub(crate) struct App {
+    viewer: viewer::ViewerState,
     dpi_scale: f32,
     gallery_feedback: motion::HoverFeedback,
-    regions: regions::Regions,
     uploads: std::collections::VecDeque<(AssetVersionId, moriq_app::Pixels)>,
     upload_generation: u64,
     upload_owner: Option<LibraryId>,
@@ -291,20 +310,6 @@ pub(crate) struct App {
     generation: u64,
     loading: bool,
     switching: bool,
-    selected: Option<Asset>,
-    preview: Option<image::Handle>,
-    preview_background: Option<image::Handle>,
-    preview_expanded: bool,
-    original_request: u64,
-    original_size: Option<(u32, u32)>,
-    playback: Option<std::sync::Arc<moriq_app::Playback>>,
-    video_paused: bool,
-    video_muted: bool,
-    video_presented: u64,
-    video_first_ready_ms: Option<u128>,
-    video_frame: Option<iced_runtime::image::Allocation>,
-    video_upload: bool,
-    video_control: u64,
     jobs: tasks::TaskState,
     compare: compare::Compare,
     tag_input: String,
@@ -322,9 +327,10 @@ pub(crate) struct App {
     #[cfg(feature = "capture")]
     capture_stress_steps: u16,
     projection_request: u64,
+    overview_request: u64,
+    cover_request: u64,
     navigation_request: u64,
     page_task: Option<iced::task::Handle>,
-    preview_task: Option<iced::task::Handle>,
     masonry: Option<std::sync::Arc<moriq_render::MasonryIndex>>,
     masonry_task: Option<iced::task::Handle>,
     masonry_mode: bool,
@@ -406,6 +412,7 @@ impl App {
             .unwrap_or_else(Task::none);
         (
             Self {
+                viewer: Default::default(),
                 storage: Default::default(),
                 journal: Default::default(),
                 history: Default::default(),
@@ -437,24 +444,9 @@ impl App {
                 generation: 0,
                 loading: false,
                 switching: launch.library.is_some(),
-                selected: None,
                 modifiers: iced::keyboard::Modifiers::empty(),
-                preview: None,
-                preview_background: None,
-                preview_expanded: false,
-                original_request: 0,
-                original_size: None,
-                playback: None,
-                video_paused: false,
-                video_muted: false,
-                video_presented: 0,
-                video_first_ready_ms: None,
-                video_frame: None,
-                video_upload: false,
-                video_control: 0,
                 dpi_scale: 1.0,
                 gallery_feedback: Default::default(),
-                regions: Default::default(),
                 uploads: Default::default(),
                 upload_generation: 0,
                 upload_owner: None,
@@ -482,9 +474,10 @@ impl App {
                 #[cfg(feature = "capture")]
                 capture_stress_steps: 0,
                 projection_request: 0,
+                overview_request: 0,
+                cover_request: 0,
                 navigation_request: 0,
                 page_task: None,
-                preview_task: None,
                 masonry: None,
                 masonry_task: None,
                 masonry_mode: true,
@@ -581,10 +574,7 @@ impl App {
         self.scroll_y = 0.0;
         self.offset = 0;
         self.tiles.clear();
-        self.selected = None;
         self.manager.selection.clear();
-        self.manager.selection_anchor = None;
-        self.preview = None;
         self.masonry = None;
         let page = self.refresh();
         let layout = if self.screen == Screen::Assets {
@@ -621,7 +611,7 @@ impl App {
             } else {
                 Subscription::none()
             },
-            if self.playback.is_some() {
+            if self.viewer.playback.is_some() {
                 iced::time::every(Duration::from_millis(16)).map(|_| Message::VideoFrame)
             } else {
                 Subscription::none()
@@ -663,7 +653,7 @@ impl App {
                     && modifiers.shift()
                     && value.eq_ignore_ascii_case("a") =>
                 {
-                    Some(Message::Shortcut(4))
+                    Some(Message::Shortcut(Shortcut::BatchAll))
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),
@@ -673,7 +663,7 @@ impl App {
                     && modifiers.command()
                     && value.eq_ignore_ascii_case("e") =>
                 {
-                    Some(Message::Shortcut(5))
+                    Some(Message::Shortcut(Shortcut::Export))
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),
@@ -681,11 +671,11 @@ impl App {
                     ..
                 }) if matches!(status, iced::event::Status::Ignored) && modifiers.is_empty() => {
                     match value.as_str() {
-                        "0" | "1" | "2" | "3" | "4" | "5" => {
-                            Some(Message::Shortcut(10 + value.as_bytes()[0] - b'0'))
-                        }
-                        "f" | "F" => Some(Message::Shortcut(6)),
-                        "b" | "B" => Some(Message::Shortcut(7)),
+                        "0" | "1" | "2" | "3" | "4" | "5" => Some(Message::Shortcut(
+                            Shortcut::Rating(value.as_bytes()[0] - b'0'),
+                        )),
+                        "f" | "F" => Some(Message::Shortcut(Shortcut::Favorite)),
+                        "b" | "B" => Some(Message::Shortcut(Shortcut::Batch)),
                         _ => None,
                     }
                 }
@@ -697,7 +687,7 @@ impl App {
                     && modifiers.command()
                     && value.eq_ignore_ascii_case("a") =>
                 {
-                    Some(Message::Shortcut(0))
+                    Some(Message::Shortcut(Shortcut::SelectVisible))
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(key),
@@ -714,9 +704,11 @@ impl App {
                     ) =>
                 {
                     Some(Message::Shortcut(match key {
-                        iced::keyboard::key::Named::Delete => 1,
-                        iced::keyboard::key::Named::Enter | iced::keyboard::key::Named::Space => 2,
-                        _ => 3,
+                        iced::keyboard::key::Named::Delete => Shortcut::Trash,
+                        iced::keyboard::key::Named::Enter | iced::keyboard::key::Named::Space => {
+                            Shortcut::Viewer
+                        }
+                        _ => Shortcut::Help,
                     }))
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -837,11 +829,11 @@ impl App {
                 {
                     return Task::none();
                 }
-                self.manager.multiselect = false;
+                self.manager.selection.enabled = false;
                 let task = self.update(Message::Select(id));
-                if self.selected.as_ref().is_some_and(|a| a.id == id) {
+                if self.viewer.selected.as_ref().is_some_and(|a| a.id == id) {
                     if menu {
-                        self.preview_expanded = false;
+                        self.viewer.preview_expanded = false;
                         self.manager.panel = Some(manage::Panel::AssetMenu);
                     } else {
                         return Task::batch([task, self.set_viewer(true)]);
@@ -858,37 +850,44 @@ impl App {
                 {
                     return Task::none();
                 }
-                if which == 3 {
+                if which == Shortcut::Help {
                     return self.manage_message(ManageMessage::Help);
                 }
                 if self.screen != Screen::Assets || self.library.is_none() {
                     return Task::none();
                 }
                 match which {
-                    0 if !self.preview_expanded => {
-                        self.manager.multiselect = true;
-                        self.manager.selection = self.tiles.iter().map(|t| t.asset.id).collect();
+                    Shortcut::SelectVisible if !self.viewer.preview_expanded => {
+                        self.manager.selection.enabled = true;
+                        self.manager.selection.assets =
+                            self.tiles.iter().map(|t| t.asset.id).collect();
                     }
-                    1 if !self.query.trash && !self.manager.busy && !self.preview_expanded => {
+                    Shortcut::Trash
+                        if !self.query.trash
+                            && !self.manager.busy
+                            && !self.viewer.preview_expanded =>
+                    {
                         return self.manage_message(ManageMessage::Edit(Edit::Trash(true)));
                     }
-                    2 if self.selected.is_some() => return self.set_viewer(!self.preview_expanded),
-                    4 => {
+                    Shortcut::Viewer if self.viewer.selected.is_some() => {
+                        return self.set_viewer(!self.viewer.preview_expanded);
+                    }
+                    Shortcut::BatchAll => {
                         let task = self.batch_message(batch::BatchMessage::Open);
                         let all = self.batch_message(batch::BatchMessage::All(true));
                         return Task::batch([task, all]);
                     }
-                    5 => return self.manage_message(ManageMessage::ExportMenu),
-                    6 if !self.query.trash => {
-                        if let Some(asset) = &self.selected {
+                    Shortcut::Export => return self.manage_message(ManageMessage::ExportMenu),
+                    Shortcut::Favorite if !self.query.trash => {
+                        if let Some(asset) = &self.viewer.selected {
                             return self.manage_message(ManageMessage::Edit(Edit::Favorite(
                                 !asset.favorite,
                             )));
                         }
                     }
-                    7 => return self.batch_message(batch::BatchMessage::Open),
-                    10..=15 if !self.query.trash => {
-                        return self.manage_message(ManageMessage::Edit(Edit::Rating(which - 10)));
+                    Shortcut::Batch => return self.batch_message(batch::BatchMessage::Open),
+                    Shortcut::Rating(rating) if !self.query.trash => {
+                        return self.manage_message(ManageMessage::Edit(Edit::Rating(rating)));
                     }
 
                     _ => {}
@@ -901,13 +900,13 @@ impl App {
                 if self.surface_open() {
                     return self.close_surface();
                 }
-                if self.preview_expanded {
+                if self.viewer.preview_expanded {
                     return self.set_viewer(false);
                 }
                 return self.travel(false);
             }
             Message::Forward => {
-                if self.surface_open() || self.preview_expanded {
+                if self.surface_open() || self.viewer.preview_expanded {
                     return Task::none();
                 }
                 return self.travel(true);
@@ -915,7 +914,7 @@ impl App {
             Message::Browse(direction) => {
                 if self.dialog.is_none()
                     && self.manager.panel.is_none()
-                    && let Some(asset) = &self.selected
+                    && let Some(asset) = &self.viewer.selected
                 {
                     return self.load_neighborhood(asset.id, direction);
                 }
@@ -973,7 +972,7 @@ impl App {
                 self.stop_viewer();
                 self.library_picker = true;
                 self.screen = Screen::Overview;
-                self.preview_expanded = false;
+                self.viewer.preview_expanded = false;
                 self.dialog = None;
                 self.manager.panel = None;
                 let service = self.service.clone();
@@ -1015,7 +1014,8 @@ impl App {
                     self.interface.close_after_save = true;
                     return self.save_interface();
                 }
-                let playback = self.playback.take();
+                let playback = self.viewer.playback.take();
+                self.lifecycle.cancel_copy();
                 self.stop_viewer();
                 for control in self.ai.downloads.values() {
                     control.stop.store(true, Ordering::Relaxed);
@@ -1033,7 +1033,7 @@ impl App {
                 if let Some(handle) = self.page_task.take() {
                     handle.abort();
                 }
-                if let Some(handle) = self.preview_task.take() {
+                if let Some(handle) = self.viewer.preview_task.take() {
                     handle.abort();
                 }
                 if let Some(handle) = self.masonry_task.take() {
@@ -1157,7 +1157,7 @@ impl App {
                 }
             }
             Message::ShowRenameAsset => {
-                if let Some(asset) = &self.selected {
+                if let Some(asset) = &self.viewer.selected {
                     self.name = asset.name.clone();
                     self.dialog = Some(Dialog::RenameAsset);
                 }
@@ -1198,7 +1198,7 @@ impl App {
                 }
             }
             Message::SaveRenameAsset => {
-                if let (Some(library), Some(asset)) = (&self.library, &mut self.selected) {
+                if let (Some(library), Some(asset)) = (&self.library, &mut self.viewer.selected) {
                     let id = library.info.id;
                     let asset = asset.id;
                     let name = self.name.clone();
@@ -1222,13 +1222,14 @@ impl App {
                 if result.is_ok()
                     && self.dialog == Some(Dialog::RenameAsset)
                     && self
+                        .viewer
                         .selected
                         .as_ref()
                         .is_some_and(|selected| selected.id == asset)
                 {
                     self.dialog = None;
                 }
-                return self.update(Message::Saved(id, result));
+                return self.update(Message::VisualsSaved(id, result));
             }
             Message::DetailTab(tab) => self.detail_tab = tab,
             Message::ModelSearch(query) => self.model_search = query,
@@ -1329,6 +1330,7 @@ impl App {
                             _ => Screen::Overview,
                         };
                         self.manager = Default::default();
+                        self.lifecycle.cancel_copy();
                         self.stop_people_portraits();
                         self.ai.portraits.clear();
                         self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
@@ -1338,7 +1340,7 @@ impl App {
                         let imports = std::mem::take(&mut self.launch.import_paths);
                         return Task::batch([
                             self.reset_query(),
-                            self.refresh_organizer(),
+                            self.refresh_library(),
                             self.load_volume(),
                             remember,
                             if imports.is_empty() {
@@ -1372,10 +1374,10 @@ impl App {
                     };
                 }
                 if self.screen == Screen::Models {
-                    self.preview_expanded = false;
+                    self.viewer.preview_expanded = false;
                     return Task::batch([self.load_volume(), self.restore_page()]);
                 }
-                self.preview_expanded = false;
+                self.viewer.preview_expanded = false;
                 return self.restore_page();
             }
             Message::Search(value) => {
@@ -1541,7 +1543,7 @@ impl App {
                     ),
                     self.reset_query(),
                     self.refresh_info(),
-                    self.refresh_organizer(),
+                    self.refresh_catalog(),
                 ]);
             }
             Message::Jobs(event) => return self.job_message(event),
@@ -1549,9 +1551,9 @@ impl App {
             Message::Regions(event) => return self.region_message(event),
             Message::DpiChanged(scale) if scale.is_finite() && (0.5..=8.0).contains(&scale) => {
                 self.dpi_scale = scale;
-                if self.regions.target_scale.is_some() {
-                    self.regions.target_scale = Some(1.0 / scale);
-                    self.regions.zoom_request += 1;
+                if self.viewer.regions.target_scale.is_some() {
+                    self.viewer.regions.target_scale = Some(1.0 / scale);
+                    self.viewer.regions.zoom_request += 1;
                 }
             }
             Message::UploadTick => self.drain_uploads(),
@@ -1577,20 +1579,21 @@ impl App {
                     return self.refresh_people_portraits();
                 }
                 if (self.screen != Screen::Assets || self.library_picker)
-                    && (self.preview_expanded
-                        || self.playback.is_some()
-                        || self.regions.session.is_some())
+                    && (self.viewer.preview_expanded
+                        || self.viewer.playback.is_some()
+                        || self.viewer.regions.session.is_some())
                 {
                     self.stop_viewer();
                 }
                 if self
+                    .viewer
                     .playback
                     .as_ref()
                     .is_some_and(|p| !p.running().unwrap_or(false))
                 {
-                    self.playback = None;
-                    self.video_frame = None;
-                    self.video_upload = false;
+                    self.viewer.playback = None;
+                    self.viewer.video_frame = None;
+                    self.viewer.video_upload = false;
                     self.error = Some(tr!(language, "内置播放器已停止。请重新打开视频；原文件保留。" => "The built-in player stopped. Reopen the video to retry. The original file is preserved.").into());
                 }
                 if !self.ai.loaded && !self.ai.loading {
@@ -1610,9 +1613,7 @@ impl App {
                         return Task::batch([self.refresh(), self.refresh_info()]);
                     }
                 }
-                self.manager.synco_ticks = self.manager.synco_ticks.saturating_add(1);
-                if self.manager.synco_ticks >= self.manager.synco_backoff.max(8)
-                    && !self.manager.synco_running
+                if self.manager.synco.poll_due()
                     && self.manager.organizer.synco.iter().any(|t| {
                         t.ack.is_some()
                             || ["queued", "importing", "editing", "rendering", "ready"]
@@ -1748,7 +1749,7 @@ impl App {
                         match self.launch.panel.as_deref() {
                             Some("ai-refresh") => {
                                 return self.job_message(tasks::JobMessage::Queue(
-                                    "analysis:chinese-clip".into(),
+                                    JobKind::Analysis(ModelId::ChineseClip),
                                 ));
                             }
                             Some("people") => {
@@ -1880,7 +1881,8 @@ impl App {
                         }
                         if self.launch.panel.as_deref() == Some("ai-refresh")
                             && (!self.manager.organizer.jobs.iter().any(|job| {
-                                job.kind == "analysis:chinese-clip" && job.state == "completed"
+                                job.kind == JobKind::Analysis(ModelId::ChineseClip)
+                                    && job.state == JobState::Completed
                             }) || self.manager.organizer.ai_categories.is_empty())
                         {
                             self.capture_ticks = 11;
@@ -1898,11 +1900,11 @@ impl App {
                 if let Some(path) = self.launch.capture.as_ref() {
                     let path = path.with_extension("early.png");
                     let service = self.service.clone();
-                    let request = self.original_request;
+                    let request = self.viewer.original_request;
                     let state = format!(
                         "presented_frames={} progress={:?}\n",
-                        self.video_presented,
-                        self.playback.as_ref().map(|p| p.progress())
+                        self.viewer.video_presented,
+                        self.viewer.playback.as_ref().map(|p| p.progress())
                     );
                     return Task::perform(
                         async move {
@@ -1932,14 +1934,14 @@ impl App {
             Message::Captured(screenshot) => {
                 if let Some(path) = self.launch.capture.take() {
                     let service = self.service.clone();
-                    let playback = self.playback.clone();
+                    let playback = self.viewer.playback.clone();
                     let playback_state = format!(
                         "expanded={} request={} error={:?} presented_frames={} first_gpu_ready_ms={:?}\n",
-                        self.preview_expanded,
-                        self.original_request,
+                        self.viewer.preview_expanded,
+                        self.viewer.original_request,
                         self.error,
-                        self.video_presented,
-                        self.video_first_ready_ms
+                        self.viewer.video_presented,
+                        self.viewer.video_first_ready_ms
                     );
                     return Task::perform(
                         async move {
@@ -2015,7 +2017,7 @@ impl App {
                         if page.warnings > 0 {
                             self.status = trf!(language, "{} 张缩略图不可用，原片仍被保留" => "{} thumbnails unavailable. Original files are preserved.", page.warnings);
                         }
-                        if let Some(selected) = self.selected.as_mut()
+                        if let Some(selected) = self.viewer.selected.as_mut()
                             && let Some(tile) =
                                 self.tiles.iter().find(|t| t.asset.id == selected.id)
                         {
@@ -2046,7 +2048,7 @@ impl App {
             }
             Message::Scrolled(y) => {
                 self.gallery_feedback.clear();
-                if self.preview_expanded
+                if self.viewer.preview_expanded
                     || ((self.pending_scroll.or(self.surfaces.restoring_gallery))
                         .is_some_and(|target| target > 0.0)
                         && y == 0.0)
@@ -2098,27 +2100,30 @@ impl App {
             Message::FullPreviewLoaded(library, id, version, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == library)
                     && self
+                        .viewer
                         .selected
                         .as_ref()
                         .is_some_and(|a| a.id == id && a.version_id == version) =>
             {
-                self.preview_task = None;
+                self.viewer.preview_task = None;
                 match result {
                     Ok((preview, background)) => {
-                        if self.original_size.is_none() || self.regions.session.is_some() {
-                            self.preview = Some(preview);
+                        if self.viewer.original_size.is_none()
+                            || self.viewer.regions.session.is_some()
+                        {
+                            self.viewer.preview = Some(preview);
                         }
-                        self.preview_background = Some(background);
+                        self.viewer.preview_background = Some(background);
                     }
                     Err(e) => self.error = Some(e),
                 }
             }
-            Message::VideoFrame if !self.video_upload => {
-                if let Some(playback) = &self.playback {
+            Message::VideoFrame if !self.viewer.video_upload => {
+                if let Some(playback) = &self.viewer.playback {
                     match playback.take_frame() {
                         Ok(Some(frame)) => {
-                            let request = self.original_request;
-                            self.video_upload = true;
+                            let request = self.viewer.original_request;
+                            self.viewer.video_upload = true;
                             // Iced uploads large images asynchronously. Keep the last
                             // allocation visible until this frame is ready on the GPU.
                             return iced_runtime::image::allocate(image::Handle::from_rgba(
@@ -2133,47 +2138,45 @@ impl App {
                         Ok(None) => {}
                         Err(error) => {
                             self.error = Some(error.to_string());
-                            self.playback = None;
-                            self.video_frame = None;
+                            self.viewer.stop_media();
                         }
                     }
                 }
             }
             Message::VideoUploaded(request, result)
-                if request == self.original_request && self.playback.is_some() =>
+                if request == self.viewer.original_request && self.viewer.playback.is_some() =>
             {
-                self.video_upload = false;
+                self.viewer.video_upload = false;
                 match result {
                     Ok(frame) => {
-                        if self.video_first_ready_ms.is_none() {
-                            self.video_first_ready_ms =
-                                self.playback.as_ref().map(|p| p.elapsed_ms());
+                        if self.viewer.video_first_ready_ms.is_none() {
+                            self.viewer.video_first_ready_ms =
+                                self.viewer.playback.as_ref().map(|p| p.elapsed_ms());
                         }
-                        self.video_frame = Some(frame);
-                        self.video_presented += 1;
+                        self.viewer.video_frame = Some(frame);
+                        self.viewer.video_presented += 1;
                     }
                     Err(error) => {
                         self.error = Some(error);
-                        self.playback = None;
-                        self.video_frame = None;
+                        self.viewer.stop_media();
                     }
                 }
             }
             Message::VideoPause | Message::VideoMute | Message::VideoSeek(_) => {
-                if let Some(playback) = self.playback.clone() {
+                if let Some(playback) = self.viewer.playback.clone() {
                     let seek = match message {
                         Message::VideoPause => {
                             let (position, duration) = playback.progress();
                             if duration > 0 && position + 80 >= duration {
-                                self.video_paused = false;
+                                self.viewer.video_paused = false;
                                 Some(0)
                             } else {
-                                self.video_paused = !self.video_paused;
+                                self.viewer.video_paused = !self.viewer.video_paused;
                                 None
                             }
                         }
                         Message::VideoMute => {
-                            self.video_muted = !self.video_muted;
+                            self.viewer.video_muted = !self.viewer.video_muted;
                             None
                         }
                         Message::VideoSeek(value) => {
@@ -2181,10 +2184,13 @@ impl App {
                         }
                         _ => None,
                     };
-                    self.video_control += 1;
-                    let revision = self.video_control;
-                    let (paused, muted, request) =
-                        (self.video_paused, self.video_muted, self.original_request);
+                    self.viewer.video_control += 1;
+                    let revision = self.viewer.video_control;
+                    let (paused, muted, request) = (
+                        self.viewer.video_paused,
+                        self.viewer.video_muted,
+                        self.viewer.original_request,
+                    );
                     return Task::perform(
                         async move {
                             tokio::task::spawn_blocking(move || {
@@ -2199,28 +2205,25 @@ impl App {
                     );
                 }
             }
-            Message::VideoControlled(request, Err(error)) if request == self.original_request => {
+            Message::VideoControlled(request, Err(error))
+                if request == self.viewer.original_request =>
+            {
                 self.error = Some(error);
             }
             Message::PlaybackStarted(library, id, version, request, result)
-                if self.preview_expanded
+                if self.viewer.preview_expanded
                     && !self.surface_open()
-                    && self.original_request == request
+                    && self.viewer.original_request == request
                     && self.library.as_ref().is_some_and(|l| l.info.id == library)
                     && self
+                        .viewer
                         .selected
                         .as_ref()
                         .is_some_and(|a| a.id == id && a.version_id == version) =>
             {
                 match result {
                     Ok(session) => {
-                        self.video_paused = false;
-                        self.video_muted = false;
-                        self.video_presented = 0;
-                        self.video_first_ready_ms = None;
-                        self.video_frame = None;
-                        self.video_upload = false;
-                        self.playback = Some(session);
+                        self.viewer.start_playback(session);
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -2229,27 +2232,25 @@ impl App {
                 if self.surface_open() {
                     return self.close_surface();
                 }
-                if self.preview_expanded {
+                if self.viewer.preview_expanded {
                     return self.set_viewer(false);
                 }
-                if let Some(handle) = self.preview_task.take() {
-                    handle.abort();
-                }
                 self.clear_browsing();
-                self.selected = None;
-                self.preview = None;
                 return self.refresh();
             }
-            Message::ExpandPreview => return self.set_viewer(!self.preview_expanded),
+            Message::ExpandPreview => return self.set_viewer(!self.viewer.preview_expanded),
             Message::Favorite(asset, value) => {
                 if let Some(library) = &self.library {
                     let service = self.service.clone();
                     let id = library.info.id;
-                    return self.mutation(async move { service.favorite(id, asset, value).await });
+                    return Task::perform(
+                        async move { service.favorite(id, asset, value).await },
+                        move |r| Message::VisualsSaved(id, r),
+                    );
                 }
             }
             Message::Rating(rating) => {
-                if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+                if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
                     let service = self.service.clone();
                     let id = library.info.id;
                     let asset = asset.id;
@@ -2258,7 +2259,7 @@ impl App {
             }
             Message::Tags(value) => self.tag_input = value,
             Message::SaveTags => {
-                if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+                if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
                     let service = self.service.clone();
                     let id = library.info.id;
                     let asset = asset.id;
@@ -2272,6 +2273,17 @@ impl App {
                     return self.mutation(async move { service.tags(id, asset, tags).await });
                 }
             }
+            Message::VisualsSaved(id, result)
+                if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            {
+                let changed = result.is_ok();
+                let task = self.update(Message::Saved(id, result));
+                return if changed {
+                    Task::batch([task, self.refresh_visuals()])
+                } else {
+                    task
+                };
+            }
             Message::Saved(id, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
@@ -2281,6 +2293,7 @@ impl App {
                             tr!(language, "更改已保存到资源库" => "Changes saved to the library")
                                 .into();
                         let browse = self
+                            .viewer
                             .selected
                             .as_ref()
                             .map(|a| a.id)
@@ -2336,7 +2349,7 @@ impl App {
                         return Task::batch([
                             self.reset_query(),
                             self.refresh_info(),
-                            self.refresh_organizer(),
+                            self.refresh_catalog(),
                         ]);
                     }
                     Err(error) => self.error = Some(error),
@@ -2381,6 +2394,7 @@ impl App {
             | Message::VideoControlled(..)
             | Message::PlaybackStarted(..)
             | Message::Saved(..)
+            | Message::VisualsSaved(..)
             | Message::InfoLoaded(_, Err(_))
             | Message::CreateProject
             | Message::ProjectCreated(..)

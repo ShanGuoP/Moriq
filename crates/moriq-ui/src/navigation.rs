@@ -190,16 +190,16 @@ impl App {
         Location {
             surface: self.surface(),
             surfaces: self.surfaces.clone(),
-            expanded: self.preview_expanded,
+            expanded: self.viewer.preview_expanded,
             library_picker: self.library_picker,
             screen: self.screen,
             query: self.query.clone(),
             scroll_y: self.scroll_y,
             total: self.total,
-            selected: self.selected.as_ref().map(|a| a.id),
-            selection: self.manager.selection.clone(),
-            anchor: self.manager.selection_anchor,
-            multiselect: self.manager.multiselect,
+            selected: self.viewer.selected.as_ref().map(|a| a.id),
+            selection: self.manager.selection.assets.clone(),
+            anchor: self.manager.selection.anchor,
+            multiselect: self.manager.selection.enabled,
             list: self.list,
             masonry: self.masonry_mode,
             card_width: self.card_width,
@@ -256,7 +256,7 @@ impl App {
         let anchor = self.surfaces.anchor;
         let page_return = matches!(&message, Message::Back | Message::Forward)
             && !self.surface_open()
-            && !self.preview_expanded;
+            && !self.viewer.preview_expanded;
         let dismiss = navigating
             || matches!(
                 &message,
@@ -370,13 +370,13 @@ impl App {
         self.surfaces = destination.surfaces;
         self.manager.panel = destination.surface.panel;
         self.dialog = destination.surface.dialog;
-        self.preview_expanded = destination.expanded;
+        self.viewer.preview_expanded = destination.expanded;
         self.scroll_y = destination.scroll_y;
         self.pending_scroll = Some(destination.scroll_y);
         self.surfaces.restoring_gallery = Some(destination.scroll_y);
-        self.manager.selection = destination.selection;
-        self.manager.selection_anchor = destination.anchor;
-        self.manager.multiselect = destination.multiselect;
+        self.manager.selection.assets = destination.selection;
+        self.manager.selection.anchor = destination.anchor;
+        self.manager.selection.enabled = destination.multiselect;
         self.restored_notes = destination
             .selected
             .filter(|_| destination.notes_dirty)

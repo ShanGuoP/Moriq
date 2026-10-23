@@ -18,15 +18,15 @@ mod tests {
             app.screen = Screen::Assets;
             let mut asset = crate::tests::selected_asset();
             asset.format = format.into();
-            app.selected = Some(asset);
-            let request = app.original_request;
+            app.viewer.selected = Some(asset);
+            let request = app.viewer.original_request;
             assert!(app.set_viewer(true).units() > 0);
-            assert!(app.preview_expanded);
-            assert!(app.original_request > request);
-            assert!(app.regions.session.is_none());
+            assert!(app.viewer.preview_expanded);
+            assert!(app.viewer.original_request > request);
+            assert!(app.viewer.regions.session.is_none());
             drop(app.set_viewer(false));
-            assert!(!app.preview_expanded);
-            assert!(app.playback.is_none());
+            assert!(!app.viewer.preview_expanded);
+            assert!(app.viewer.playback.is_none());
         }
     }
     #[test]
@@ -58,7 +58,7 @@ mod tests {
         app.scroll_y = 4800.0;
         app.query.tag = "原查询".into();
         let selected = crate::tests::selected_asset();
-        app.selected = Some(selected.clone());
+        app.viewer.selected = Some(selected.clone());
         drop(app.update(Message::Manage(ManageMessage::AssetMenu)));
         assert!(app.compact_panel());
         drop(app.update(Message::Manage(ManageMessage::ExportMenu)));
@@ -80,7 +80,7 @@ mod tests {
         assert!(app.manager.panel.is_none());
         assert_eq!(app.scroll_y, 4800.0);
         assert_eq!(app.query.tag, "原查询");
-        assert_eq!(app.selected.as_ref().unwrap().id, selected.id);
+        assert_eq!(app.viewer.selected.as_ref().unwrap().id, selected.id);
         assert!(!app.can_go_back());
     }
     #[test]
@@ -90,16 +90,16 @@ mod tests {
         app.scroll_y = 5200.0;
         app.query.tag = "收藏标签".into();
         let asset = crate::tests::selected_asset();
-        app.selected = Some(asset.clone());
+        app.viewer.selected = Some(asset.clone());
         app.manager.notes = "尚未保存的备注".into();
         app.manager.notes_dirty = true;
         drop(app.update(Message::ExpandPreview));
-        assert!(app.preview_expanded);
+        assert!(app.viewer.preview_expanded);
         assert!(app.can_go_back());
         drop(app.update(Message::Scrolled(0.0)));
         assert_eq!(app.scroll_y, 5200.0);
         drop(app.update(Message::Back));
-        assert!(!app.preview_expanded);
+        assert!(!app.viewer.preview_expanded);
         assert_eq!(app.scroll_y, 5200.0);
         assert_eq!(app.pending_scroll, Some(5200.0));
         drop(app.update(Message::Scrolled(0.0)));
@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(app.scroll_y, 5200.0);
         drop(app.update(Message::Scrolled(5200.0)));
         assert!(app.surfaces.restoring_gallery.is_none());
-        assert_eq!(app.selected.as_ref().unwrap().id, asset.id);
+        assert_eq!(app.viewer.selected.as_ref().unwrap().id, asset.id);
         assert_eq!(app.query.tag, "收藏标签");
         assert_eq!(app.manager.notes, "尚未保存的备注");
         assert!(app.manager.notes_dirty);
@@ -159,7 +159,7 @@ mod tests {
             let mut app = crate::tests::app();
             app.screen = Screen::Assets;
             let asset = crate::tests::selected_asset();
-            app.selected = Some(asset.clone());
+            app.viewer.selected = Some(asset.clone());
             app.query.tag = "保留查询".into();
             drop(app.update(Message::Manage(ManageMessage::Menu)));
             drop(app.update(Message::Manage(event)));
@@ -168,7 +168,7 @@ mod tests {
             drop(app.update(Message::Back));
             assert_eq!(app.manager.panel, Some(Panel::Menu));
             assert_eq!(app.query.tag, "保留查询");
-            assert_eq!(app.selected.as_ref().unwrap().id, asset.id);
+            assert_eq!(app.viewer.selected.as_ref().unwrap().id, asset.id);
         }
     }
     #[test]
@@ -185,14 +185,14 @@ mod tests {
         assert_eq!(app.manager.collection_name, "集合名");
         assert_eq!(app.manager.tag_new_name, "新标签");
         drop(app.update(Message::Manage(ManageMessage::Filters)));
-        app.manager.filter.min_rating = 3;
+        app.manager.filters.query.min_rating = 3;
         drop(app.update(Message::Manage(ManageMessage::Date(0, "2026-10-01".into()))));
         drop(app.update(Message::Rules(RuleMessage::Open)));
         drop(app.update(Message::Rules(RuleMessage::Apply)));
         assert_eq!(app.manager.panel, Some(Panel::Filters));
-        assert_eq!(app.manager.filter.min_rating, 3);
-        assert_eq!(app.manager.date_start, "2026-10-01");
-        assert!(app.manager.filter.rule.is_some());
+        assert_eq!(app.manager.filters.query.min_rating, 3);
+        assert_eq!(app.manager.filters.date_start, "2026-10-01");
+        assert!(app.manager.filters.query.rule.is_some());
         assert!(app.query.rule.is_none());
     }
     #[test]
@@ -253,7 +253,7 @@ impl App {
     }
     pub(super) fn can_go_back(&self) -> bool {
         !(self.manager.panel == Some(manage::Panel::Delete) && self.manager.busy)
-            && (self.surface_open() || self.preview_expanded || self.history.can_back())
+            && (self.surface_open() || self.viewer.preview_expanded || self.history.can_back())
     }
     pub(super) fn sync_surface(
         &mut self,
@@ -267,10 +267,10 @@ impl App {
             self.stop_people_portraits();
         }
         if after.panel.is_some() || after.dialog.is_some() {
-            self.playback = None;
-            self.video_frame = None;
-            self.video_upload = false;
-            self.original_request += 1;
+            self.viewer.playback = None;
+            self.viewer.video_frame = None;
+            self.viewer.video_upload = false;
+            self.viewer.original_request += 1;
         }
         if dismiss {
             self.surfaces.stack.clear();
@@ -348,36 +348,27 @@ impl App {
         Task::none()
     }
     pub(super) fn stop_viewer(&mut self) {
-        self.regions.reset();
-        self.original_request = self.original_request.wrapping_add(1);
-        self.original_size = None;
-        self.playback = None;
-        self.video_frame = None;
-        self.video_upload = false;
-        self.preview_expanded = false;
+        self.viewer.close();
         if let Some(y) = self.surfaces.viewer_y.take() {
             self.scroll_y = y;
         }
     }
     pub(super) fn set_viewer(&mut self, open: bool) -> Task<Message> {
         if open {
-            if !self.preview_expanded {
+            if !self.viewer.preview_expanded {
                 self.surfaces.viewer_y = Some(self.scroll_y);
             }
-            self.preview_expanded = true;
+            self.viewer.preview_expanded = true;
             self.manager.panel = None;
-            if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
+            if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
                 if !moriq_app::is_video_format(&asset.format) {
                     // The fit preview comes first. Prepare original-resolution tiles only
                     // when the viewport is magnified beyond the preview's resolution.
                     return Task::none();
                 } else {
-                    self.original_request += 1;
-                    self.playback = None;
-                    self.video_frame = None;
-                    self.video_upload = false;
-                    let request = self.original_request;
                     let (library, id, version) = (library.info.id, asset.id, asset.version_id);
+                    self.viewer.stop_media();
+                    let request = self.viewer.original_request;
                     let service = self.service.clone();
                     return Task::perform(
                         async move { service.playback(library, id, version).await },
@@ -387,14 +378,8 @@ impl App {
                     );
                 }
             }
-        } else if self.preview_expanded {
-            self.regions.reset();
-            self.original_request += 1;
-            self.original_size = None;
-            self.playback = None;
-            self.video_frame = None;
-            self.video_upload = false;
-            self.preview_expanded = false;
+        } else if self.viewer.preview_expanded {
+            self.viewer.close();
             let mut y = self.surfaces.viewer_y.take().unwrap_or(self.scroll_y);
             let height = self.active_masonry().map_or_else(
                 || self.grid().total_height(self.total as usize),

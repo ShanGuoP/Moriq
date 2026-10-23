@@ -18,7 +18,8 @@ impl App {
         use ManageMessage::*;
         let mut content = column![].spacing(2);
         let title = if self.manager.panel == Some(Panel::AssetMenu) {
-            self.selected
+            self.viewer
+                .selected
                 .as_ref()
                 .map(|a| a.name.as_str())
                 .unwrap_or(tr!(language, "素材操作" => "Asset actions"))
@@ -43,7 +44,7 @@ impl App {
         let mut entries = Vec::<(Icon, &str, Message, bool, bool)>::new();
         match self.manager.panel {
             Some(Panel::AssetMenu) => {
-                if self.selected.is_some() {
+                if self.viewer.selected.is_some() {
                     entries.extend([
                         (
                             Icon::Image,
@@ -92,7 +93,7 @@ impl App {
                             tr!(language, "发送到 Synco 精修" => "Send to Synco for editing"),
                             Message::Manage(SendSynco),
                             false,
-                            !self.manager.synco_running,
+                            !self.manager.synco.running,
                         ),
                         (
                             Icon::Trash,
@@ -197,7 +198,7 @@ impl App {
                     tr!(language, "导出所选素材…" => "Export selected assets…"),
                     Message::Manage(ExportMenu),
                     false,
-                    self.selected.is_some() || !self.manager.selection.is_empty(),
+                    self.viewer.selected.is_some() || !self.manager.selection.assets.is_empty(),
                 ),
                 (
                     Icon::Clock,

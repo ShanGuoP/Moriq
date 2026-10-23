@@ -1,5 +1,5 @@
 //! Runtime manifests are embedded at build time, never trusted from the install folder.
-use crate::Result;
+pub type Result<T> = std::result::Result<T, String>;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,

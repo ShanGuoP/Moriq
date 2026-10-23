@@ -33,6 +33,32 @@ pub enum Outcome {
     Valid(Option<Repair>),
 }
 
+impl Outcome {
+    /// Shared accounting for synchronous tools and the asynchronous coordinator.
+    /// Repairs remain version-checked mutations on the library writer.
+    pub fn record(self, report: &mut MaintenanceReport) -> Option<Repair> {
+        report.checked += 1;
+        let warning = match self {
+            Self::Missing(version) => {
+                report.missing += 1;
+                Some(format!("版本 {version} 文件缺失"))
+            }
+            Self::Damaged(version) => {
+                report.damaged += 1;
+                Some(format!("版本 {version} 文件校验不符"))
+            }
+            Self::Warning(warning) => Some(warning),
+            Self::Valid(repair) => return repair,
+        };
+        if report.warnings.len() < 50
+            && let Some(warning) = warning
+        {
+            report.warnings.push(warning);
+        }
+        None
+    }
+}
+
 impl Library {
     pub fn maintenance_plan(&self) -> Plan {
         Plan {

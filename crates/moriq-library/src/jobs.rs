@@ -8,7 +8,7 @@ pub struct Work {
     generation: i64,
     seq: i64,
     version: String,
-    kind: String,
+    kind: JobKind,
     payload: Option<serde_json::Value>,
     source: std::result::Result<Option<media::Source>, String>,
 }
@@ -16,6 +16,7 @@ pub struct Outcome {
     work: Work,
     image: std::result::Result<Option<image::DynamicImage>, String>,
     analysis: Option<std::result::Result<serde_json::Value, String>>,
+    revision: Option<String>,
 }
 impl Work {
     pub fn run_cancelable(self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Outcome {
@@ -26,13 +27,7 @@ impl Work {
         (self.job.clone(), self.generation)
     }
     pub fn memory_mib(&self) -> u32 {
-        if self.kind.starts_with("analysis:") {
-            3072
-        } else if self.kind == "batch" || self.kind == "metadata" || self.kind == "integrity" {
-            128
-        } else {
-            1024
-        }
+        self.kind.memory_mib()
     }
     pub fn run(self) -> Outcome {
         self.run_controlled(&std::sync::atomic::AtomicBool::new(false))
@@ -43,9 +38,10 @@ impl Work {
                 work: self,
                 image: Err("任务已停止".into()),
                 analysis: None,
+                revision: None,
             };
         }
-        if self.kind == "integrity" {
+        if self.kind == JobKind::Integrity {
             let result = match std::mem::replace(&mut self.source, Ok(None)) {
                 Err(e) => Err(e),
                 Ok(None) => Ok(None),
@@ -58,17 +54,19 @@ impl Work {
                 work: self,
                 image: result,
                 analysis: None,
+                revision: None,
             };
         }
-        if self.kind == "batch" {
+        if self.kind == JobKind::Batch {
             let result = self.payload.take().ok_or_else(|| "批量任务参数缺失".into());
             return Outcome {
                 work: self,
                 image: Ok(None),
                 analysis: Some(result),
+                revision: None,
             };
         }
-        if self.kind == "metadata" {
+        if self.kind == JobKind::Metadata {
             let analysis = match std::mem::replace(&mut self.source, Ok(None)) {
                 Err(e) => Err(e),
                 Ok(None) => Ok(serde_json::json!({})),
@@ -78,29 +76,15 @@ impl Work {
                 work: self,
                 image: Ok(None),
                 analysis: Some(analysis),
+                revision: None,
             };
         }
-        if let Some(model) = self.kind.strip_prefix("analysis:").map(str::to_string) {
-            let analysis = match std::mem::replace(&mut self.source, Ok(None)) {
-                Err(e) => Err(e),
-                Ok(None) => Ok(serde_json::json!({})),
-                Ok(Some(source)) => crate::analysis::run_controlled(source, &model, cancel)
-                    .and_then(|mut result| {
-                        if model == "faces" {
-                            crate::analysis::suggest_people(
-                                &self.readers,
-                                &self.version,
-                                &mut result,
-                            )
-                            .map_err(|e| e.to_string())?;
-                        }
-                        Ok(result)
-                    }),
-            };
+        if self.kind.model().is_some() {
             return Outcome {
                 work: self,
                 image: Ok(None),
-                analysis: Some(analysis),
+                analysis: Some(Err("分析任务需要应用层推理执行器".into())),
+                revision: None,
             };
         }
         let image = match std::mem::replace(&mut self.source, Ok(None)) {
@@ -118,6 +102,91 @@ impl Work {
             work: self,
             image,
             analysis: None,
+            revision: None,
+        }
+    }
+}
+pub enum Execution {
+    Complete(Outcome),
+    Inference(InferenceWork),
+}
+pub struct InferenceWork {
+    work: Work,
+    image: analysis::PreparedImage,
+    model: ModelId,
+}
+impl InferenceWork {
+    pub fn model(&self) -> ModelId {
+        self.model
+    }
+    pub fn image_path(&self) -> &Path {
+        self.image.path()
+    }
+    pub fn complete(self, result: TaskResult<analysis::InferenceResult>) -> Outcome {
+        let mut revision = None;
+        let result = result
+            .and_then(|output| output.checked(self.model))
+            .and_then(|mut output| {
+                if output.model == ModelId::Faces {
+                    analysis::suggest_people(
+                        &self.work.readers,
+                        &self.work.version,
+                        &output.revision,
+                        &mut output.data,
+                    )
+                    .map_err(|e| TaskError::Storage(e.to_string()))?;
+                }
+                revision = Some(output.revision);
+                Ok(output.data)
+            })
+            .map_err(|e| e.to_string());
+        Outcome {
+            work: self.work,
+            image: Ok(None),
+            analysis: Some(result),
+            revision,
+        }
+    }
+}
+impl Work {
+    pub fn kind(&self) -> JobKind {
+        self.kind
+    }
+    pub fn execute(mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Execution {
+        let _scope = crate::cancel::Scope::enter(cancel.clone());
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Execution::Complete(self.run_controlled(&cancel));
+        }
+        let Some(model) = self.kind.model() else {
+            return Execution::Complete(self.run_controlled(&cancel));
+        };
+        let source = std::mem::replace(&mut self.source, Ok(None));
+        match source {
+            Ok(Some(source)) => match analysis::prepare_image(source) {
+                Ok(image) => Execution::Inference(InferenceWork {
+                    work: self,
+                    image,
+                    model,
+                }),
+                Err(error) => Execution::Complete(Outcome {
+                    work: self,
+                    image: Ok(None),
+                    analysis: Some(Err(error.to_string())),
+                    revision: None,
+                }),
+            },
+            Ok(None) => Execution::Complete(Outcome {
+                work: self,
+                image: Ok(None),
+                analysis: Some(Ok(serde_json::json!({}))),
+                revision: None,
+            }),
+            Err(error) => Execution::Complete(Outcome {
+                work: self,
+                image: Ok(None),
+                analysis: Some(Err(error)),
+                revision: None,
+            }),
         }
     }
 }
@@ -165,7 +234,7 @@ r.get(1)?))).optional()?;
             ));
         };
         let id = Uuid::new_v4().to_string();
-        tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind,priority,now_ms()?])?;
+        tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind.as_str(),priority,now_ms()?])?;
         tx.execute("INSERT INTO background_job_items SELECT ?1,row_number() OVER(ORDER BY e.seq),e.version_id FROM \
                 background_job_errors e JOIN asset_versions v ON v.id=e.version_id JOIN assets a ON a.id=v.asset_id \
                 WHERE e.job_id=?2 AND a.deleted_at IS NULL",
@@ -197,26 +266,12 @@ error.chars().take(2000).collect::<String>()])?;
 
         Ok(())
     }
-    pub fn enqueue_media_job(&mut self, kind: &str, priority: i32) -> Result<String> {
-        if ![
-            "metadata",
-            "integrity",
-            "fingerprints",
-            "thumbnails",
-            "analysis:chinese-clip",
-            "analysis:florence",
-            "analysis:faces",
-        ]
-        .contains(&kind)
-            || !(-100..=100).contains(&priority)
-        {
+    pub fn enqueue_media_job(&mut self, kind: JobKind, priority: i32) -> Result<String> {
+        if kind == JobKind::Batch || !(-100..=100).contains(&priority) {
             return Err(Error::Invalid("后台任务类型或优先级无效".into()));
         }
-        if let Some(model) = kind.strip_prefix("analysis:") {
-            moriq_ai::installed_path(model).map_err(Error::Invalid)?;
-        }
         let existing:Option<String>=self.db.query_row("SELECT id FROM background_jobs WHERE kind=?1 AND state IN('queued','running','paused') LIMIT 1",
-[kind],
+[kind.as_str()],
 |r|r.get(0)).optional()?;
 
         if let Some(id) = existing {
@@ -224,8 +279,8 @@ error.chars().take(2000).collect::<String>()])?;
         }
         let id = Uuid::new_v4().to_string();
         let tx = self.db.transaction()?;
-        tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind,priority,now_ms()?])?;
-        let formats = if kind == "integrity" {
+        tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind.as_str(),priority,now_ms()?])?;
+        let formats = if kind == JobKind::Integrity {
             "1=1".into()
         } else {
             format!("v.format NOT IN({})", video::sql_formats())
@@ -244,8 +299,8 @@ error.chars().take(2000).collect::<String>()])?;
                 state IN('queued','running') THEN 0 WHEN state='paused' THEN 1 ELSE 2 END,created_at DESC LIMIT 100")?.query_map([],
 |r|Ok(BackgroundJob{
 id:r.get(0)?,
-kind:r.get(1)?,
-state:r.get(2)?,
+kind:parse_protocol(r.get(1)?, 1)?,
+state:parse_protocol(r.get(2)?, 2)?,
 priority:r.get(3)?,
 completed:r.get(4)?,
 total:r.get(5)?,
@@ -290,15 +345,16 @@ r.get(3)?))).optional()?;
         let Some((job, kind, generation, checkpoint)) = next else {
             return Ok(None);
         };
-        if let Some(model) = kind.strip_prefix("analysis:")
-            && let Err(error) = moriq_ai::installed_path(model)
-        {
-            self.db.execute(
-                "UPDATE background_jobs SET state='paused',error=?2 WHERE id=?1",
-                params![job, error],
-            )?;
-            return Ok(None);
-        }
+        let kind: JobKind = match kind.parse() {
+            Ok(kind) => kind,
+            Err(error) => {
+                self.db.execute(
+                    "UPDATE background_jobs SET state='paused',error=?2 WHERE id=?1",
+                    params![job, error],
+                )?;
+                return Ok(None);
+            }
+        };
         let item:Option<(i64,
 String)>=self.db.query_row("SELECT seq,version_id FROM background_job_items WHERE job_id=?1 AND seq>?2 ORDER BY seq LIMIT 1",
 params![job,
@@ -324,7 +380,7 @@ r.get(1)?))).optional()?;
                 |r| r.get(0),
             )
             .optional()?;
-        let payload = if kind == "batch" {
+        let payload = if kind == JobKind::Batch {
             let value: String = self.db.query_row(
                 "SELECT json FROM background_job_payload WHERE job_id=?1",
                 [&job],
@@ -334,7 +390,7 @@ r.get(1)?))).optional()?;
         } else {
             None
         };
-        let source = if kind == "batch" {
+        let source = if kind == JobKind::Batch {
             Ok(None)
         } else {
             asset
@@ -397,16 +453,26 @@ work.generation],
             match result {
                 Ok(result) => {
                     if result.as_object().is_some_and(|m| !m.is_empty()) {
-                        if work.kind == "batch" {
+                        if work.kind == JobKind::Batch {
                             batch::apply(&tx, &work.version, &result)?;
-                        } else if work.kind == "metadata" {
+                        } else if work.kind == JobKind::Metadata {
                             metadata::store(&tx, &work.version, &result)?;
                         } else {
                             let model = work
                                 .kind
-                                .strip_prefix("analysis:")
+                                .model()
+                                .map(ModelId::as_str)
                                 .ok_or_else(|| Error::Invalid("分析任务类型无效".into()))?;
-                            analysis::store(&tx, &work.version, model, &result)?;
+                            analysis::store(
+                                &tx,
+                                &work.version,
+                                model,
+                                outcome
+                                    .revision
+                                    .as_deref()
+                                    .ok_or_else(|| Error::Invalid("分析回执缺少模型修订".into()))?,
+                                &result,
+                            )?;
                         }
                     }
                 }
@@ -421,7 +487,7 @@ work.generation],
                     |r| r.get(0),
                 )?;
                 if exists {
-                    if work.kind == "fingerprints" {
+                    if work.kind == JobKind::Fingerprints {
                         similarity::store(&tx, &work.version, &similarity::signature(&image))?;
                     } else {
                         let path =
@@ -461,6 +527,19 @@ failure])?;
     }
 }
 
+fn parse_protocol<T: std::str::FromStr<Err = &'static str>>(
+    value: String,
+    column: usize,
+) -> rusqlite::Result<T> {
+    value.parse().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        )
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -483,7 +562,7 @@ mod tests {
         let mut lib = Library::create(dir.path(), "元数据删除竞态").unwrap();
         lib.import(&source, None).unwrap();
         let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
-        let job = lib.enqueue_media_job("metadata", 0).unwrap();
+        let job = lib.enqueue_media_job(JobKind::Metadata, 0).unwrap();
         let outcome = lib.claim_job_step().unwrap().unwrap().run();
         assert_eq!(
             outcome.analysis.as_ref().unwrap().as_ref().unwrap()["make"],
@@ -533,8 +612,8 @@ mod tests {
     fn priority_pause_reopen_resume_and_cancel_reject_late_media() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = library(dir.path());
-        let low = lib.enqueue_media_job("fingerprints", 0).unwrap();
-        let high = lib.enqueue_media_job("thumbnails", 20).unwrap();
+        let low = lib.enqueue_media_job(JobKind::Fingerprints, 0).unwrap();
+        let high = lib.enqueue_media_job(JobKind::Thumbnails, 20).unwrap();
         let work = lib.claim_job_step().unwrap().unwrap();
         assert_eq!(work.job, high);
         lib.control_job(&high, JobCommand::Pause).unwrap();
@@ -545,7 +624,7 @@ mod tests {
             .into_iter()
             .find(|j| j.id == high)
             .unwrap();
-        assert_eq!(paused.state, "paused");
+        assert_eq!(paused.state, JobState::Paused);
         assert_eq!(paused.completed, 1);
         let work = lib.claim_job_step().unwrap().unwrap();
         assert_eq!(work.job, low);
@@ -576,7 +655,7 @@ mod tests {
             .into_iter()
             .find(|j| j.id == high)
             .unwrap();
-        assert_eq!(complete.state, "completed");
+        assert_eq!(complete.state, JobState::Completed);
         assert_eq!(complete.completed, 3);
         assert_eq!(complete.failed, 0);
     }
@@ -584,13 +663,13 @@ mod tests {
     fn crashed_claim_is_requeued_and_wrong_library_and_missing_sources_do_not_stall() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = library(dir.path());
-        let id = lib.enqueue_media_job("fingerprints", 0).unwrap();
+        let id = lib.enqueue_media_job(JobKind::Fingerprints, 0).unwrap();
         let work = lib.claim_job_step().unwrap().unwrap();
         let root = lib.root.clone();
         drop(work);
         drop(lib);
         let mut lib = Library::open(&root).unwrap();
-        assert_eq!(lib.background_jobs().unwrap()[0].state, "queued");
+        assert_eq!(lib.background_jobs().unwrap()[0].state, JobState::Queued);
         let work = lib.claim_job_step().unwrap().unwrap();
         let mut other = Library::create(dir.path(), "其他").unwrap();
         assert!(other.finish_job_step(work.run()).is_err());
@@ -612,7 +691,7 @@ mod tests {
             }
         }
         let result = lib.background_jobs().unwrap().remove(0);
-        assert_eq!(result.state, "completed");
+        assert_eq!(result.state, JobState::Completed);
         assert_eq!(result.failed, 1);
     }
 }

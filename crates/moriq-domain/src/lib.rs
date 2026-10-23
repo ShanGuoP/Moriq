@@ -1,4 +1,6 @@
 //! Pure library identities and UI projections. No I/O or renderer dependencies.
+mod jobs;
+pub use jobs::{JobKind, JobState, ModelId, TaskError, TaskResult};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -236,8 +238,8 @@ pub enum OrganizerSection {
 #[derive(Debug, Clone)]
 pub struct BackgroundJob {
     pub id: String,
-    pub kind: String,
-    pub state: String,
+    pub kind: JobKind,
+    pub state: JobState,
     pub priority: i32,
     pub completed: u64,
     pub total: u64,

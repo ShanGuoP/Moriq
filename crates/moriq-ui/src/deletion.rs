@@ -369,7 +369,7 @@ mod tests {
         let library = app.library.as_ref().unwrap().info.id;
         let project = ProjectId::default();
         let selected = AssetId::default();
-        app.manager.selection.insert(selected);
+        app.manager.selection.assets.insert(selected);
         app.manager.panel = Some(Panel::Project);
         drop(app.deletion_message(DeletionMessage::Project(project)));
         let request = app.deletion.request;
@@ -398,7 +398,7 @@ mod tests {
         assert!(matches!(&app.deletion.target,Some(Target::Project(p)) if p.root==project));
         drop(app.deletion_message(DeletionMessage::Cancel));
         assert_eq!(app.manager.panel, Some(Panel::Project));
-        assert!(app.manager.selection.contains(&selected));
+        assert!(app.manager.selection.assets.contains(&selected));
         assert!(app.deletion.target.is_none());
         drop(app.deletion_message(DeletionMessage::Planned(
             library,

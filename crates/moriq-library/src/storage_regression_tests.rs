@@ -172,11 +172,11 @@ fn external_references_pause_automatic_reads_and_unc_is_rejected_without_opening
         true,
     )
     .unwrap();
-    lib.enqueue_media_job("integrity", 0).unwrap();
+    lib.enqueue_media_job(JobKind::Integrity, 0).unwrap();
     let root = lib.root.clone();
     drop(lib);
     let lib = Library::open(&root).unwrap();
-    assert_eq!(lib.background_jobs().unwrap()[0].state, "paused");
+    assert_eq!(lib.background_jobs().unwrap()[0].state, JobState::Paused);
     #[cfg(windows)]
     {
         let version: String = lib
@@ -402,7 +402,7 @@ fn cache_trim_rebuilds_thumbnails_on_demand_without_changing_originals() {
 #[test]
 fn completed_job_and_item_cleanup_commit_together() {
     let (_dir, mut lib, _source, _asset) = fixture();
-    let id = lib.enqueue_media_job("integrity", 0).unwrap();
+    let id = lib.enqueue_media_job(JobKind::Integrity, 0).unwrap();
     lib.db
         .execute(
             "UPDATE background_jobs SET checkpoint=total WHERE id=?1",

@@ -3,13 +3,14 @@
 Moriq Space currently ships a Windows x86_64 runtime and packaging workflow.
 macOS and Linux source branches remain development targets; this repository does
 not yet provide a complete, validated portable runtime/package for them. The UI
-is Simplified Chinese. Local design and historical audit documents remain ignored.
+supports Simplified Chinese and English, with persisted appearance preferences. Local design and historical audit documents remain ignored.
 
 ## Ownership
 
 - `moriq-domain`: serializable types and input validation, with no I/O or UI.
 - `moriq-render`: geometry and bounded viewport calculations, with no I/O.
-- `moriq-ai`: local model downloads, pinned runtime verification and inference.
+- `moriq-runtime`: shared pinned-runtime integrity verification.
+- `moriq-ai`: local model downloads and inference, using the shared verifier.
 - `moriq-synco`: same-user loopback transport; no catalog ownership.
 - `moriq-library`: blocking persistence, media plans, immutable source versions,
   recovery journals and file containment. SQLite mutations use one writer.
@@ -34,6 +35,17 @@ deleted and never used to authorize deleting additional media.
 Referenced import stores the external original's identity and checksum. It does
 not authorize moving or deleting that original. Missing thumbnail caches rebuild
 on a media worker, with decoder admission to the shared memory budget.
+
+Backups freeze the database and immutable file links before copying media bytes
+on a separate worker. The final directory is published only after verification
+and an active-library identity check. Active import stages are excluded from the
+copy; interrupted imports retain their completion receipts for recovery. Snapshot
+metadata work still runs on the writer and scales with database/file counts.
+
+Homepage favorites and category covers use bounded projections without replacing
+the gallery query snapshot. Metadata, image projections and the custom library
+cover have separate request receipts and refresh paths. Synchronous maintenance
+tools and the app worker share one checking and repair engine.
 
 ## UI and motion
 
@@ -67,9 +79,32 @@ cargo run -p moriq-desktop --features capture -- --library PATH --screen assets 
 It is diagnostic tooling, not a format/capacity acceptance test. Public releases
 still require the signature, source inventory and clean exact tag in SECURITY.md.
 
-## Remaining architectural work
+## State and execution boundaries
 
-The audit also proposes reorganizing the application facade, completing UI state
-encapsulation, typed filter/shortcut messages, inference injection, persistent
-semantic indexes and sparse catalog ordering. These are broader design changes,
-not claims of repaired defects or completed performance acceptance in this patch.
+ViewerState owns fit previews, original-resolution regions, video resources and
+receipt generations. Focus, close and clear have distinct policies; every exit
+releases the same media resources. SelectionState owns the range anchor and mode;
+filter drafts, export options and Synco polling have separate state owners.
+
+Service remains the public coordinator. Catalog, media, import, maintenance,
+interop and settings use cases live in separate modules and share the same bounded
+writer, read leases and media budget. Background and interactive inference both
+use the injected InferenceRunner. Library prepares immutable input and commits
+version-bound results without depending on the model runtime. The actual model
+and revision travel with the inference receipt; invalid receipts are rejected.
+Results for an older display version cannot overwrite current classification.
+
+JobKind, JobState and ModelId encode runtime protocols; existing SQLite strings
+are parsed explicitly at the storage boundary. Filter, export, builtin and shortcut
+messages carry typed choices independent of translated labels. The job path uses
+TaskError to distinguish cancellation, stale libraries, invalid input, storage,
+runtime and unavailable-service errors. Cancellation and switching do not count
+as scheduler failures; display-only legacy APIs still return text errors.
+
+## Remaining validation
+
+Automated regressions cover cancellation, library/version changes, snapshot
+consistency, writer responsiveness and query-snapshot isolation. They do not
+replace large-library capacity benchmarks, real-model inference, desktop visual
+acceptance or forced-process-termination recovery testing. Semantic-index and
+catalog-ordering performance changes require their own measured design work.

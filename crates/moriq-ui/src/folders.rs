@@ -42,7 +42,7 @@ impl App {
                 FolderEdit::Members(folder, self.selected_ids(), add)
             }
             FolderMessage::Cover(folder) => {
-                let Some(asset) = &self.selected else {
+                let Some(asset) = &self.viewer.selected else {
                     return Task::none();
                 };
                 FolderEdit::Cover(folder, asset.id)

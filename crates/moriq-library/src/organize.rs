@@ -599,159 +599,37 @@ rule])?;
     pub fn export(&self, ids: &[AssetId], parent: &Path) -> Result<PathBuf> {
         export::run(self.export_plan(ids)?, parent, ExportOptions::default())
     }
-    /// A worker owns the only writer throughout the snapshot and copy. No WAL-only copy.
+    /// Synchronous tools share the same frozen snapshot protocol as the app.
     pub fn backup(&self, parent: &Path) -> Result<PathBuf> {
-        self.copy_library(parent, false)
+        self.backup_plan(parent, false)?
+            .copy(&backup::Control::default())?
+            .publish()
     }
     pub fn clone_library(&self, parent: &Path) -> Result<PathBuf> {
-        self.copy_library(parent, true)
+        self.backup_plan(parent, true)?
+            .copy(&backup::Control::default())?
+            .publish()
     }
-    fn copy_library(&self, parent: &Path, independent: bool) -> Result<PathBuf> {
-        let parent = parent.canonicalize()?;
-        if parent.starts_with(&self.root) {
-            return Err(Error::Invalid(
-                "请选择资源库外的备份位置，建议另一块磁盘".into(),
-            ));
-        }
-        let stage = tempfile::Builder::new()
-            .prefix(".moriq-backup-")
-            .tempdir_in(&parent)?;
-        let database = stage.path().join("catalog.db");
-        self.db.backup(rusqlite::MAIN_DB, &database, None)?;
-        copy_owned(
-            &safe_path(&self.root, "library.toml")?,
-            &stage.path().join("library.toml"),
-        )?;
-        if independent {
-            let mut manifest: Manifest =
-                toml::from_str(&fs::read_to_string(stage.path().join("library.toml"))?)
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-            manifest.library_id = LibraryId::default();
-            manifest.name = format!("{}-克隆", manifest.name);
-            let mut db = Connection::open(&database)?;
-            let tx = db.transaction()?;
-            tx.execute(
-                "UPDATE library_identity SET id=?1",
-                [manifest.library_id.to_string()],
-            )?;
-            tx.execute("DELETE FROM synco_tasks", [])?;
-            tx.execute("DELETE FROM import_context", [])?;
-            tx.execute("DELETE FROM operation_journal", [])?;
-            tx.execute("INSERT INTO library_preferences VALUES('display_name',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[&manifest.name])?;
-            tx.execute("UPDATE notifications SET retry='' WHERE retry<>''", [])?;
-            tx.execute("UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1 WHERE state IN('running','queued')",[])?;
-            tx.commit()?;
-            let mut output = File::create(stage.path().join("library.toml"))?;
-            output.write_all(
-                toml::to_string_pretty(&manifest)
-                    .map_err(|e| Error::Invalid(e.to_string()))?
-                    .as_bytes(),
-            )?;
-            output.sync_all()?;
-        }
-        for directory in DIRECTORIES {
-            let dest = stage.path().join(directory);
-            fs::create_dir_all(&dest)?;
-            if independent && (directory.starts_with("interop/") || matches!(*directory, "staging"))
-            {
-                continue;
-            }
-            // Caches and earlier backups are regenerable/recursive; all durable data is copied.
-            if directory.starts_with("thumbnails")
-                || matches!(
-                    *directory,
-                    "previews" | "backups" | "indexes/search" | "indexes/layout"
-                )
-            {
-                continue;
-            }
-            copy_tree(&self.root, Path::new(directory), stage.path())?;
-        }
-        let dest = parent.join(format!(
-            "{}-副本-{}.moriq",
-            self.manifest.name,
-            Uuid::new_v4()
-        ));
-        fs::rename(stage.path(), &dest)?;
-        Ok(dest)
-    }
+    /// Synchronous adapter for tools and library tests. All checking and cache
+    /// repair uses the same engine as the application's cancellable worker.
     pub fn maintenance(&mut self, repair: bool) -> Result<MaintenanceReport> {
-        if repair {
-            self.snapshot = None;
-        }
-        let integrity: String = self
-            .db
-            .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-        if integrity != "ok" {
-            return Err(Error::Invalid(format!(
-                "数据库完整性检查未通过：{integrity}"
-            )));
-        }
-        let foreign_keys: bool = self.db.prepare("PRAGMA foreign_key_check")?.exists([])?;
-        if foreign_keys {
-            return Err(Error::Invalid(
-                "数据库包含失效的引用，请保留原库并从备份恢复".into(),
-            ));
-        }
+        let plan = self.maintenance_plan();
         let mut report = MaintenanceReport::default();
-        let mut stmt = self
-            .db
-            .prepare("SELECT id,path,sha256,dominant_color FROM asset_versions")?;
-        for row in stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })? {
-            let (id, _relative, hash, color) = row?;
-            report.checked += 1;
-            let path = self.version_path(&id, false)?;
-            if !path.is_file() {
-                report.missing += 1;
-                if report.warnings.len() < 50 {
-                    report.warnings.push(format!("版本 {id} 文件缺失"));
+        let mut failure = None;
+        plan.run(repair, &maintenance::Control::default(), |outcome| {
+            if let Some(repair) = outcome.record(&mut report) {
+                match self.apply_cache_repair(repair) {
+                    Ok(applied) => report.repaired += u64::from(applied),
+                    Err(error) => {
+                        failure = Some(error);
+                        return false;
+                    }
                 }
-                continue;
             }
-            let mut file = File::open(&path)?;
-            let mut hasher = Sha256::new();
-            let mut bytes = [0u8; 65536];
-            loop {
-                let n = file.read(&mut bytes)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&bytes[..n]);
-            }
-            if format!("{:x}", hasher.finalize()) != hash {
-                report.damaged += 1;
-                continue;
-            }
-            let thumbnail = safe_path(&self.root, &format!("thumbnails/256/{id}.png"))?;
-            let needs_thumbnail =
-                !thumbnail.exists() || self.thumbnail(AssetVersionId(parse_id(&id)?)).is_err();
-            if repair && (needs_thumbnail || color.is_empty()) {
-                let thumbnail_image = media::raster(File::open(&path)?, &path, 256)?
-                    .image
-                    .ok_or_else(|| Error::Invalid("缓存修复解码无像素".into()))?;
-                if color.is_empty() {
-                    self.db.execute(
-                        "UPDATE asset_versions SET dominant_color=?1 WHERE id=?2",
-                        params![dominant_color(&thumbnail_image), id],
-                    )?;
-                }
-                if !needs_thumbnail {
-                    continue;
-                }
-                fs::create_dir_all(safe_path(&self.root, "thumbnails/256")?)?;
-                let mut temp = tempfile::NamedTempFile::new_in(safe_path(&self.root, "staging")?)?;
-                thumbnail_image.write_to(&mut temp, ImageFormat::Png)?;
-                temp.as_file().sync_all()?;
-                temp.persist(thumbnail).map_err(|e| Error::Io(e.error))?;
-                report.repaired += 1;
-            }
+            true
+        })?;
+        if let Some(error) = failure {
+            return Err(error);
         }
         Ok(report)
     }
@@ -882,40 +760,6 @@ pub(super) fn copy_owned(source: &Path, destination: &Path) -> Result<()> {
     output.sync_all()?;
     Ok(())
 }
-fn copy_tree(root: &Path, relative: &Path, destination: &Path) -> Result<()> {
-    let relative_string = relative
-        .to_str()
-        .ok_or_else(|| Error::Invalid("库内路径不能表示为受控路径".into()))?
-        .replace('\\', "/");
-    let source = safe_path(root, &relative_string)?;
-    if !source.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
-            return Err(Error::Invalid(
-                "备份发现符号链接，已停止。请先检查资源库完整性".into(),
-            ));
-        }
-        let next = relative.join(entry.file_name());
-        let next_text = next
-            .to_str()
-            .ok_or_else(|| Error::Invalid("库内路径无效".into()))?
-            .replace('\\', "/");
-        let from = safe_path(root, &next_text)?;
-        let target = destination.join(&next);
-        if kind.is_dir() {
-            fs::create_dir_all(&target)?;
-            copy_tree(root, &next, destination)?;
-        } else if kind.is_file() {
-            copy_owned(&from, &target)?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

@@ -1,7 +1,6 @@
 //! Local model lifecycle and isolated ONNX inference, independent of a library DB.
-mod integrity;
 mod models;
-pub use integrity::verify_runtime;
+pub use moriq_runtime::verify_runtime;
 mod runtime;
 pub use models::{
     DownloadControl, Hardware, ModelFile, ModelInfo, ModelSpec, hardware, install,

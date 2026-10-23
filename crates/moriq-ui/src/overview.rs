@@ -290,17 +290,17 @@ impl App {
             (
                 tr!(language, "最近导入" => "Recently imported"),
                 self.manager.organizer.recent_count,
-                0,
+                Builtin::Recent,
             ),
             (
                 tr!(language, "未加标签" => "Untagged"),
                 self.manager.organizer.untagged_count,
-                1,
+                Builtin::Untagged,
             ),
             (
                 tr!(language, "高评分" => "Highly rated"),
                 self.manager.organizer.high_rating_count,
-                2,
+                Builtin::HighRating,
             ),
         ] {
             smart = smart.push(action(

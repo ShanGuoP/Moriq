@@ -479,13 +479,17 @@ impl App {
         } else if model.installed {
             content = content.push(
                 row![
-                    action(
-                        tr!(language, "重新分析" => "Analyze again"),
-                        Message::Jobs(tasks::JobMessage::Queue(format!("analysis:{id}")))
-                    )
-                    .on_press_maybe(self.library.as_ref().map(|_| {
-                        Message::Jobs(tasks::JobMessage::Queue(format!("analysis:{id}")))
-                    })),
+                    button(text(tr!(language, "重新分析" => "Analyze again")).size(13))
+                        .padding([8, 12])
+                        .style(secondary)
+                        .on_press_maybe(
+                            self.library
+                                .as_ref()
+                                .and_then(|_| id.parse::<ModelId>().ok())
+                                .map(|model| Message::Jobs(tasks::JobMessage::Queue(
+                                    JobKind::Analysis(model)
+                                )))
+                        ),
                     action(
                         tr!(language, "卸载" => "Uninstall"),
                         Message::Ai(AiMessage::Uninstall(id.clone()))
@@ -540,14 +544,17 @@ impl App {
             .jobs
             .iter()
             .filter(|job| {
-                (job.kind.starts_with("analysis:")
-                    || ["fingerprints", "thumbnails", "metadata"].contains(&job.kind.as_str()))
-                    && !["completed", "cancelled"].contains(&job.state.as_str())
+                (job.kind.model().is_some()
+                    || matches!(
+                        job.kind,
+                        JobKind::Fingerprints | JobKind::Thumbnails | JobKind::Metadata
+                    ))
+                    && !job.state.is_finished()
             })
             .collect();
         let current = jobs
             .iter()
-            .find(|job| job.state == "running")
+            .find(|job| job.state == JobState::Running)
             .or_else(|| jobs.first());
         let ratio = current.map_or(0., |job| {
             if job.total == 0 {
@@ -611,7 +618,7 @@ impl App {
                 ),
                 column![
                     heading(
-                        current.map_or(tr!(language, "当前没有索引任务" => "No indexing tasks"), |job| job_title(language, &job.kind)),
+                        current.map_or(tr!(language, "当前没有索引任务" => "No indexing tasks"), |job| job_title(language, job.kind)),
                         11
                     ),
                     progress_bar(0.0..=1.0, ratio)
@@ -640,8 +647,8 @@ impl App {
         for job in jobs.iter().take(3) {
             content = content.push(muted(format!(
                 "{} · {}",
-                job_title(language, &job.kind),
-                job_state(language, &job.state)
+                job_title(language, job.kind),
+                job_state(language, job.state)
             )));
         }
         if jobs.is_empty() {
@@ -733,26 +740,28 @@ fn model_description(language: Language, id: &str) -> &'static str {
         _ => tr!(language, "在本机分析图片内容。" => "Analyze image content locally."),
     }
 }
-fn job_title(language: Language, kind: &str) -> &'static str {
+fn job_title(language: Language, kind: JobKind) -> &'static str {
     match kind {
-        "analysis:chinese-clip" => {
+        JobKind::Analysis(ModelId::ChineseClip) => {
             tr!(language, "内容分类与语义索引" => "Content categories and semantic index")
         }
-        "analysis:florence" => {
+        JobKind::Analysis(ModelId::Florence) => {
             tr!(language, "文字识别与图像描述" => "Text recognition and image descriptions")
         }
-        "analysis:faces" => tr!(language, "人物识别与聚类" => "People recognition and clustering"),
-        "fingerprints" => tr!(language, "近似图片索引" => "Image similarity index"),
-        "thumbnails" => tr!(language, "重建图片缩略图" => "Rebuild image thumbnails"),
+        JobKind::Analysis(ModelId::Faces) => {
+            tr!(language, "人物识别与聚类" => "People recognition and clustering")
+        }
+        JobKind::Fingerprints => tr!(language, "近似图片索引" => "Image similarity index"),
+        JobKind::Thumbnails => tr!(language, "重建图片缩略图" => "Rebuild image thumbnails"),
         _ => tr!(language, "图片元数据索引" => "Image metadata index"),
     }
 }
-fn job_state(language: Language, state: &str) -> &'static str {
+fn job_state(language: Language, state: JobState) -> &'static str {
     match state {
-        "running" => tr!(language, "分析中…" => "Analyzing…"),
-        "queued" => tr!(language, "等待中" => "Queued"),
-        "paused" => tr!(language, "已暂停" => "Paused"),
-        "failed" => tr!(language, "失败" => "Failed"),
+        JobState::Running => tr!(language, "分析中…" => "Analyzing…"),
+        JobState::Queued => tr!(language, "等待中" => "Queued"),
+        JobState::Paused => tr!(language, "已暂停" => "Paused"),
+
         _ => tr!(language, "等待恢复" => "Waiting to resume"),
     }
 }

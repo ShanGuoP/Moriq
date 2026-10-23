@@ -9,7 +9,7 @@ fn fit_view_does_not_decode_original_and_repeated_zoom_does_not_restart_it() {
     asset.width = 6000;
     asset.height = 4000;
     let version = asset.version_id;
-    app.selected = Some(asset);
+    app.viewer.selected = Some(asset);
     assert_eq!(app.set_viewer(true).units(), 0);
     let viewport = Viewport {
         x: 0,
@@ -23,7 +23,7 @@ fn fit_view_does_not_decode_original_and_repeated_zoom_does_not_restart_it() {
             .units(),
         0
     );
-    assert!(!app.regions.loading);
+    assert!(!app.viewer.regions.loading);
     let zoomed = Viewport {
         scale: 1.0,
         ..viewport
@@ -33,34 +33,34 @@ fn fit_view_does_not_decode_original_and_repeated_zoom_does_not_restart_it() {
             .units()
             > 0
     );
-    let request = app.regions.request;
-    assert!(app.regions.loading);
+    let request = app.viewer.regions.request;
+    assert!(app.viewer.regions.loading);
     assert_eq!(
         app.region_message(RegionMessage::Viewport(version, zoomed))
             .units(),
         0
     );
-    assert_eq!(app.regions.request, request);
-    assert_eq!(app.regions.viewport, Some(zoomed));
+    assert_eq!(app.viewer.regions.request, request);
+    assert_eq!(app.viewer.regions.viewport, Some(zoomed));
     drop(app.set_viewer(false));
-    assert!(!app.regions.loading);
+    assert!(!app.viewer.regions.loading);
 
     drop(app.set_viewer(true));
     drop(app.region_message(RegionMessage::Actual));
-    assert!(app.regions.loading);
-    assert_eq!(app.regions.target_scale, Some(1.0 / app.dpi_scale));
-    assert!(app.regions.zoom_request > 0);
-    let cancelled = app.regions.cancelled.clone();
+    assert!(app.viewer.regions.loading);
+    assert_eq!(app.viewer.regions.target_scale, Some(1.0 / app.dpi_scale));
+    assert!(app.viewer.regions.zoom_request > 0);
+    let cancelled = app.viewer.regions.cancelled.clone();
     drop(app.set_viewer(false));
     assert!(cancelled.load(Ordering::Acquire));
-    assert!(!app.regions.cancelled.load(Ordering::Acquire));
+    assert!(!app.viewer.regions.cancelled.load(Ordering::Acquire));
     drop(app.set_viewer(true));
     drop(app.region_message(RegionMessage::Actual));
-    let closing = app.regions.cancelled.clone();
+    let closing = app.viewer.regions.cancelled.clone();
     drop(app.update(Message::WindowClose));
     assert!(closing.load(Ordering::Acquire));
-    assert!(!app.preview_expanded);
-    assert!(app.regions.session_task.is_none());
+    assert!(!app.viewer.preview_expanded);
+    assert!(app.viewer.regions.session_task.is_none());
 }
 use std::{
     collections::{HashMap, HashSet},
@@ -140,32 +140,32 @@ pub enum RegionMessage {
 }
 impl App {
     pub(super) fn begin_regions(&mut self) -> Task<Message> {
-        let (Some(library), Some(asset)) = (&self.library, &self.selected) else {
+        let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) else {
             return Task::none();
         };
         let (owner, id, version) = (library.info.id, asset.id, asset.version_id);
-        if self.regions.owner == Some(owner)
-            && self.regions.version == Some(version)
-            && (self.regions.session.is_some()
-                || self.regions.loading
-                || self.regions.session_failed)
+        if self.viewer.regions.owner == Some(owner)
+            && self.viewer.regions.version == Some(version)
+            && (self.viewer.regions.session.is_some()
+                || self.viewer.regions.loading
+                || self.viewer.regions.session_failed)
         {
             return Task::none();
         }
-        let viewport = self.regions.viewport;
-        let target_scale = self.regions.target_scale;
-        let zoom_request = self.regions.zoom_request;
-        self.regions.reset();
-        self.regions.viewport = viewport;
-        self.regions.target_scale = target_scale;
-        self.regions.zoom_request = zoom_request;
-        self.regions.loading = true;
-        self.original_size = None;
-        self.regions.owner = Some(owner);
-        self.regions.version = Some(version);
-        let request = self.regions.request;
+        let viewport = self.viewer.regions.viewport;
+        let target_scale = self.viewer.regions.target_scale;
+        let zoom_request = self.viewer.regions.zoom_request;
+        self.viewer.regions.reset();
+        self.viewer.regions.viewport = viewport;
+        self.viewer.regions.target_scale = target_scale;
+        self.viewer.regions.zoom_request = zoom_request;
+        self.viewer.regions.loading = true;
+        self.viewer.original_size = None;
+        self.viewer.regions.owner = Some(owner);
+        self.viewer.regions.version = Some(version);
+        let request = self.viewer.regions.request;
         let service = self.service.clone();
-        let cancelled = self.regions.cancelled.clone();
+        let cancelled = self.viewer.regions.cancelled.clone();
         let (task, handle) = Task::perform(
             async move {
                 service
@@ -175,16 +175,17 @@ impl App {
             move |r| Message::Regions(RegionMessage::Loaded(owner, id, version, request, r)),
         )
         .abortable();
-        self.regions.session_task = Some(handle);
+        self.viewer.regions.session_task = Some(handle);
         task
     }
     pub(super) fn region_message(&mut self, event: RegionMessage) -> Task<Message> {
         match event {
             RegionMessage::Actual => {
-                self.regions.session_failed = false;
-                self.regions.target_scale = Some(1. / self.dpi_scale);
-                self.regions.zoom_request += 1;
+                self.viewer.regions.session_failed = false;
+                self.viewer.regions.target_scale = Some(1. / self.dpi_scale);
+                self.viewer.regions.zoom_request += 1;
                 if self
+                    .viewer
                     .selected
                     .as_ref()
                     .is_some_and(|asset| asset.width.max(asset.height) > 1600)
@@ -194,80 +195,83 @@ impl App {
                 return Task::none();
             }
             RegionMessage::Fit => {
-                self.regions.target_scale = None;
-                self.regions.zoom_request += 1;
+                self.viewer.regions.target_scale = None;
+                self.viewer.regions.zoom_request += 1;
                 return Task::none();
             }
             RegionMessage::Loaded(owner, asset, version, request, result)
-                if self.preview_expanded
+                if self.viewer.preview_expanded
                     && self.library.as_ref().is_some_and(|l| l.info.id == owner)
                     && self
+                        .viewer
                         .selected
                         .as_ref()
                         .is_some_and(|a| a.id == asset && a.version_id == version)
-                    && self.regions.request == request =>
+                    && self.viewer.regions.request == request =>
             {
-                self.regions.loading = false;
-                self.regions.session_task = None;
+                self.viewer.regions.loading = false;
+                self.viewer.regions.session_task = None;
                 match result {
                     Ok(session) => {
-                        self.original_size = Some((session.width, session.height));
-                        self.regions.session = Some(session)
+                        self.viewer.original_size = Some((session.width, session.height));
+                        self.viewer.regions.session = Some(session)
                     }
                     Err(e) => {
-                        self.regions.session_failed = true;
+                        self.viewer.regions.session_failed = true;
                         self.error = Some(e);
                         return Task::none();
                     }
                 }
             }
             RegionMessage::Viewport(version, viewport)
-                if self.preview_expanded
+                if self.viewer.preview_expanded
                     && self
+                        .viewer
                         .selected
                         .as_ref()
                         .is_some_and(|a| a.version_id == version) =>
             {
-                self.regions.viewport = Some(viewport);
-                if let Some(asset) = &self.selected
+                self.viewer.regions.viewport = Some(viewport);
+                if let Some(asset) = &self.viewer.selected
                     && viewport.scale.is_finite()
                     && viewport.scale * self.dpi_scale * asset.width.max(asset.height) as f32
                         > 1600.0
-                    && self.regions.session.is_none()
+                    && self.viewer.regions.session.is_none()
                 {
                     return self.begin_regions();
                 }
             }
             RegionMessage::Tile(owner, version, request, region, result)
-                if self.preview_expanded
-                    && self.regions.owner == Some(owner)
-                    && self.regions.version == Some(version)
-                    && self.regions.request == request =>
+                if self.viewer.preview_expanded
+                    && self.viewer.regions.owner == Some(owner)
+                    && self.viewer.regions.version == Some(version)
+                    && self.viewer.regions.request == request =>
             {
-                self.regions.pending.remove(&region);
-                self.regions.tile_tasks.remove(&region);
+                self.viewer.regions.pending.remove(&region);
+                self.viewer.regions.tile_tasks.remove(&region);
                 match result {
                     Ok(handle) => {
-                        self.regions.clock += 1;
-                        let age = self.regions.clock;
-                        self.regions.tiles.insert(region, (handle, age));
-                        while self.regions.tiles.len() > 128 {
+                        self.viewer.regions.clock += 1;
+                        let age = self.viewer.regions.clock;
+                        self.viewer.regions.tiles.insert(region, (handle, age));
+                        while self.viewer.regions.tiles.len() > 128 {
                             let candidate = self
+                                .viewer
                                 .regions
                                 .tiles
                                 .iter()
-                                .filter(|(r, _)| !self.regions.visible.contains(r))
+                                .filter(|(r, _)| !self.viewer.regions.visible.contains(r))
                                 .min_by_key(|(_, (_, age))| *age)
                                 .map(|(r, _)| *r);
                             if let Some(old) = candidate {
-                                self.regions.tiles.remove(&old);
+                                self.viewer.regions.tiles.remove(&old);
                             } else {
                                 break;
                             }
                         }
                     }
                     Err(e) => {
-                        self.regions.failed.insert(region);
+                        self.viewer.regions.failed.insert(region);
                         self.error = Some(e)
                     }
                 }
@@ -278,14 +282,14 @@ impl App {
     }
     fn schedule_regions(&mut self) -> Task<Message> {
         let (Some(session), Some(viewport), Some(owner), Some(version)) = (
-            self.regions.session.clone(),
-            self.regions.viewport,
-            self.regions.owner,
-            self.regions.version,
+            self.viewer.regions.session.clone(),
+            self.viewer.regions.viewport,
+            self.viewer.regions.owner,
+            self.viewer.regions.version,
         ) else {
             return Task::none();
         };
-        self.regions.visible.clear();
+        self.viewer.regions.visible.clear();
         let physical_scale = viewport.scale * self.dpi_scale;
         if !physical_scale.is_finite()
             || physical_scale <= 1600.0 / session.width.max(session.height) as f32
@@ -301,7 +305,7 @@ impl App {
             .min(u64::from(session.height)) as u32;
         for y in (viewport.y / span * span..bottom).step_by(span as usize) {
             for x in (viewport.x / span * span..right).step_by(span as usize) {
-                self.regions.visible.push(ImageRegion {
+                self.viewer.regions.visible.push(ImageRegion {
                     x,
                     y,
                     width: span.min(session.width - x),
@@ -314,30 +318,30 @@ impl App {
             viewport.x as f64 + viewport.width as f64 / 2.,
             viewport.y as f64 + viewport.height as f64 / 2.,
         );
-        self.regions.visible.sort_by(|a, b| {
+        self.viewer.regions.visible.sort_by(|a, b| {
             let distance = |r: &ImageRegion| {
                 (r.x as f64 + r.width as f64 / 2. - center.0).powi(2)
                     + (r.y as f64 + r.height as f64 / 2. - center.1).powi(2)
             };
             distance(a).total_cmp(&distance(b))
         });
-        self.regions.visible.truncate(128);
+        self.viewer.regions.visible.truncate(128);
         let mut tasks = Vec::new();
-        for region in self.regions.visible.clone() {
-            if self.regions.pending.len() >= 4 {
+        for region in self.viewer.regions.visible.clone() {
+            if self.viewer.regions.pending.len() >= 4 {
                 break;
             }
-            if self.regions.tiles.contains_key(&region)
-                || self.regions.pending.contains(&region)
-                || self.regions.failed.contains(&region)
+            if self.viewer.regions.tiles.contains_key(&region)
+                || self.viewer.regions.pending.contains(&region)
+                || self.viewer.regions.failed.contains(&region)
             {
                 continue;
             }
-            self.regions.pending.insert(region);
-            let request = self.regions.request;
+            self.viewer.regions.pending.insert(region);
+            let request = self.viewer.regions.request;
             let service = self.service.clone();
             let session = session.clone();
-            let cancelled = self.regions.cancelled.clone();
+            let cancelled = self.viewer.regions.cancelled.clone();
             let (task, handle) = Task::perform(
                 async move {
                     service
@@ -348,7 +352,7 @@ impl App {
                 move |r| Message::Regions(RegionMessage::Tile(owner, version, request, region, r)),
             )
             .abortable();
-            self.regions.tile_tasks.insert(region, handle);
+            self.viewer.regions.tile_tasks.insert(region, handle);
             tasks.push(task);
         }
         Task::batch(tasks)
