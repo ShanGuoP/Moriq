@@ -92,7 +92,6 @@ fn model_sidebar_has_all_libraries_and_switch_keeps_global_model_state() {
 #[test]
 fn changing_model_load_policy_keeps_selected_download_source() {
     let mut app = app();
-    app.launch.design_preview = true;
     assert!(app.preferences.ai.use_mirror);
     drop(app.update(Message::ToggleModelMirror));
     assert!(!app.preferences.ai.use_mirror);

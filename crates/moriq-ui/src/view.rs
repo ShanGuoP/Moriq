@@ -80,8 +80,6 @@ impl App {
                 "空间统计 · 已检查 {} 个文件",
                 control.files.load(Ordering::Relaxed)
             )
-        } else if self.launch.design_preview {
-            "设计预览 · 示例数据".into()
         } else if self.loading {
             "正在读取素材…".into()
         } else {
@@ -573,7 +571,7 @@ impl App {
         message: Message,
         active: bool,
     ) -> Element<'_, Message> {
-        let unavailable = !self.launch.design_preview && matches!(&message, Message::Notice(_));
+        let unavailable = matches!(&message, Message::Notice(_));
         let color = if unavailable {
             MUTED
         } else if active {
@@ -772,49 +770,28 @@ impl App {
                     .style(secondary),
                 );
             if let Some(library) = &self.library {
-                let entries = if self.launch.design_preview {
-                    vec![
-                        ("我的素材库", 12480, "library-mountain"),
-                        ("设计素材库", 8320, "library-building"),
-                        ("AI 生成素材库", 6180, "library-ai"),
-                        ("旅行摄影库", 4392, "library-sea"),
-                    ]
-                } else {
-                    vec![(
-                        library.info.name.as_str(),
-                        library.info.count,
-                        "library-mountain",
-                    )]
-                };
-                for (index, (name, count, art)) in entries.into_iter().enumerate() {
-                    let thumbnail = if self.launch.design_preview {
-                        self.artwork.get(art)
-                    } else {
-                        self.tiles.first().and_then(|tile| tile.handle.as_ref())
-                    };
-                    content = content.push(
-                        button(
-                            row![
-                                photo(thumbnail, Length::Fixed(48.0), 48.0),
-                                column![
-                                    heading(format!("{name}.moriq"), 13),
-                                    muted(format!("{} 张", number(count)))
-                                ]
-                                .spacing(6)
+                let name = &library.info.name;
+                let count = library.info.count;
+
+                let thumbnail = self.tiles.first().and_then(|tile| tile.handle.as_ref());
+                content = content.push(
+                    button(
+                        row![
+                            photo(thumbnail, Length::Fixed(48.0), 48.0),
+                            column![
+                                heading(format!("{name}.moriq"), 13),
+                                muted(format!("{} 张", number(count)))
                             ]
-                            .spacing(10)
-                            .align_y(Alignment::Center),
-                        )
-                        .padding([7, 8])
-                        .width(Length::Fill)
-                        .style(theme::nav(index == 0))
-                        .on_press(if index == 0 {
-                            Message::Navigate(0)
-                        } else {
-                            Message::Notice("该资源库为设计示例，请打开自己的资源库。".into())
-                        }),
-                    );
-                }
+                            .spacing(6)
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([7, 8])
+                    .width(Length::Fill)
+                    .style(theme::nav(true))
+                    .on_press(Message::Navigate(0)),
+                );
             }
             content = content.push(
                 button(row![icon(Icon::Folder, 16.0, MUTED), muted("打开已有资源库…")].spacing(10))
@@ -822,7 +799,7 @@ impl App {
                     .padding(10)
                     .style(flat),
             );
-        } else if self.library.is_some() || self.launch.design_preview {
+        } else if self.library.is_some() {
             content = content.push(
                 row![
                     muted(if self.screen == Screen::Models {
@@ -836,31 +813,16 @@ impl App {
                 .align_y(Alignment::Center),
             );
             if let Some(library) = &self.library {
-                for (index, project) in library
+                for project in library
                     .info
                     .projects
                     .iter()
                     .take(if self.screen == Screen::Models { 5 } else { 4 })
-                    .enumerate()
                 {
-                    let artwork = [
-                        "project-mountain",
-                        "project-building",
-                        "project-mountain",
-                        "project-spring",
-                        "project-sea",
-                    ][index % 5];
-                    let thumbnail = if self.launch.design_preview {
-                        self.artwork.get(artwork)
-                    } else {
-                        self.manager.project_covers.get(&project.id)
-                    };
+                    let thumbnail = self.manager.project_covers.get(&project.id);
                     let compact = self.screen == Screen::Models;
                     let thumb_size = if compact { 28.0 } else { 40.0 };
-                    let selected = self.query.project == Some(project.id)
-                        || (self.launch.design_preview
-                            && index == 0
-                            && self.screen == Screen::Assets);
+                    let selected = self.query.project == Some(project.id);
                     let data: Element<'_, Message> = if compact {
                         row![
                             text(manage::project_label(&library.info.projects, project.id))
@@ -918,11 +880,7 @@ impl App {
                     (
                         Icon::Tag,
                         "未加标签",
-                        if self.launch.design_preview {
-                            320
-                        } else {
-                            self.manager.organizer.untagged_count
-                        },
+                        self.manager.organizer.untagged_count,
                         Message::Manage(ManageMessage::Builtin(1)),
                     ),
                     (
@@ -934,37 +892,25 @@ impl App {
                     (
                         Icon::Raw,
                         "RAW 文件",
-                        if self.launch.design_preview {
-                            502
-                        } else {
-                            self.manager.organizer.raw_count
-                        },
+                        self.manager.organizer.raw_count,
                         Message::Manage(ManageMessage::Builtin(6)),
                     ),
                     (
                         Icon::Video,
                         "视频",
-                        if self.launch.design_preview {
-                            118
-                        } else {
-                            self.manager.organizer.video_count
-                        },
+                        self.manager.organizer.video_count,
                         Message::Notice("当前尚不支持视频预览".into()),
                     ),
                     (
                         Icon::Image,
                         "截图",
-                        if self.launch.design_preview {
-                            76
-                        } else {
-                            self.category_count("截图")
-                        },
+                        self.category_count("截图"),
                         Message::Ai(AiMessage::Category("截图".into())),
                     ),
                     (
                         Icon::Duplicate,
                         "重复文件",
-                        if self.launch.design_preview { 24 } else { 0 },
+                        0,
                         Message::Notice("导入时会自动跳过完全相同的图片".into()),
                     ),
                 ]
@@ -1053,8 +999,7 @@ impl App {
                 }
             }
             for (kind, label, count, message) in rows {
-                let displayed = if self.launch.design_preview
-                    || label == "全部素材"
+                let displayed = if label == "全部素材"
                     || label == "收藏夹"
                     || [
                         "最近添加",
@@ -1094,11 +1039,7 @@ impl App {
                 content = content.push(separator()).push(self.nav_row(
                     Icon::Trash,
                     "回收站",
-                    Some(if self.launch.design_preview {
-                        "24".into()
-                    } else {
-                        number(self.manager.organizer.trash_count)
-                    }),
+                    Some(number(self.manager.organizer.trash_count)),
                     Message::Manage(ManageMessage::Builtin(3)),
                     false,
                 ));
@@ -1110,35 +1051,27 @@ impl App {
                 .push(
                     progress_bar(
                         0.0..=1.0,
-                        if self.launch.design_preview {
-                            0.6
-                        } else {
-                            self.storage.volume.filter(|(total, _)| *total > 0).map_or(
-                                0.0,
-                                |(total, available)| {
-                                    total.saturating_sub(available) as f32 / total as f32
-                                },
-                            )
-                        },
+                        self.storage.volume.filter(|(total, _)| *total > 0).map_or(
+                            0.0,
+                            |(total, available)| {
+                                total.saturating_sub(available) as f32 / total as f32
+                            },
+                        ),
                     )
                     .girth(4)
                     .style(theme::progress),
                 )
-                .push(muted(if self.launch.design_preview {
-                    "2.4 TB / 4 TB".into()
-                } else {
+                .push(muted(
                     self.storage
                         .volume
                         .map(|(total, available)| {
                             format!("所在卷 · 可用 {} / {}", size(available), size(total))
                         })
-                        .unwrap_or_else(|| "正在查询卷容量…".into())
-                }))
+                        .unwrap_or_else(|| "正在查询卷容量…".into()),
+                ))
                 .push(action("空间明细", Message::Storage(StorageMessage::Open)));
         }
-        if self.launch.design_preview {
-            bottom = bottom.push(muted("设计预览 · 示例数据"));
-        }
+
         container(
             column![
                 logo,

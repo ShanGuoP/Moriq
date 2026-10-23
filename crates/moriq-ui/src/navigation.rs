@@ -138,7 +138,7 @@ impl App {
         }
     }
     pub(super) fn persist_navigation(&self) -> Task<Message> {
-        if self.launch.design_preview || self.launch.capture.is_some() || self.history.restoring {
+        if self.launch.capture.is_some() || self.history.restoring {
             return Task::none();
         }
         let Some(library) = &self.library else {
@@ -294,7 +294,6 @@ impl App {
         }
         let navigation = if library != self.library.as_ref().map(|l| l.info.id)
             && !models_switch
-            && !self.launch.design_preview
             && self.launch.capture.is_none()
             && self.launch.screen == 0
         {

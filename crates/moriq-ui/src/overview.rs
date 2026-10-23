@@ -11,28 +11,16 @@ impl App {
             return self.welcome();
         };
         let info = &library.info;
-        let cover = if self.launch.design_preview {
-            self.artwork.get("hero-cover")
-        } else {
-            self.manager
-                .cover
-                .as_ref()
-                .or_else(|| self.tiles.first().and_then(|t| t.handle.as_ref()))
-        };
-        let banner = if self.launch.design_preview {
-            self.artwork.get("project-mountain")
-        } else {
-            cover
-        };
-        let picture: Element<'_, Message> = if let Some(cover) = banner {
+        let cover = self
+            .manager
+            .cover
+            .as_ref()
+            .or_else(|| self.tiles.first().and_then(|t| t.handle.as_ref()));
+        let picture: Element<'_, Message> = if let Some(cover) = cover {
             image(cover.clone())
                 .width(Length::Fill)
                 .height(265)
-                .content_fit(if self.launch.design_preview {
-                    ContentFit::Fill
-                } else {
-                    ContentFit::Cover
-                })
+                .content_fit(ContentFit::Cover)
                 .border_radius(9)
                 .into()
         } else {
@@ -53,9 +41,7 @@ impl App {
         ]
         .spacing(10)
         .align_y(Alignment::Center);
-        let description = text(if self.launch.design_preview {
-            "记录生活中的每一个灵感瞬间，收集摄影、设计、工作中的优质\n素材，让创意随时可用。"
-        } else if self.manager.organizer.description.is_empty() {
+        let description = text(if self.manager.organizer.description.is_empty() {
             "收集、整理与保存你的创作素材。"
         } else {
             &self.manager.organizer.description
@@ -108,11 +94,7 @@ impl App {
             hero_stat(
                 Icon::Folder,
                 GREEN,
-                if self.launch.design_preview {
-                    "36".into()
-                } else {
-                    info.projects.len().to_string()
-                },
+                info.projects.len().to_string(),
                 "项目数量"
             ),
             hero_stat(
@@ -124,15 +106,11 @@ impl App {
             hero_stat(
                 Icon::Database,
                 PURPLE,
-                if self.launch.design_preview {
-                    "248 GB".into()
-                } else {
-                    self.storage
-                        .stats
-                        .as_ref()
-                        .map(|s| size(s.allocated))
-                        .unwrap_or_else(|| size(info.bytes))
-                },
+                self.storage
+                    .stats
+                    .as_ref()
+                    .map(|s| size(s.allocated))
+                    .unwrap_or_else(|| size(info.bytes)),
                 if self.storage.stats.is_some() {
                     "库内占用"
                 } else {
@@ -217,33 +195,10 @@ impl App {
                 .cmp(&a.visited_at)
                 .then_with(|| a.name.cmp(&b.name))
         });
-        for (index, project) in recent_projects.into_iter().take(4).enumerate() {
-            let key = [
-                "project-mountain",
-                "project-building",
-                "project-spring",
-                "project-sea",
-            ][index];
-            let title = if self.launch.design_preview {
-                [
-                    "日本旅行写真",
-                    "品牌设计灵感",
-                    "春日樱花企划",
-                    "海岛风光收集",
-                ][index]
-            } else {
-                &project.name
-            };
-            let image = if self.launch.design_preview {
-                self.artwork.get(key)
-            } else {
-                self.manager.project_covers.get(&project.id)
-            };
-            let count = if self.launch.design_preview {
-                [326, 842, 521, 318][index]
-            } else {
-                project.count
-            };
+        for project in recent_projects.into_iter().take(4) {
+            let title = &project.name;
+            let image = self.manager.project_covers.get(&project.id);
+            let count = project.count;
             projects = projects.push(
                 container(column![
                     button(photo(image, Length::Fixed(144.0), 256.0))
@@ -288,119 +243,54 @@ impl App {
             );
         }
         let mut favorites = Row::new().spacing(10);
-        if self.launch.design_preview {
-            for (title, amount, key) in [
-                ("雪山日落", 142, "favorite-mountain"),
-                ("可爱猫咪", 86, "favorite-cat"),
-                ("植物特写", 64, "favorite-plant"),
-                ("圣托里尼", 120, "favorite-coast"),
-            ] {
-                favorites = favorites.push(
-                    button(column![
-                        photo(self.artwork.get(key), Length::Fixed(144.0), 256.0),
-                        container(
-                            column![heading(title, 12), muted(format!("{amount} 张"))].spacing(3)
-                        )
-                        .padding([5, 8])
-                    ])
-                    .padding(0)
-                    .style(secondary)
-                    .on_press(Message::Favorites)
-                    .width(144),
-                );
-            }
-        } else {
-            for tile in self.manager.favorites.iter().take(4) {
-                favorites = favorites.push(
-                    button(column![
-                        photo(tile.handle.as_ref(), Length::Fixed(144.0), 256.0),
-                        container(text(&tile.asset.name).size(12)).padding(6)
-                    ])
-                    .padding(0)
-                    .style(secondary)
-                    .on_press(Message::Favorites)
-                    .width(144),
-                );
-            }
-        }
-        let favorites: Element<'_, Message> =
-            if self.launch.design_preview || !self.manager.favorites.is_empty() {
-                iced::widget::scrollable(favorites)
-                    .direction(iced::widget::scrollable::Direction::Horizontal(
-                        Default::default(),
-                    ))
-                    .width(Length::Fill)
-                    .into()
-            } else {
-                container(muted("收藏喜欢的素材，让灵感随手可得。"))
-                    .height(105)
-                    .width(Length::Fill)
-                    .center_y(105)
-                    .padding(16)
-                    .style(panel)
-                    .into()
-            };
-        let mut smart = Column::new().spacing(7);
-        for (kind, color, title, description, count) in [
-            (Icon::Person, BLUE, "人像照片", "包含人物的照片", 2384),
-            (Icon::Image, GREEN, "风景摄影", "山川、海洋、城市风光", 4126),
-            (Icon::Folder, PURPLE, "截图素材", "应用截图、界面设计", 980),
-            (
-                Icon::Sparkles,
-                BLUE,
-                "AI 生成内容",
-                "使用 AI 工具生成的图片",
-                1852,
-            ),
-        ] {
-            smart = smart.push(
-                button(
-                    row![
-                        container(icon(kind, 18.0, color))
-                            .padding(7)
-                            .style(move |_| container::Style {
-                                background: Some(Color { a: 0.09, ..color }.into()),
-                                border: Border {
-                                    radius: 8.0.into(),
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            }),
-                        column![heading(title, 12), muted(description)].spacing(2),
-                        Space::new().width(Length::Fill),
-                        muted(if self.launch.design_preview {
-                            number(count)
-                        } else {
-                            "0".into()
-                        })
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
-                )
+
+        for tile in self.manager.favorites.iter().take(4) {
+            favorites = favorites.push(
+                button(column![
+                    photo(tile.handle.as_ref(), Length::Fixed(144.0), 256.0),
+                    container(text(&tile.asset.name).size(12)).padding(6)
+                ])
                 .padding(0)
-                .style(flat)
-                .on_press(Message::Navigate(2)),
+                .style(secondary)
+                .on_press(Message::Favorites)
+                .width(144),
             );
         }
-        if !self.launch.design_preview {
-            smart = Column::new().spacing(7);
-            for (label, count, builtin) in [
-                ("最近导入", self.manager.organizer.recent_count, 0),
-                ("未加标签", self.manager.organizer.untagged_count, 1),
-                ("高评分", self.manager.organizer.high_rating_count, 2),
-            ] {
-                smart = smart.push(action(
-                    &format!("{label}  {count}"),
-                    Message::Manage(ManageMessage::Builtin(builtin)),
-                ));
-            }
-            for collection in self.manager.organizer.collections.iter().take(3) {
-                smart = smart.push(action(
-                    &collection.name,
-                    Message::Manage(ManageMessage::UseCollection(collection.id.clone())),
-                ));
-            }
+
+        let favorites: Element<'_, Message> = if !self.manager.favorites.is_empty() {
+            iced::widget::scrollable(favorites)
+                .direction(iced::widget::scrollable::Direction::Horizontal(
+                    Default::default(),
+                ))
+                .width(Length::Fill)
+                .into()
+        } else {
+            container(muted("收藏喜欢的素材，让灵感随手可得。"))
+                .height(105)
+                .width(Length::Fill)
+                .center_y(105)
+                .padding(16)
+                .style(panel)
+                .into()
+        };
+        let mut smart = Column::new().spacing(7);
+        for (label, count, builtin) in [
+            ("最近导入", self.manager.organizer.recent_count, 0),
+            ("未加标签", self.manager.organizer.untagged_count, 1),
+            ("高评分", self.manager.organizer.high_rating_count, 2),
+        ] {
+            smart = smart.push(action(
+                &format!("{label}  {count}"),
+                Message::Manage(ManageMessage::Builtin(builtin)),
+            ));
         }
+        for collection in self.manager.organizer.collections.iter().take(3) {
+            smart = smart.push(action(
+                &collection.name,
+                Message::Manage(ManageMessage::UseCollection(collection.id.clone())),
+            ));
+        }
+
         let bottom = row![
             column![
                 column![section("收藏夹", Message::Favorites), favorites].spacing(10),
@@ -417,44 +307,16 @@ impl App {
         ]
         .spacing(36);
         let mut tags = Row::new().spacing(7);
-        if self.launch.design_preview {
-            for (label, count) in [
-                ("风景", 3520),
-                ("人像", 2384),
-                ("城市", 1862),
-                ("自然", 1420),
-                ("建筑", 980),
-                ("旅行", 2156),
-                ("生活", 1248),
-                ("设计", 892),
-            ] {
-                tags = tags.push(
-                    button(
-                        container(
-                            row![
-                                text(format!("# {label}")).size(12).color(BLUE),
-                                text(number(count)).size(11).color(MUTED)
-                            ]
-                            .spacing(7),
-                        )
-                        .padding([7, 10])
-                        .style(pale),
-                    )
+
+        for (tag, count) in self.manager.organizer.tags.iter().take(8) {
+            tags = tags.push(
+                button(chip(format!("# {tag} {count}"), BLUE))
                     .padding(0)
                     .style(flat)
-                    .on_press(Message::Search(label.into())),
-                );
-            }
-        } else {
-            for (tag, count) in self.manager.organizer.tags.iter().take(8) {
-                tags = tags.push(
-                    button(chip(format!("# {tag} {count}"), BLUE))
-                        .padding(0)
-                        .style(flat)
-                        .on_press(Message::Manage(ManageMessage::Tag(tag.clone()))),
-                );
-            }
+                    .on_press(Message::Manage(ManageMessage::Tag(tag.clone()))),
+            );
         }
+
         let center = column![
             hero,
             Space::new().height(18),
@@ -564,31 +426,15 @@ impl App {
                 info_row("名称", format!("{}.moriq", info.name)),
                 info_row(
                     "描述",
-                    if self.launch.design_preview {
-                        "记录生活中的每一个灵感瞬间。".into()
-                    } else if self.manager.organizer.description.is_empty() {
+                    if self.manager.organizer.description.is_empty() {
                         "暂无描述".into()
                     } else {
                         self.manager.organizer.description.clone()
                     }
                 ),
                 separator(),
-                info_row(
-                    "创建时间",
-                    if self.launch.design_preview {
-                        "2024年3月12日 10:24".into()
-                    } else {
-                        date(info.created_at)
-                    }
-                ),
-                info_row(
-                    "更新时间",
-                    if self.launch.design_preview {
-                        "2024年8月24日 16:32".into()
-                    } else {
-                        date(info.updated_at)
-                    }
-                ),
+                info_row("创建时间", date(info.created_at)),
+                info_row("更新时间", date(info.updated_at)),
                 row![
                     muted("资源库路径").width(80),
                     text(display_path(&library.root)).size(10).color(ICON),
@@ -604,77 +450,39 @@ impl App {
         .padding(18)
         .width(Length::Fill)
         .style(panel);
-        let storage_value = if self.launch.design_preview {
-            "248 GB".into()
-        } else {
-            self.storage
-                .stats
-                .as_ref()
-                .map(|s| size(s.allocated))
-                .unwrap_or_else(|| "待统计".into())
-        };
+        let storage_value = self
+            .storage
+            .stats
+            .as_ref()
+            .map(|s| size(s.allocated))
+            .unwrap_or_else(|| "待统计".into());
         let mut legend = Column::new().spacing(14);
-        for (label, value, percent, color) in if self.launch.design_preview {
-            vec![
-                ("图片素材", "180 GB".to_string(), "72%", BLUE),
-                ("视频素材", "36 GB".to_string(), "14%", PURPLE),
-                (
-                    "其他文件",
-                    "20 GB".to_string(),
-                    "8%",
-                    Color::from_rgb8(255, 177, 76),
-                ),
-                ("项目数据", "12 GB".to_string(), "5%", BLUE),
-            ]
-        } else {
-            vec![]
-        } {
-            legend = legend.push(
-                row![
-                    container(Space::new().width(8).height(8)).style(move |_| container::Style {
-                        background: Some(color.into()),
-                        border: Border {
-                            radius: 4.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
-                    text(label).size(12).color(ICON),
-                    Space::new().width(Length::Fill),
-                    text(value).size(12).color(TEXT),
-                    text(percent).size(11).color(MUTED)
-                ]
-                .spacing(7)
-                .align_y(Alignment::Center),
-            );
-        }
-        if !self.launch.design_preview {
-            if let Some(stats) = &self.storage.stats {
-                for (label, bytes) in &stats.categories {
-                    legend = legend.push(
-                        row![
-                            text(label).size(11).width(Length::Fill),
-                            muted(size(*bytes))
-                        ]
-                        .spacing(8),
-                    );
-                }
-                legend = legend.push(muted(format!(
-                    "采样 {}{}",
-                    date(stats.measured_at),
-                    if stats.cancelled || stats.warnings > 0 {
-                        " · 部分结果"
-                    } else {
-                        ""
-                    }
-                )));
-            } else {
-                legend = legend.push(muted(format!(
-                    "素材登记量 {}，含外部引用；尚未统计实际磁盘空间。",
-                    size(info.bytes)
-                )));
+        if let Some(stats) = &self.storage.stats {
+            for (label, bytes) in &stats.categories {
+                legend = legend.push(
+                    row![
+                        text(label).size(11).width(Length::Fill),
+                        muted(size(*bytes))
+                    ]
+                    .spacing(8),
+                );
             }
+            legend = legend.push(muted(format!(
+                "采样 {}{}",
+                date(stats.measured_at),
+                if stats.cancelled || stats.warnings > 0 {
+                    " · 部分结果"
+                } else {
+                    ""
+                }
+            )));
+        } else {
+            legend = legend.push(muted(format!(
+                "素材登记量 {}，含外部引用；尚未统计实际磁盘空间。",
+                size(info.bytes)
+            )));
         }
+
         let storage = container(
             column![
                 section("存储使用情况", Message::Storage(StorageMessage::Open)),
@@ -682,19 +490,15 @@ impl App {
                     donut(
                         storage_value,
                         "库内占用",
-                        if self.launch.design_preview {
-                            0.72
-                        } else {
-                            self.storage
-                                .stats
-                                .as_ref()
-                                .filter(|s| s.allocated > 0)
-                                .map_or(0.0, |s| {
-                                    s.categories.first().map_or(0.0, |(_, bytes)| {
-                                        *bytes as f32 / s.allocated as f32
-                                    })
-                                })
-                        }
+                        self.storage
+                            .stats
+                            .as_ref()
+                            .filter(|s| s.allocated > 0)
+                            .map_or(0.0, |s| {
+                                s.categories
+                                    .first()
+                                    .map_or(0.0, |(_, bytes)| *bytes as f32 / s.allocated as f32)
+                            })
                     ),
                     container(legend).width(Length::Fill)
                 ]
@@ -706,101 +510,30 @@ impl App {
         .padding(18)
         .style(panel);
         let mut activities = Column::new().spacing(10);
-        if self.launch.design_preview {
-            for (kind, title, description, time, key, color) in [
-                (
-                    Icon::Import,
-                    "导入了 328 张图片",
-                    "来自 旅行_批量_2024",
-                    "2 小时前",
-                    Some("project-mountain"),
-                    BLUE,
-                ),
-                (
-                    Icon::Heart,
-                    "收藏了 12 张照片",
-                    "雪山日落 等 12 张",
-                    "5 小时前",
-                    None,
-                    Color::from_rgb8(255, 83, 107),
-                ),
-                (
-                    Icon::Folder,
-                    "创建了项目「春日樱花企划」",
-                    "521 张图片",
-                    "1 天前",
-                    Some("project-spring"),
-                    BLUE,
-                ),
-                (
-                    Icon::Tag,
-                    "添加了标签「#旅行」",
-                    "32 张图片",
-                    "2 天前",
-                    None,
-                    BLUE,
-                ),
-                (
-                    Icon::Trash,
-                    "从相册删除了 8 张图片",
-                    "",
-                    "3 天前",
-                    None,
-                    ICON,
-                ),
-            ] {
-                let art: Element<'_, Message> = if let Some(key) = key {
-                    photo(self.artwork.get(key), Length::Fixed(40.0), 40.0)
-                } else {
-                    container(icon(kind, 20.0, color))
-                        .center_x(40)
-                        .center_y(40)
-                        .style(move |_| container::Style {
-                            background: Some(Color { a: 0.09, ..color }.into()),
-                            border: Border {
-                                radius: 8.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                };
-                activities = activities.push(
-                    row![
-                        art,
-                        column![heading(title, 12), muted(description)]
-                            .spacing(4)
-                            .width(Length::Fill),
-                        text(time).size(11).color(MUTED)
+
+        for event in &self.journal.recent {
+            let message = event
+                .asset
+                .map(|id| Message::Journal(JournalMessage::OpenAsset(id)))
+                .unwrap_or(Message::Journal(JournalMessage::Open(false)));
+            activities = activities.push(
+                button(
+                    column![
+                        heading(journal::event_label(&event.kind), 12),
+                        text(&event.detail).size(12),
+                        muted(date(event.at))
                     ]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
-                );
-            }
-        } else {
-            for event in &self.journal.recent {
-                let message = event
-                    .asset
-                    .map(|id| Message::Journal(JournalMessage::OpenAsset(id)))
-                    .unwrap_or(Message::Journal(JournalMessage::Open(false)));
-                activities = activities.push(
-                    button(
-                        column![
-                            heading(journal::event_label(&event.kind), 12),
-                            text(&event.detail).size(12),
-                            muted(date(event.at))
-                        ]
-                        .spacing(4),
-                    )
-                    .padding(4)
-                    .style(flat)
-                    .on_press(message),
-                );
-            }
-            if self.journal.recent.is_empty() {
-                activities = activities.push(muted("暂无已记录的活动"));
-            }
+                    .spacing(4),
+                )
+                .padding(4)
+                .style(flat)
+                .on_press(message),
+            );
         }
+        if self.journal.recent.is_empty() {
+            activities = activities.push(muted("暂无已记录的活动"));
+        }
+
         column![
             info_panel,
             storage,

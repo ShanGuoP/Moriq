@@ -1455,22 +1455,6 @@ impl Service {
             .await?;
         launch::open(path.into_os_string(), true).await
     }
-    pub async fn resources(
-        &self,
-        resources: Vec<(&'static str, &'static [u8])>,
-    ) -> Result<Vec<(String, Pixels)>> {
-        self.dispatch(true, move |_| {
-            resources
-                .into_iter()
-                .map(|(name, bytes)| {
-                    moriq_library::decode_resource(bytes)
-                        .map(|pixels| (name.to_string(), pixels))
-                        .map_err(|e| e.to_string())
-                })
-                .collect()
-        })
-        .await
-    }
     pub async fn masonry(
         &self,
         library: LibraryId,

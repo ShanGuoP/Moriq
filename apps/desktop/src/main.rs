@@ -67,8 +67,6 @@ _=>return Err("--screen expects overview, assets or models".into())}
             Some("--exit-after-capture")=>launch.exit_after_capture=true,
             #[cfg(feature = "capture")]
             Some("--select-first")=>launch.select_first=true,
-            #[cfg(feature = "capture")]
-            Some("--design-preview")=>launch.design_preview=true,
             _=>return Err("Unknown argument. Use --library PATH or --import PATH. Diagnostic flags require the capture feature.".into()),
         }
     }

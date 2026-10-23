@@ -1113,16 +1113,6 @@ pub fn save_capture(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result
     )?;
     Ok(())
 }
-pub fn decode_resource(bytes: &[u8]) -> Result<Pixels> {
-    let mut reader = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    limits.max_alloc = Some(32 * 1024 * 1024);
-    reader.limits(limits);
-    Ok(pixels(reader.decode()?))
-}
-
 fn require_hardlinks(root: &Path) -> Result<()> {
     let probe = tempfile::NamedTempFile::new_in(root)?;
     let link = root.join(format!(".moriq-link-probe-{}", Uuid::new_v4()));

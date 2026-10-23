@@ -157,34 +157,34 @@ impl App {
             self.gallery()
         };
         let mut center = column![titlebar, filters.wrap()];
-        if !self.launch.design_preview {
-            center = center.push(
-                row![
-                    action(
+
+        center = center.push(
+            row![
+                action(
+                    if self.manager.multiselect {
+                        "退出多选"
+                    } else {
+                        "多选"
+                    },
+                    Message::Manage(ManageMessage::ToggleMulti)
+                ),
+                action(
+                    &format!(
+                        "整理 {} 张",
                         if self.manager.multiselect {
-                            "退出多选"
+                            self.manager.selection.len()
                         } else {
-                            "多选"
-                        },
-                        Message::Manage(ManageMessage::ToggleMulti)
+                            usize::from(self.selected.is_some())
+                        }
                     ),
-                    action(
-                        &format!(
-                            "整理 {} 张",
-                            if self.manager.multiselect {
-                                self.manager.selection.len()
-                            } else {
-                                usize::from(self.selected.is_some())
-                            }
-                        ),
-                        Message::Manage(ManageMessage::Organize)
-                    ),
-                    action("筛选与排序", Message::Manage(ManageMessage::Filters)),
-                    action("保存智能集合", Message::Manage(ManageMessage::Collections)),
-                ]
-                .spacing(8),
-            );
-        }
+                    Message::Manage(ManageMessage::Organize)
+                ),
+                action("筛选与排序", Message::Manage(ManageMessage::Filters)),
+                action("保存智能集合", Message::Manage(ManageMessage::Collections)),
+            ]
+            .spacing(8),
+        );
+
         let center = center
             .push(gallery)
             .spacing(15)
@@ -296,7 +296,6 @@ impl App {
             .into()
     }
     fn image_card<'a>(&self, tile: Option<&'a Tile>, height: f32) -> Element<'a, Message> {
-        let demo = self.launch.design_preview;
         let Some(tile) = tile else {
             return photo(None, Length::Fill, height);
         };
@@ -307,20 +306,15 @@ impl App {
                 .as_ref()
                 .is_some_and(|asset| asset.id == tile.asset.id)
         };
-        let favorite_art: Element<'a, Message> =
-            if self.launch.design_preview && !tile.asset.favorite {
-                Space::new().width(16).height(16).into()
+        let favorite_art: Element<'a, Message> = icon(
+            Icon::Heart,
+            16.0,
+            if tile.asset.favorite {
+                Color::from_rgb8(255, 105, 133)
             } else {
-                icon(
-                    Icon::Heart,
-                    16.0,
-                    if tile.asset.favorite {
-                        Color::from_rgb8(255, 105, 133)
-                    } else {
-                        Color::WHITE
-                    },
-                )
-            };
+                Color::WHITE
+            },
+        );
         let favorite = button(favorite_art)
             .padding(7)
             .style(|_, status| button::Style {
@@ -352,29 +346,18 @@ impl App {
                         .on_press(Message::AssetContext(tile.asset.id))
                 ],
                 Space::new().height(Length::Fill),
-                container(if self.launch.design_preview {
-                    Space::new().width(14).height(14).into()
-                } else {
-                    icon(
-                        if moriq_app::is_video_format(&tile.asset.format) {
-                            Icon::Video
-                        } else {
-                            Icon::Image
-                        },
-                        14.0,
-                        Color::WHITE,
-                    )
-                })
+                container(icon(
+                    if moriq_app::is_video_format(&tile.asset.format) {
+                        Icon::Video
+                    } else {
+                        Icon::Image
+                    },
+                    14.0,
+                    Color::WHITE,
+                ))
                 .padding(5)
                 .style(move |_| container::Style {
-                    background: Some(
-                        if demo {
-                            Color::TRANSPARENT
-                        } else {
-                            Color::from_rgba8(20, 30, 40, 0.45)
-                        }
-                        .into()
-                    ),
+                    background: Some(Color::from_rgba8(20, 30, 40, 0.45).into()),
                     border: Border {
                         radius: 5.0.into(),
                         ..Default::default()
@@ -562,11 +545,7 @@ impl App {
             cover.into()
         };
         let mut strip = Row::new().spacing(4);
-        let neighbors = if self.launch.design_preview {
-            &self.tiles
-        } else {
-            &self.neighbors
-        };
+        let neighbors = &self.neighbors;
         for tile in neighbors.iter().take(7) {
             strip = strip.push(
                 button(photo(tile.handle.as_ref(), Length::Fixed(28.0), 28.0))
@@ -617,76 +596,27 @@ impl App {
         }
         let mut info = Column::new().spacing(12);
         if self.detail_tab <= 1 {
-            let demo = self.launch.design_preview;
-            for (kind, label, value) in [
-                (Icon::Raw, "文件类型", asset.format.to_uppercase()),
-                (Icon::Tag, "文件大小", size(asset.bytes)),
-                (
-                    Icon::Image,
-                    "分辨率",
-                    if demo {
-                        "6240 × 4160".into()
-                    } else {
-                        format!("{} × {}", asset.width, asset.height)
-                    },
-                ),
-                (
-                    Icon::Camera,
-                    if demo { "拍摄时间" } else { "导入时间" },
-                    if demo {
-                        "2024年5月18日 17:24:36".into()
-                    } else {
-                        date(asset.imported_at)
-                    },
-                ),
-                (
-                    Icon::Camera,
-                    "相机型号",
-                    if demo { "Sony ILCE-7M4" } else { "—" }.into(),
-                ),
-                (
-                    Icon::Eye,
-                    "镜头",
-                    if demo {
-                        "FE 24–70mm F2.8 GM II"
-                    } else {
-                        "—"
-                    }
-                    .into(),
-                ),
-                (Icon::Eye, "光圈", if demo { "f/5.6" } else { "—" }.into()),
-                (
-                    Icon::Clock,
-                    "快门",
-                    if demo { "1/1250" } else { "—" }.into(),
-                ),
-                (Icon::Camera, "ISO", if demo { "100" } else { "—" }.into()),
-                (Icon::Eye, "焦距", if demo { "48 mm" } else { "—" }.into()),
+            for (label, value) in [
+                ("文件类型", asset.format.to_uppercase()),
+                ("文件大小", size(asset.bytes)),
+                ("分辨率", format!("{} × {}", asset.width, asset.height)),
+                ("导入时间", date(asset.imported_at)),
             ] {
-                info = info.push(metadata(kind, label, value));
+                info = info.push(metadata(Icon::Image, label, value));
             }
-            if !demo {
+            if self.detail_tab == 1 {
                 info = Column::new().spacing(12);
-                for (label, value) in [
-                    ("文件类型", asset.format.to_uppercase()),
-                    ("文件大小", size(asset.bytes)),
-                    ("分辨率", format!("{} × {}", asset.width, asset.height)),
-                    ("导入时间", date(asset.imported_at)),
-                ] {
-                    info = info.push(metadata(Icon::Image, label, value));
+                if self.manager.details.exif.is_empty() {
+                    info = info.push(muted("此版本没有可读取的 EXIF 信息"));
                 }
-                if self.detail_tab == 1 {
-                    info = Column::new().spacing(12);
-                    if self.manager.details.exif.is_empty() {
-                        info = info.push(muted("此版本没有可读取的 EXIF 信息"));
-                    }
-                    for (label, value) in &self.manager.details.exif {
-                        info = info.push(metadata(Icon::Camera, label, value.clone()));
-                    }
+                for (label, value) in &self.manager.details.exif {
+                    info = info.push(metadata(Icon::Camera, label, value.clone()));
                 }
-                let mut ratings = Row::new().spacing(5);
-                for rating in 1..=5 {
-                    ratings = ratings.push(
+            }
+            let mut ratings = Row::new().spacing(5);
+            for rating in 1..=5 {
+                ratings =
+                    ratings.push(
                         button(icon(
                             Icon::Star,
                             19.0,
@@ -702,10 +632,9 @@ impl App {
                             if rating == asset.rating { 0 } else { rating },
                         )),
                     );
-                }
-                if self.detail_tab == 0 {
-                    info = info.push(ratings);
-                }
+            }
+            if self.detail_tab == 0 {
+                info = info.push(ratings);
             }
         } else if self.detail_tab == 2 {
             info = info.push(self.ai_details());
@@ -821,7 +750,7 @@ impl App {
             .as_ref()
             .into_iter()
             .flat_map(|l| l.info.projects.iter())
-            .filter(|p| self.launch.design_preview || self.manager.details.projects.contains(&p.id))
+            .filter(|p| self.manager.details.projects.contains(&p.id))
         {
             project_count += 1;
             projects = projects.push(
@@ -908,107 +837,107 @@ impl App {
             detail_card(projects)
         ]
         .spacing(14);
-        if !self.launch.design_preview {
-            let mut versions = column![detail_heading(Icon::Collection, "版本")].spacing(10);
-            for (index, version) in self.manager.details.versions.iter().enumerate() {
-                versions = versions.push(
-                    action(
-                        &format!(
-                            "{}V{} · {}",
-                            if version.id == asset.version_id {
-                                "✓ "
-                            } else {
-                                ""
-                            },
-                            index + 1,
-                            version.origin
-                        ),
-                        Message::Manage(ManageMessage::Version(version.id)),
-                    )
-                    .width(Length::Fill),
-                );
-            }
-            if !video {
-                versions = versions.push(
-                    form_action(
-                        Icon::Network,
-                        "发送到 Synco 精修",
-                        Message::Manage(ManageMessage::SendSynco),
-                        false,
-                    )
-                    .width(Length::Fill),
-                );
-            }
-            details = details
-                .push(detail_card(versions))
-                .push(detail_card(
-                    column![
-                        detail_heading(Icon::Text, "备注"),
-                        text_input("记录用途、地点或拍摄说明", &self.manager.notes)
-                            .on_input(|s| Message::Manage(ManageMessage::Notes(s)))
-                            .padding(10)
-                            .size(12)
-                            .style(input),
-                        form_action(
-                            Icon::Save,
-                            "保存备注",
-                            Message::Manage(ManageMessage::SaveNotes),
-                            true
-                        )
-                        .width(Length::Fill)
-                        .on_press_maybe(
-                            self.manager
-                                .notes_dirty
-                                .then_some(Message::Manage(ManageMessage::SaveNotes))
-                        )
-                    ]
-                    .spacing(12),
-                ))
-                .push(detail_card(
-                    column![
-                        detail_heading(Icon::Settings, "素材操作"),
-                        form_action(
-                            Icon::Folder,
-                            "编辑归属项目",
-                            Message::Manage(ManageMessage::Organize),
-                            false
-                        )
-                        .width(Length::Fill),
-                        form_action(
-                            Icon::Download,
-                            "导出素材",
-                            Message::Manage(ManageMessage::ExportMenu),
-                            false
-                        )
-                        .width(Length::Fill),
-                    ]
-                    .spacing(10),
-                ));
-            if !video {
-                details = details.push(
-                    form_action(
-                        Icon::Search,
-                        "查找视觉近似",
-                        Message::Manage(ManageMessage::Similar),
-                        false,
-                    )
-                    .width(Length::Fill),
-                );
-            }
-            details = details.push(
+
+        let mut versions = column![detail_heading(Icon::Collection, "版本")].spacing(10);
+        for (index, version) in self.manager.details.versions.iter().enumerate() {
+            versions = versions.push(
+                action(
+                    &format!(
+                        "{}V{} · {}",
+                        if version.id == asset.version_id {
+                            "✓ "
+                        } else {
+                            ""
+                        },
+                        index + 1,
+                        version.origin
+                    ),
+                    Message::Manage(ManageMessage::Version(version.id)),
+                )
+                .width(Length::Fill),
+            );
+        }
+        if !video {
+            versions = versions.push(
                 form_action(
-                    Icon::Trash,
-                    if self.query.trash {
-                        "恢复素材"
-                    } else {
-                        "移入回收站"
-                    },
-                    Message::Manage(ManageMessage::Edit(Edit::Trash(!self.query.trash))),
+                    Icon::Network,
+                    "发送到 Synco 精修",
+                    Message::Manage(ManageMessage::SendSynco),
                     false,
                 )
                 .width(Length::Fill),
             );
         }
+        details = details
+            .push(detail_card(versions))
+            .push(detail_card(
+                column![
+                    detail_heading(Icon::Text, "备注"),
+                    text_input("记录用途、地点或拍摄说明", &self.manager.notes)
+                        .on_input(|s| Message::Manage(ManageMessage::Notes(s)))
+                        .padding(10)
+                        .size(12)
+                        .style(input),
+                    form_action(
+                        Icon::Save,
+                        "保存备注",
+                        Message::Manage(ManageMessage::SaveNotes),
+                        true
+                    )
+                    .width(Length::Fill)
+                    .on_press_maybe(
+                        self.manager
+                            .notes_dirty
+                            .then_some(Message::Manage(ManageMessage::SaveNotes))
+                    )
+                ]
+                .spacing(12),
+            ))
+            .push(detail_card(
+                column![
+                    detail_heading(Icon::Settings, "素材操作"),
+                    form_action(
+                        Icon::Folder,
+                        "编辑归属项目",
+                        Message::Manage(ManageMessage::Organize),
+                        false
+                    )
+                    .width(Length::Fill),
+                    form_action(
+                        Icon::Download,
+                        "导出素材",
+                        Message::Manage(ManageMessage::ExportMenu),
+                        false
+                    )
+                    .width(Length::Fill),
+                ]
+                .spacing(10),
+            ));
+        if !video {
+            details = details.push(
+                form_action(
+                    Icon::Search,
+                    "查找视觉近似",
+                    Message::Manage(ManageMessage::Similar),
+                    false,
+                )
+                .width(Length::Fill),
+            );
+        }
+        details = details.push(
+            form_action(
+                Icon::Trash,
+                if self.query.trash {
+                    "恢复素材"
+                } else {
+                    "移入回收站"
+                },
+                Message::Manage(ManageMessage::Edit(Edit::Trash(!self.query.trash))),
+                false,
+            )
+            .width(Length::Fill),
+        );
+
         if self.query.trash {
             details = details.push(
                 action("永久删除素材…", Message::Manage(ManageMessage::Purge))
@@ -1043,8 +972,7 @@ impl App {
             self.preview.as_ref()
         };
         let art: Element<'_, Message> = if let Some(handle) = handle {
-            if !self.launch.design_preview
-                && let Some(asset) = &self.selected
+            if let Some(asset) = &self.selected
                 && !moriq_app::is_video_format(&asset.format)
             {
                 let (width, height) = self.original_size.unwrap_or((asset.width, asset.height));

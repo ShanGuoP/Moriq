@@ -366,9 +366,7 @@ impl App {
             }
             self.preview_expanded = true;
             self.manager.panel = None;
-            if !self.launch.design_preview
-                && let (Some(library), Some(asset)) = (&self.library, &self.selected)
-            {
+            if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
                 if !moriq_app::is_video_format(&asset.format) {
                     // The fit preview comes first. Prepare original-resolution tiles only
                     // when the viewport is magnified beyond the preview's resolution.

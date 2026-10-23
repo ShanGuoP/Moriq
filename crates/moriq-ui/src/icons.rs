@@ -16,7 +16,6 @@ pub enum Icon {
     Right,
     Down,
     Plus,
-    Import,
     Heart,
     Star,
     Clock,
@@ -46,7 +45,6 @@ pub enum Icon {
     Network,
     Package,
     Text,
-    Eye,
     Sparkles,
     Pause,
     External,
@@ -87,7 +85,6 @@ pub fn icon<'a>(kind: Icon, size: f32, color: Color) -> Element<'a, Message> {
         Icon::Right => r#"<path d="m9 5 7 7-7 7"/>"#,
         Icon::Down => r#"<path d="m6 9 6 6 6-6"/>"#,
         Icon::Plus => r#"<path d="M12 4v16M4 12h16"/>"#,
-        Icon::Import => r#"<path d="M12 2v12m-4-4 4 4 4-4M4 14v6h16v-6M7 20v2m10-2v2"/>"#,
         Icon::Download => r#"<path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/>"#,
         Icon::Heart => {
             r#"<path d="M20.6 4.8a5.5 5.5 0 0 0-7.8 0l-.8.8-.8-.8a5.5 5.5 0 0 0-7.8 7.8L12 21l8.6-8.4a5.5 5.5 0 0 0 0-7.8Z"/>"#
@@ -139,9 +136,7 @@ pub fn icon<'a>(kind: Icon, size: f32, color: Color) -> Element<'a, Message> {
             r#"<circle cx="12" cy="4" r="2"/><circle cx="4" cy="19" r="2"/><circle cx="20" cy="19" r="2"/><circle cx="12" cy="13" r="2"/><path d="M12 6v5m-2 4-4 3m8-3 4 3"/>"#
         }
         Icon::Text => r#"<path d="M5 2h10l4 4v16H5ZM15 2v5h4M8 11h8m-8 4h8m-8 3h5"/>"#,
-        Icon::Eye => {
-            r#"<ellipse cx="8" cy="12" rx="6" ry="9"/><ellipse cx="16" cy="12" rx="6" ry="9"/>"#
-        }
+
         Icon::Sparkles => r#"<path d="m12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z"/>"#,
         Icon::Pause => r#"<path d="M8 5v14M16 5v14"/>"#,
         Icon::External => r#"<path d="M14 3h7v7m0-7L10 14M9 3H3v18h18v-6"/>"#,

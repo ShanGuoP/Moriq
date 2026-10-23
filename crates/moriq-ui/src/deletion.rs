@@ -46,11 +46,7 @@ impl App {
         use DeletionMessage::*;
         match event {
             EmptyTrash => {
-                if self.manager.busy
-                    || self.switching
-                    || self.import.is_some()
-                    || self.launch.design_preview
-                {
+                if self.manager.busy || self.switching || self.import.is_some() {
                     return Task::none();
                 }
                 let Some(library) = self.library.as_ref().map(|l| l.info.id) else {
@@ -82,11 +78,7 @@ impl App {
                 }
             }
             Project(project) => {
-                if self.manager.busy
-                    || self.switching
-                    || self.import.is_some()
-                    || self.launch.design_preview
-                {
+                if self.manager.busy || self.switching || self.import.is_some() {
                     return Task::none();
                 }
                 let Some(library) = self.library.as_ref().map(|l| l.info.id) else {
@@ -111,11 +103,7 @@ impl App {
                 );
             }
             Assets(ids) => {
-                if self.manager.busy
-                    || self.switching
-                    || !self.query.trash
-                    || self.launch.design_preview
-                {
+                if self.manager.busy || self.switching || !self.query.trash {
                     return Task::none();
                 }
                 let Some(library) = self.library.as_ref().map(|l| l.info.id) else {

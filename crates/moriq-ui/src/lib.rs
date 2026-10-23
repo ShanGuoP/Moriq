@@ -1,6 +1,5 @@
 //! Native presentation. All disk, catalog and decoding work belongs to Service.
 mod ai;
-mod assets;
 mod batch;
 mod folders;
 mod lifecycle;
@@ -182,7 +181,6 @@ pub(crate) enum Message {
     VideoProof(iced::window::Screenshot),
     #[cfg(feature = "capture")]
     CaptureSaved(Result<(), String>),
-    ResourcesLoaded(Result<assets::Artwork, String>),
     MasonryLoaded(
         u64,
         Result<std::sync::Arc<moriq_render::MasonryIndex>, String>,
@@ -229,7 +227,6 @@ pub struct LaunchOptions {
     pub screen: u8,
     pub exit_after_capture: bool,
     pub select_first: bool,
-    pub design_preview: bool,
     pub panel: Option<String>,
 }
 #[derive(Clone)]
@@ -312,14 +309,12 @@ pub(crate) struct App {
     navigation_request: u64,
     page_task: Option<iced::task::Handle>,
     preview_task: Option<iced::task::Handle>,
-    artwork: assets::Artwork,
     masonry: Option<std::sync::Arc<moriq_render::MasonryIndex>>,
     masonry_task: Option<iced::task::Handle>,
     masonry_mode: bool,
     dialog: Option<Dialog>,
     detail_tab: u8,
     model_tab: u8,
-    preview_source: Vec<Tile>,
     layout_generation: u64,
     editing_tags: bool,
     on_demand_models: bool,
@@ -384,30 +379,6 @@ impl App {
         let settings = Task::perform(
             async move { settings_service.settings().await },
             Message::SettingsLoaded,
-        );
-        let resource_service = service.clone();
-        let resources = Task::perform(
-            async move {
-                resource_service
-                    .resources(assets::bundled())
-                    .await
-                    .map(|items| assets::Artwork {
-                        images: items
-                            .into_iter()
-                            .map(|(key, pixels)| {
-                                (
-                                    key,
-                                    image::Handle::from_rgba(
-                                        pixels.width,
-                                        pixels.height,
-                                        pixels.rgba,
-                                    ),
-                                )
-                            })
-                            .collect(),
-                    })
-            },
-            Message::ResourcesLoaded,
         );
         let open = launch
             .library
@@ -497,14 +468,12 @@ impl App {
                 navigation_request: 0,
                 page_task: None,
                 preview_task: None,
-                artwork: Default::default(),
                 masonry: None,
                 masonry_task: None,
                 masonry_mode: true,
                 dialog: None,
                 detail_tab: 0,
                 model_tab: 0,
-                preview_source: vec![],
                 layout_generation: 0,
                 editing_tags: false,
                 on_demand_models: true,
@@ -514,7 +483,6 @@ impl App {
             },
             Task::batch([
                 open,
-                resources,
                 settings,
                 iced::window::oldest()
                     .and_then(iced::window::scale_factor)
@@ -556,11 +524,7 @@ impl App {
         self.generation += 1;
         let generation = self.generation;
         let range = self.visible_range();
-        if self.launch.design_preview {
-            self.refresh_preview(range);
-            self.loading = false;
-            return Task::none();
-        }
+
         let service = self.service.clone();
         let id = library.info.id;
         let query = self.query.clone();
@@ -578,9 +542,6 @@ impl App {
         task
     }
     fn refresh_info(&self) -> Task<Message> {
-        if self.launch.design_preview {
-            return Task::none();
-        }
         let Some(library) = self.library.as_ref() else {
             return Task::none();
         };
@@ -854,7 +815,6 @@ impl App {
                     .tiles
                     .iter()
                     .chain(self.neighbors.iter())
-                    .chain(self.preview_source.iter())
                     .any(|t| t.asset.id == id)
                 {
                     return Task::none();
@@ -1093,11 +1053,6 @@ impl App {
                 Err(error) => self.error = Some(error),
             },
             Message::RevealLibrary => {
-                if self.launch.design_preview {
-                    self.error =
-                        Some("设计预览不对应实际资源库目录。请先创建或打开自己的资源库。".into());
-                    return Task::none();
-                }
                 if let Some(library) = &self.library {
                     let service = self.service.clone();
                     let id = library.info.id;
@@ -1136,14 +1091,13 @@ impl App {
                     retain_indexes: self.retain_indexes,
                     ..self.preferences.ai
                 };
-                if !self.launch.design_preview {
-                    let value = self.preferences.ai;
-                    let service = self.service.clone();
-                    return Task::perform(
-                        async move { service.ai_preferences(value).await },
-                        move |r| Message::AiPolicySaved(value, r),
-                    );
-                }
+
+                let value = self.preferences.ai;
+                let service = self.service.clone();
+                return Task::perform(
+                    async move { service.ai_preferences(value).await },
+                    move |r| Message::AiPolicySaved(value, r),
+                );
             }
             Message::AiPolicySaved(value, result) if self.preferences.ai == value => match result {
                 Ok(prefs) => self.preferences = prefs,
@@ -1175,11 +1129,6 @@ impl App {
             }
             Message::SaveRenameLibrary => {
                 if let Some(library) = &mut self.library {
-                    if self.launch.design_preview {
-                        library.info.name = self.name.clone();
-                        self.dialog = None;
-                        return Task::none();
-                    }
                     let id = library.info.id;
                     let name = self.name.clone();
                     let description = self
@@ -1215,16 +1164,6 @@ impl App {
             }
             Message::SaveRenameAsset => {
                 if let (Some(library), Some(asset)) = (&self.library, &mut self.selected) {
-                    if self.launch.design_preview {
-                        asset.name = self.name.clone();
-                        for tile in &mut self.preview_source {
-                            if tile.asset.id == asset.id {
-                                tile.asset.name = self.name.clone();
-                            }
-                        }
-                        self.dialog = None;
-                        return self.refresh();
-                    }
                     let id = library.info.id;
                     let asset = asset.id;
                     let name = self.name.clone();
@@ -1265,15 +1204,6 @@ impl App {
                 self.list = false;
                 return self.reset_query();
             }
-            Message::ResourcesLoaded(result) => match result {
-                Ok(artwork) => {
-                    self.artwork = artwork;
-                    if self.launch.design_preview {
-                        return self.install_preview();
-                    }
-                }
-                Err(error) => self.error = Some(error),
-            },
             Message::MasonryLoaded(generation, result) if generation == self.layout_generation => {
                 self.masonry_task = None;
                 match result {
@@ -1344,7 +1274,6 @@ impl App {
                         self.storage.reset();
                         self.deletion.reset();
                         self.surfaces = Default::default();
-                        self.launch.design_preview = false;
                         self.dialog = None;
                         self.total = library.info.count;
                         let recent_service = self.service.clone();
@@ -1464,10 +1393,7 @@ impl App {
             {
                 self.manager.referenced_import = false;
                 self.manager.panel = None;
-                if self.launch.design_preview {
-                    self.dialog = Some(Dialog::CreateLibrary);
-                    return Task::none();
-                }
+
                 self.manager.busy = true;
                 return Task::perform(
                     async {
@@ -1488,10 +1414,6 @@ impl App {
                 self.manager.referenced_import = false;
             }
             Message::PickedImages(Some(paths)) if self.import.is_none() && !self.switching => {
-                if self.launch.design_preview {
-                    self.error = Some("请先创建或打开真实资源库，再导入图片".into());
-                    return Task::none();
-                }
                 let Some(library) = &self.library else {
                     return Task::none();
                 };
@@ -1670,7 +1592,6 @@ impl App {
                 if self.launch.capture.is_some()
                     && (!self.loading || self.import.is_some())
                     && !self.switching
-                    && (!self.launch.design_preview || self.library.is_some())
                 {
                     self.capture_ticks = self.capture_ticks.saturating_add(1);
                     if self.launch.panel.as_deref() == Some("video-motion")
@@ -2100,7 +2021,6 @@ impl App {
                     .tiles
                     .iter()
                     .chain(self.neighbors.iter())
-                    .chain(self.preview_source.iter())
                     .find(|t| t.asset.id == id)
                     .cloned();
                 self.neighbor_position = None;
@@ -2257,17 +2177,6 @@ impl App {
             }
             Message::ExpandPreview => return self.set_viewer(!self.preview_expanded),
             Message::Favorite(asset, value) => {
-                if self.launch.design_preview {
-                    for tile in &mut self.preview_source {
-                        if tile.asset.id == asset {
-                            tile.asset.favorite = value;
-                        }
-                    }
-                    if let Some(selected) = self.selected.as_mut().filter(|a| a.id == asset) {
-                        selected.favorite = value;
-                    }
-                    return self.refresh();
-                }
                 if let Some(library) = &self.library {
                     let service = self.service.clone();
                     let id = library.info.id;
@@ -2275,12 +2184,6 @@ impl App {
                 }
             }
             Message::Rating(rating) => {
-                if self.launch.design_preview {
-                    if let Some(selected) = self.selected.as_mut() {
-                        selected.rating = rating;
-                    }
-                    return Task::none();
-                }
                 if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
                     let service = self.service.clone();
                     let id = library.info.id;
@@ -2290,17 +2193,6 @@ impl App {
             }
             Message::Tags(value) => self.tag_input = value,
             Message::SaveTags => {
-                if self.launch.design_preview {
-                    if let Some(selected) = self.selected.as_mut() {
-                        selected.tags = self
-                            .tag_input
-                            .split([',', '，'])
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                    return Task::none();
-                }
                 if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
                     let service = self.service.clone();
                     let id = library.info.id;
@@ -2350,10 +2242,6 @@ impl App {
             }
             Message::ProjectName(value) => self.project_name = value,
             Message::CreateProject if !self.project_name.trim().is_empty() => {
-                if self.launch.design_preview {
-                    self.error = Some("这是设计预览，请打开真实资源库后创建项目。".into());
-                    return Task::none();
-                }
                 if let Some(library) = &self.library {
                     let service = self.service.clone();
                     let id = library.info.id;

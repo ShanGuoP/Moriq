@@ -38,9 +38,7 @@ impl App {
         let Some(library) = &self.library else {
             return Task::none();
         };
-        if self.launch.design_preview {
-            return Task::none();
-        }
+
         let index = usize::from(notices);
         self.journal.requests[index] += 1;
         let request = self.journal.requests[index];
@@ -80,9 +78,7 @@ impl App {
         let Some(library) = &self.library else {
             return Task::none();
         };
-        if self.launch.design_preview {
-            return Task::none();
-        }
+
         let id = library.info.id;
         let service = self.service.clone();
         let notice = Notice {

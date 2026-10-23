@@ -67,9 +67,7 @@ impl App {
         let Some(library) = &self.library else {
             return Task::none();
         };
-        if self.launch.design_preview {
-            return Task::none();
-        }
+
         if let Some(handle) = self.browse_task.take() {
             handle.abort();
         }
@@ -139,16 +137,7 @@ impl App {
             self.manager.notes = notes;
             self.manager.notes_dirty = true;
         }
-        if self.launch.design_preview {
-            if self
-                .preview_source
-                .first()
-                .is_some_and(|tile| tile.asset.id == id)
-            {
-                self.preview = self.artwork.get("detail-mountain").cloned();
-            }
-            return Task::none();
-        }
+
         let Some(library) = &self.library else {
             return Task::none();
         };

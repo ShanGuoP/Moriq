@@ -204,9 +204,7 @@ impl App {
         let Some(library) = &self.library else {
             return Task::none();
         };
-        if self.launch.design_preview {
-            return Task::none();
-        }
+
         let id = library.info.id;
         let service = self.service.clone();
         self.projection_request = self.projection_request.wrapping_add(1);
@@ -248,9 +246,7 @@ impl App {
         let (Some(library), Some(asset)) = (&self.library, &self.selected) else {
             return Task::none();
         };
-        if self.launch.design_preview {
-            return Task::none();
-        }
+
         let id = library.info.id;
         let version = asset.version_id;
         let asset = asset.id;
@@ -548,9 +544,6 @@ impl App {
             Parent(parent) => self.manager.parent = parent,
             NewProjectName(value) => self.manager.new_project_name = value,
             NewChildProject | MoveProject => {
-                if self.launch.design_preview {
-                    return Task::none();
-                }
                 if let Some(library) = &self.library {
                     let id = library.info.id;
                     let parent = self.manager.parent;
@@ -579,9 +572,6 @@ impl App {
             }
             RenameTag | DeleteTag => {
                 if let Some(library) = &self.library {
-                    if self.launch.design_preview {
-                        return Task::none();
-                    }
                     let id = library.info.id;
                     let source = self.manager.active_tag.clone();
                     let target = self.manager.tag_new_name.clone();
@@ -671,7 +661,7 @@ impl App {
                 self.manager.panel = Some(Panel::Synco);
                 return self.refresh_organizer();
             }
-            SendSynco if !self.manager.synco_running && !self.launch.design_preview => {
+            SendSynco if !self.manager.synco_running => {
                 if let Some(l) = &self.library {
                     let id = l.info.id;
                     let assets = self.selected_ids();
@@ -715,7 +705,7 @@ impl App {
                     self.manage_message(SyncoPoll(true)),
                 ]);
             }
-            SyncoPoll(manual) if !self.manager.synco_running && !self.launch.design_preview => {
+            SyncoPoll(manual) if !self.manager.synco_running => {
                 if let Some(l) = &self.library {
                     let id = l.info.id;
                     let service = self.service.clone();
@@ -786,9 +776,7 @@ impl App {
             }
             Description(value) => self.manager.description_draft = Some(value),
             Cover => {
-                if !self.launch.design_preview
-                    && let Some(l) = &self.library
-                {
+                if let Some(l) = &self.library {
                     let id = l.info.id;
                     return Task::perform(
                         async {
@@ -821,7 +809,7 @@ impl App {
             {
                 self.error = Some(e)
             }
-            Recover if !self.manager.busy && !self.launch.design_preview => {
+            Recover if !self.manager.busy => {
                 if let Some(l) = &self.library {
                     let id = l.info.id;
                     let service = self.service.clone();
@@ -925,7 +913,6 @@ impl App {
             }
             Toggle(id) => {
                 if self.modifiers.shift()
-                    && !self.launch.design_preview
                     && let (Some(anchor), Some(library)) =
                         (self.manager.selection_anchor, &self.library)
                 {
@@ -1338,10 +1325,6 @@ impl App {
                 }
             }
             Edit(edit) => {
-                if self.launch.design_preview {
-                    self.error = Some("请打开真实资源库后整理素材".into());
-                    return Task::none();
-                }
                 let ids = self.selected_ids();
                 let Some(library) = &self.library else {
                     return Task::none();
@@ -1364,9 +1347,7 @@ impl App {
                 return self.update(Message::Saved(id, result));
             }
             SaveNotes => {
-                if !self.launch.design_preview
-                    && let (Some(l), Some(a)) = (&self.library, &self.selected)
-                {
+                if let (Some(l), Some(a)) = (&self.library, &self.selected) {
                     let id = l.info.id;
                     let asset = a.id;
                     let value = self.manager.notes.clone();
@@ -1401,10 +1382,6 @@ impl App {
             | Backup
             | PickedDestination(..)
             | Check(_)) => {
-                if self.launch.design_preview {
-                    self.error = Some("请打开真实资源库后使用此功能".into());
-                    return Task::none();
-                }
                 let Some(library) = &self.library else {
                     return Task::none();
                 };
