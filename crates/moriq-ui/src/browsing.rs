@@ -176,6 +176,7 @@ impl App {
         request: u64,
         result: Result<Option<moriq_app::LoadedNeighborhood>, String>,
     ) -> Task<Message> {
+        let language = self.preferences.language;
         if self.browse_request != request
             || !self.library.as_ref().is_some_and(|l| l.info.id == library)
         {
@@ -211,7 +212,7 @@ impl App {
                 self.neighbors.clear();
                 self.neighbor_position = None;
                 self.restored_notes = None;
-                self.status = "原先选择的素材已不在此查询中".into();
+                self.status = tr!(language, "原先选择的素材已不在此查询中" => "The previously selected asset is no longer in these results").into();
             }
             Err(error) => self.error = Some(error),
         }

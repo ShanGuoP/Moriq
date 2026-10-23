@@ -41,6 +41,7 @@ pub enum BatchMessage {
 }
 impl App {
     pub(super) fn batch_message(&mut self, event: BatchMessage) -> Task<Message> {
+        let language = self.preferences.language;
         match event {
             BatchMessage::Open => {
                 self.batch = BatchState {
@@ -104,7 +105,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.manager.panel = Some(manage::Panel::Tasks);
-                        self.status = "批量修改已加入后台任务，可暂停并在重启后继续".into()
+                        self.status = tr!(language, "批量修改已加入后台任务，可暂停并在重启后继续" => "Batch edits queued. You can pause and resume after restarting.").into()
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -115,9 +116,10 @@ impl App {
         Task::none()
     }
     pub(super) fn batch_panel(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let unchanged = ProjectTarget {
             id: None,
-            label: "保持项目归属".into(),
+            label: tr!(language, "保持项目归属" => "Keep project membership").into(),
         };
         let mut projects = vec![unchanged.clone()];
         if let Some(library) = &self.library {
@@ -131,8 +133,7 @@ impl App {
             Some(self.batch.project.clone().unwrap_or(unchanged)),
             |v| Message::Batch(BatchMessage::Project(v)),
         );
-        let scope = format!(
-            "当前选择 {} 项；全部查询结果 {} 项。任务创建时保存图片范围快照，之后新增素材不会自动加入。",
+        let scope = trf!(language, "当前选择 {} 项；全部查询结果 {} 项。任务创建时保存图片范围快照，之后新增素材不会自动加入。" => "{} items selected; {} results in total. The task saves a snapshot of the scope; new assets will not be included.",
             self.selected_ids().len(),
             self.total,
         );
@@ -150,14 +151,14 @@ impl App {
             project,
             muted(scope),
             checkbox(self.batch.all)
-                .label("选择全部查询结果（跨越所有分页）")
+                .label(tr!(language, "选择全部查询结果（跨越所有分页）" => "Select all results (across all pages)"))
                 .on_toggle(|v| Message::Batch(BatchMessage::All(v))),
-            choice(
+            localized_choice(language,
                 vec!["保持收藏状态".into(), "收藏".into(), "取消收藏".into()],
                 Some(favorite),
                 |v| Message::Batch(BatchMessage::Favorite(v)),
             ),
-            choice(
+            localized_choice(language,
                 vec![
                     "保持评分".into(),
                     "0".into(),
@@ -170,27 +171,27 @@ impl App {
                 Some(rating),
                 |v| Message::Batch(BatchMessage::Rating(v)),
             ),
-            text_input("追加标签，逗号分隔", &self.batch.add_tags)
+            text_input(tr!(language, "追加标签，逗号分隔" => "Add tags, separated by commas"), &self.batch.add_tags)
                 .style(crate::theme::input)
                 .padding(10)
                 .on_input(|v| Message::Batch(BatchMessage::AddTags(v))),
-            text_input("移除标签，逗号分隔", &self.batch.remove_tags)
+            text_input(tr!(language, "移除标签，逗号分隔" => "Remove tags, separated by commas"), &self.batch.remove_tags)
                 .style(crate::theme::input)
                 .padding(10)
                 .on_input(|v| Message::Batch(BatchMessage::RemoveTags(v))),
-            text_input("人工分类（留空保持原值）", &self.batch.category)
+            text_input(tr!(language, "人工分类（留空保持原值）" => "Manual category (leave blank to keep)"), &self.batch.category)
                 .style(crate::theme::input)
                 .padding(10)
                 .on_input(|v| Message::Batch(BatchMessage::Category(v))),
             checkbox(self.batch.replace_notes)
-                .label("替换备注（可留空清除）")
+                .label(tr!(language, "替换备注（可留空清除）" => "Replace notes (leave blank to clear)"))
                 .on_toggle(|v| Message::Batch(BatchMessage::ReplaceNotes(v))),
-            text_input("新的备注", &self.batch.notes)
+            text_input(tr!(language, "新的备注" => "New notes"), &self.batch.notes)
                 .style(crate::theme::input)
                 .padding(10)
                 .on_input(|v| Message::Batch(BatchMessage::Notes(v))),
-            muted("以上字段一起保存；每个素材的修改在单个事务内完成。"),
-            action("应用并加入后台任务", Message::Batch(BatchMessage::Apply)),
+            muted(tr!(language, "以上字段一起保存；每个素材的修改在单个事务内完成。" => "These fields are saved together. Each asset is updated in a single transaction.")),
+            action(tr!(language, "应用并加入后台任务" => "Apply and queue task"), Message::Batch(BatchMessage::Apply)),
         ]
         .spacing(12)
         .into()

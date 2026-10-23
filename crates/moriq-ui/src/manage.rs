@@ -1,5 +1,5 @@
 use super::*;
-use crate::components::choice as pick_list;
+use crate::components::localized_choice as pick_list;
 use crate::{components::*, icons::Icon, theme::*};
 use iced::widget::{
     Column, Space, button, checkbox, container, mouse_area, row, stack, text, text_input,
@@ -270,6 +270,7 @@ impl App {
         }
     }
     pub(super) fn manage_message(&mut self, event: ManageMessage) -> Task<Message> {
+        let language = self.preferences.language;
         use ManageMessage::*;
         if let PickedDestination(expected, _, _) | PickedReference(expected, _, _, _) = &event
             && self.library.as_ref().is_none_or(|l| l.info.id != *expected)
@@ -279,10 +280,15 @@ impl App {
         match event {
             SyncoExecutable => {
                 return Task::perform(
-                    async {
+                    async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("选择 Synco 程序")
-                            .add_filter("Synco 程序", &["exe"])
+                            .set_title(
+                                tr!(language, "选择 Synco 程序" => "Select the Synco application"),
+                            )
+                            .add_filter(
+                                tr!(language, "Synco 程序" => "Synco application"),
+                                &["exe"],
+                            )
                             .pick_file()
                             .await
                             .map(|f| f.path().to_path_buf())
@@ -307,7 +313,7 @@ impl App {
                 });
             }
             SyncoPreferencesSaved(result) => match result {
-                Ok(prefs) => self.preferences = prefs,
+                Ok(prefs) => self.apply_settings(prefs),
                 Err(e) => self.error = Some(e),
             },
             SyncoRetry(task) if !self.manager.synco_running => {
@@ -377,7 +383,7 @@ impl App {
                             self.manager.latitude.trim().parse(),
                             self.manager.longitude.trim().parse(),
                         ) else {
-                            self.error = Some("经纬度应为十进制数字".into());
+                            self.error = Some(tr!(language, "经纬度应为十进制数字" => "Latitude and longitude must be decimal numbers").into());
                             return Task::none();
                         };
                         let value = AssetLocation {
@@ -387,7 +393,7 @@ impl App {
                         };
                         if !value.valid() {
                             self.error =
-                                Some("纬度应为 -90～90，经度 -180～180，名称最多 256 字".into());
+                                Some(tr!(language, "纬度应为 -90～90，经度 -180～180，名称最多 256 字" => "Latitude must be -90 to 90, longitude -180 to 180, and the name at most 256 characters").into());
                             return Task::none();
                         }
                         Some(value)
@@ -440,7 +446,12 @@ impl App {
                     let service = self.service.clone();
                     return Task::perform(
                         async move { service.open_map(id, location).await },
-                        |r| Message::PlatformDone("已请求在浏览器中打开地图", r),
+                        move |r| {
+                            Message::PlatformDone(
+                                tr!(language, "已请求在浏览器中打开地图" => "Requested to open the map in your browser"),
+                                r,
+                            )
+                        },
                     );
                 }
             }
@@ -462,11 +473,10 @@ impl App {
                         if self.query.project.is_some_and(|id| projects.contains(&id)) {
                             self.query = Query::default();
                         }
-                        self.status = format!(
-                            "已删除项目及 {} 张独占素材{}",
+                        self.status = trf!(language, "已删除项目及 {} 张独占素材{}" => "Deleted the project and {} exclusive assets{}",
                             report.deleted,
                             if report.cleanup_pending {
-                                "，文件清理将在重开后继续"
+                                tr!(language, "，文件清理将在重开后继续" => "; file cleanup will continue when the library reopens")
                             } else {
                                 ""
                             }
@@ -499,7 +509,12 @@ impl App {
                     let service = self.service.clone();
                     return Task::perform(
                         async move { service.reveal_asset(library, asset).await },
-                        |r| Message::PlatformDone("已请求在文件夹中显示所选图片", r),
+                        move |r| {
+                            Message::PlatformDone(
+                                tr!(language, "已请求在文件夹中显示所选图片" => "Requested to reveal the selected image"),
+                                r,
+                            )
+                        },
                     );
                 }
             }
@@ -521,11 +536,10 @@ impl App {
                         self.manager.selection_anchor = None;
                         self.selected = None;
                         self.preview = None;
-                        self.manager.report = format!(
-                            "已永久删除 {} 项。{}",
+                        self.manager.report = trf!(language, "已永久删除 {} 项。{}" => "Permanently deleted {} items. {}",
                             report.deleted,
                             if report.cleanup_pending {
-                                "暂存文件清理未完成，下次打开资源库将继续。"
+                                tr!(language, "暂存文件清理未完成，下次打开资源库将继续。" => "Staging cleanup is incomplete and will continue when the library reopens.")
                             } else {
                                 ""
                             }
@@ -590,9 +604,9 @@ impl App {
                 if let (Some(library), Some(asset)) = (&self.library, &self.selected) {
                     let (id, asset, version) = (library.info.id, asset.id, asset.version_id);
                     return Task::perform(
-                        async {
+                        async move {
                             rfd::AsyncFileDialog::new()
-                                .set_title("重新定位原片 · 内容必须与登记副本一致")
+                                .set_title(tr!(language, "重新定位原片 · 内容必须与登记副本一致" => "Relocate original · Content must match the registered copy"))
                                 .pick_file()
                                 .await
                                 .map(|f| f.path().to_path_buf())
@@ -685,14 +699,14 @@ impl App {
             {
                 let notice = match &result {
                     Ok(()) => self.persist_asset_notice(
-                        "已发送到 Synco",
-                        "发送副本与任务已保存，可在任务面板查看。".into(),
+                        tr!(language, "已发送到 Synco" => "Sent to Synco"),
+                        tr!(language, "发送副本与任务已保存，可在任务面板查看。" => "The copy and task were saved. View them in the task panel.").into(),
                         0,
                         "",
                         asset,
                     ),
                     Err(e) => {
-                        self.persist_asset_notice("Synco 发送失败", e.clone(), 2, "synco", asset)
+                        self.persist_asset_notice(tr!(language, "Synco 发送失败" => "Failed to send to Synco"), e.clone(), 2, "synco", asset)
                     }
                 };
                 self.manager.synco_running = false;
@@ -722,13 +736,13 @@ impl App {
                 self.manager.report_panel = Some(Panel::Synco);
                 let notice = match &result {
                     Ok(count) if *count > 0 => self.persist_notice(
-                        "Synco 任务更新",
-                        format!("已领取并确认 {} 个任务结果", count),
+                        tr!(language, "Synco 任务更新" => "Synco task update"),
+                        trf!(language, "已领取并确认 {} 个任务结果" => "Received and acknowledged {} task results", count),
                         0,
                         "",
                     ),
                     Err(e) if manual => {
-                        self.persist_notice("Synco 检查失败", e.clone(), 2, "synco")
+                        self.persist_notice(tr!(language, "Synco 检查失败" => "Synco check failed"), e.clone(), 2, "synco")
                     }
                     _ => Task::none(),
                 };
@@ -738,8 +752,7 @@ impl App {
                     Ok(count) => {
                         self.manager.synco_backoff = 8;
                         if manual || count > 0 {
-                            self.manager.report =
-                                format!("Synco 检查完成，已确认接收 {count} 个通知");
+                            self.manager.report = trf!(language, "Synco 检查完成，已确认接收 {count} 个通知" => "Synco check complete; acknowledged {count} notifications");
                         }
                     }
                     Err(e) => {
@@ -779,10 +792,15 @@ impl App {
                 if let Some(l) = &self.library {
                     let id = l.info.id;
                     return Task::perform(
-                        async {
+                        async move {
                             rfd::AsyncFileDialog::new()
-                                .set_title("选择资源库封面")
-                                .add_filter("图片", &["jpg", "jpeg", "png", "webp", "bmp"])
+                                .set_title(
+                                    tr!(language, "选择资源库封面" => "Choose a library cover"),
+                                )
+                                .add_filter(
+                                    tr!(language, "图片" => "Images"),
+                                    &["jpg", "jpeg", "png", "webp", "bmp"],
+                                )
                                 .pick_file()
                                 .await
                                 .map(|p| p.path().to_path_buf())
@@ -824,8 +842,7 @@ impl App {
                 self.manager.busy = false;
                 match result {
                     Ok(r) => {
-                        self.manager.report = format!(
-                            "已恢复 {}，跳过重复 {}，失败 {}。\n{}",
+                        self.manager.report = trf!(language, "已恢复 {}，跳过重复 {}，失败 {}。\n{}" => "Restored {}, skipped {} duplicates, failed {}.\n{}",
                             r.imported,
                             r.duplicates,
                             r.failed,
@@ -1102,19 +1119,22 @@ impl App {
                 use chrono::TimeZone;
                 let parse = |value: &str, end: bool| -> std::result::Result<u64, String> {
                     let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                        .map_err(|_| "日期格式应为 YYYY-MM-DD".to_string())?;
+                        .map_err(|_| tr!(language, "日期格式应为 YYYY-MM-DD" => "Date format must be YYYY-MM-DD").to_string())?;
                     let date = if end {
-                        date.succ_opt().ok_or("日期超出范围")?
+                        date.succ_opt()
+                            .ok_or(tr!(language, "日期超出范围" => "Date is out of range"))?
                     } else {
                         date
                     };
-                    let time = date.and_hms_opt(0, 0, 0).ok_or("日期无效")?;
+                    let time = date
+                        .and_hms_opt(0, 0, 0)
+                        .ok_or(tr!(language, "日期无效" => "Invalid date"))?;
                     let utc = chrono::Local
                         .from_local_datetime(&time)
                         .single()
-                        .ok_or("当地日期存在时区歧义，请选择其他日期")?
+                        .ok_or(tr!(language, "当地日期存在时区歧义，请选择其他日期" => "This local time is ambiguous. Choose another date."))?
                         .timestamp_millis();
-                    u64::try_from(utc).map_err(|_| "日期不能早于 1970 年".into())
+                    u64::try_from(utc).map_err(|_| tr!(language, "日期不能早于 1970 年" => "Dates cannot be earlier than 1970").into())
                 };
                 for (value, end) in [
                     (&self.manager.date_start, false),
@@ -1139,7 +1159,7 @@ impl App {
                 if self.manager.filter.before > 0
                     && self.manager.filter.before <= self.manager.filter.since
                 {
-                    self.error = Some("结束日期应晚于或等于开始日期".into());
+                    self.error = Some(tr!(language, "结束日期应晚于或等于开始日期" => "The end date must be on or after the start date").into());
                     return Task::none();
                 }
                 self.query = self.manager.filter.clone();
@@ -1209,10 +1229,10 @@ impl App {
                 self.manager.busy = true;
                 self.manager.panel = None;
                 return Task::perform(
-                    async {
+                    async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("引用外部原片 · 请保留源文件及磁盘位置")
-                            .add_filter("媒体", moriq_app::IMPORT_EXTENSIONS)
+                            .set_title(tr!(language, "引用外部原片 · 请保留源文件及磁盘位置" => "Reference external originals · Keep the source files and drive location"))
+                            .add_filter(tr!(language, "媒体" => "Media"), moriq_app::IMPORT_EXTENSIONS)
                             .pick_files()
                             .await
                             .map(|files| {
@@ -1227,9 +1247,9 @@ impl App {
                 self.manager.busy = true;
                 self.manager.panel = None;
                 return Task::perform(
-                    async {
+                    async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("选择要导入的图片文件夹")
+                            .set_title(tr!(language, "选择要导入的图片文件夹" => "Choose an image folder to import"))
                             .pick_folder()
                             .await
                             .map(|f| vec![f.path().to_path_buf()])
@@ -1246,12 +1266,25 @@ impl App {
                     Panel::ExportOptions
                 });
                 let notice = match &result {
-                    Ok(path) => self.persist_notice("文件输出完成", display_path(path), 0, ""),
-                    Err(e) => self.persist_notice("文件输出失败", e.clone(), 2, ""),
+                    Ok(path) => self.persist_notice(
+                        tr!(language, "文件输出完成" => "Export complete"),
+                        display_path(path),
+                        0,
+                        "",
+                    ),
+                    Err(e) => self.persist_notice(
+                        tr!(language, "文件输出失败" => "Export failed"),
+                        e.clone(),
+                        2,
+                        "",
+                    ),
                 };
                 self.manager.busy = false;
                 match result {
-                    Ok(path) => self.manager.report = format!("已完成：{}", display_path(&path)),
+                    Ok(path) => {
+                        self.manager.report =
+                            trf!(language, "已完成：{}" => "Completed: {}", display_path(&path))
+                    }
                     Err(e) => self.error = Some(e),
                 }
                 return notice;
@@ -1260,34 +1293,32 @@ impl App {
                 self.manager.report_panel = Some(Panel::Maintenance);
                 let notice = match &result {
                     Ok(r) => self.persist_notice(
-                        "资源库检查完成",
-                        format!(
-                            "检查 {} 个版本，缺失 {}，损坏 {}，修复 {}，{}",
+                        tr!(language, "资源库检查完成" => "Library check complete"),
+                        trf!(language, "检查 {} 个版本，缺失 {}，损坏 {}，修复 {}，{}" => "Checked {} versions: {} missing, {} corrupt, {} repaired, {}",
                             r.checked,
                             r.missing,
                             r.damaged,
                             r.repaired,
                             if r.cancelled {
-                                "已停止"
+                                tr!(language, "已停止" => "Stopped")
                             } else {
-                                "已完成"
+                                tr!(language, "已完成" => "Completed")
                             }
                         ),
                         if r.missing + r.damaged > 0 { 1 } else { 0 },
                         "maintenance",
                     ),
-                    Err(e) => self.persist_notice("资源库检查失败", e.clone(), 2, "maintenance"),
+                    Err(e) => self.persist_notice(tr!(language, "资源库检查失败" => "Library check failed"), e.clone(), 2, "maintenance"),
                 };
                 self.manager.busy = false;
                 self.manager.maintenance = None;
                 match result {
                     Ok(r) => {
-                        self.manager.report = format!(
-                            "{}检查 {} 个版本；缺失 {}，校验不符 {}，修复缓存 {}。\n{}",
+                        self.manager.report = trf!(language, "{}检查 {} 个版本；缺失 {}，校验不符 {}，修复缓存 {}。\n{}" => "{}Checked {} versions; {} missing, {} checksum mismatches, {} caches repaired.\n{}",
                             if r.cancelled {
-                                "已停止，已"
+                                tr!(language, "已停止，已" => "Stopped. ")
                             } else {
-                                "已完成，已"
+                                tr!(language, "已完成，已" => "Completed. ")
                             },
                             r.checked,
                             r.missing,
@@ -1295,12 +1326,11 @@ impl App {
                             r.repaired,
                             r.warnings.join("\n")
                         );
-                        self.status = format!(
-                            "资源库检查{}：{} 个版本，修复 {} 项缓存",
+                        self.status = trf!(language, "资源库检查{}：{} 个版本，修复 {} 项缓存" => "Library check {}: {} versions, {} caches repaired",
                             if r.cancelled {
-                                "已停止"
+                                tr!(language, "已停止" => "Stopped")
                             } else {
-                                "已完成"
+                                tr!(language, "已完成" => "Completed")
                             },
                             r.checked,
                             r.repaired
@@ -1417,9 +1447,9 @@ impl App {
                                 async move {
                                     rfd::AsyncFileDialog::new()
                                         .set_title(if backup {
-                                            "选择库外备份位置"
+                                            tr!(language, "选择库外备份位置" => "Choose a backup location outside the library")
                                         } else {
-                                            "选择导出位置"
+                                            tr!(language, "选择导出位置" => "Choose an export location")
                                         })
                                         .pick_folder()
                                         .await
@@ -1465,63 +1495,88 @@ impl App {
         &'a self,
         base: Element<'a, Message>,
     ) -> Element<'a, Message> {
+        let language = self.preferences.language;
         if self.compact_panel() {
             return self.popup(base);
         }
         let mut content = Column::new().spacing(18);
         for (section, _) in &self.manager.organizer.errors {
             let (panel, label) = match section {
-                OrganizerSection::Folders => (Panel::Collections, "分组"),
-                OrganizerSection::Jobs => (Panel::Tasks, "后台任务"),
-                OrganizerSection::People => (Panel::People, "人物"),
-                OrganizerSection::Categories => (Panel::Menu, "分类"),
-                OrganizerSection::Tags => (Panel::Tags, "标签"),
-                OrganizerSection::Collections => (Panel::Collections, "智能集合"),
-                OrganizerSection::Statistics => (Panel::Maintenance, "统计"),
-                OrganizerSection::Synco => (Panel::Synco, "Synco 交接"),
-                OrganizerSection::Profile => (Panel::Maintenance, "资源库信息"),
+                OrganizerSection::Folders => {
+                    (Panel::Collections, tr!(language, "分组" => "Groups"))
+                }
+                OrganizerSection::Jobs => (
+                    Panel::Tasks,
+                    tr!(language, "后台任务" => "Background tasks"),
+                ),
+                OrganizerSection::People => (Panel::People, tr!(language, "人物" => "People")),
+                OrganizerSection::Categories => {
+                    (Panel::Menu, tr!(language, "分类" => "Categories"))
+                }
+                OrganizerSection::Tags => (Panel::Tags, tr!(language, "标签" => "Tags")),
+                OrganizerSection::Collections => (
+                    Panel::Collections,
+                    tr!(language, "智能集合" => "Smart collections"),
+                ),
+                OrganizerSection::Statistics => {
+                    (Panel::Maintenance, tr!(language, "统计" => "Statistics"))
+                }
+                OrganizerSection::Synco => {
+                    (Panel::Synco, tr!(language, "Synco 交接" => "Synco handoff"))
+                }
+                OrganizerSection::Profile => (
+                    Panel::Maintenance,
+                    tr!(language, "资源库信息" => "Library information"),
+                ),
             };
             if self.manager.panel == Some(panel) || self.manager.panel == Some(Panel::Menu) {
-                content = content.push(muted(format!(
-                    "{label}暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。"
+                content = content.push(muted(trf!(language, "{label}暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。" => "{label} is temporarily unavailable. Reopen the library to retry. Diagnostics were written to the log."
                 )));
             }
         }
         let title = match self.manager.panel {
-            Some(Panel::Activity) => "活动记录",
-            Some(Panel::Notifications) => "通知中心",
-            Some(Panel::Location) => "编辑地点",
-            Some(Panel::Storage) => "资源库空间明细",
-            Some(Panel::Rules) => "组合规则",
-            Some(Panel::Help) => "搜索与快捷键",
-            Some(Panel::Licenses) => "开源组件声明",
-            Some(Panel::Compare) => "版本并排对比",
-            Some(Panel::Tasks) => "后台任务",
+            Some(Panel::Activity) => tr!(language, "活动记录" => "Activity"),
+            Some(Panel::Notifications) => tr!(language, "通知中心" => "Notifications"),
+            Some(Panel::Location) => tr!(language, "编辑地点" => "Edit location"),
+            Some(Panel::Storage) => tr!(language, "资源库空间明细" => "Library storage details"),
+            Some(Panel::Rules) => tr!(language, "组合规则" => "Combined rules"),
+            Some(Panel::Help) => tr!(language, "搜索与快捷键" => "Search and shortcuts"),
+            Some(Panel::Licenses) => tr!(language, "开源组件声明" => "Open source notices"),
+            Some(Panel::Compare) => {
+                tr!(language, "版本并排对比" => "Compare versions side by side")
+            }
+            Some(Panel::Tasks) => tr!(language, "后台任务" => "Background tasks"),
             Some(Panel::Delete) => {
                 if self.deletion.final_step {
-                    "最后确认：永久删除"
+                    tr!(language, "最后确认：永久删除" => "Final confirmation: permanent deletion")
                 } else {
-                    "确认删除"
+                    tr!(language, "确认删除" => "Confirm deletion")
                 }
             }
-            Some(Panel::Menu) => "资源库工具",
-            Some(Panel::Similar) => "视觉近似图片",
-            Some(Panel::People) => "人物管理与人工纠正",
-            Some(Panel::Metadata) => "EXIF 与 GPS 检索",
-            Some(Panel::Batch) => "批量编辑多个字段",
-            Some(Panel::AssetMenu) => "素材操作",
-            Some(Panel::AssetProjects) => "素材所属项目",
-            Some(Panel::Versions) => "素材版本",
-            Some(Panel::ViewOptions) => "显示方式",
-            Some(Panel::Import) => "导入素材",
-            Some(Panel::Filters) => "筛选与排序",
-            Some(Panel::Organize) => "整理选中的素材",
-            Some(Panel::Tags) => "标签管理",
-            Some(Panel::ExportOptions) => "导出素材",
-            Some(Panel::Collections) => "标签与智能集合",
-            Some(Panel::Project) => "项目管理",
-            Some(Panel::Synco) => "Synco 编辑与版本交接",
-            _ => "备份与完整性检查",
+            Some(Panel::Menu) => tr!(language, "资源库工具" => "Library tools"),
+            Some(Panel::Similar) => tr!(language, "视觉近似图片" => "Visually similar images"),
+            Some(Panel::People) => {
+                tr!(language, "人物管理与人工纠正" => "People and recognition corrections")
+            }
+            Some(Panel::Metadata) => tr!(language, "EXIF 与 GPS 检索" => "EXIF and GPS search"),
+            Some(Panel::Batch) => tr!(language, "批量编辑多个字段" => "Batch edit multiple fields"),
+            Some(Panel::AssetMenu) => tr!(language, "素材操作" => "Asset actions"),
+            Some(Panel::AssetProjects) => tr!(language, "素材所属项目" => "Asset projects"),
+            Some(Panel::Versions) => tr!(language, "素材版本" => "Asset versions"),
+            Some(Panel::ViewOptions) => tr!(language, "显示方式" => "Display options"),
+            Some(Panel::Import) => tr!(language, "导入素材" => "Assets imported"),
+            Some(Panel::Filters) => tr!(language, "筛选与排序" => "Filter and sort"),
+            Some(Panel::Organize) => tr!(language, "整理选中的素材" => "Organize selected assets"),
+            Some(Panel::Tags) => tr!(language, "标签管理" => "Tag management"),
+            Some(Panel::ExportOptions) => tr!(language, "导出素材" => "Export assets"),
+            Some(Panel::Collections) => {
+                tr!(language, "标签与智能集合" => "Tags and smart collections")
+            }
+            Some(Panel::Project) => tr!(language, "项目管理" => "Project management"),
+            Some(Panel::Synco) => {
+                tr!(language, "Synco 编辑与版本交接" => "Synco editing and version handoff")
+            }
+            _ => tr!(language, "备份与完整性检查" => "Backup and integrity"),
         };
         let back: Element<'_, Message> = if self.surface_has_parent() {
             icon_button(Icon::Left, Message::Back)
@@ -1531,40 +1586,78 @@ impl App {
             Space::new().width(0).into()
         };
         let (kind, description) = match self.manager.panel {
-            Some(Panel::Collections) => (Icon::Tag, "管理你的整理方式，让素材更有条理。"),
+            Some(Panel::Collections) => (
+                Icon::Tag,
+                tr!(language, "管理你的整理方式，让素材更有条理。" => "Manage your organization tools and keep assets in order."),
+            ),
             Some(Panel::People) => (
                 Icon::Person,
-                "管理已识别的人物，支持修改名称、合并人物或手动纠正识别结果。",
+                tr!(language, "管理已识别的人物，支持修改名称、合并人物或手动纠正识别结果。" => "Manage recognized people: rename, merge or manually correct recognition results."),
             ),
             Some(Panel::Tags) => (
                 Icon::Tag,
-                "管理标签名称与素材归类，支持重命名、合并或删除。",
+                tr!(language, "管理标签名称与素材归类，支持重命名、合并或删除。" => "Manage tag names and asset categories: rename, merge or delete."),
             ),
-            Some(Panel::Filters | Panel::Metadata | Panel::Rules) => {
-                (Icon::Filter, "组合搜索条件，快速找到需要的素材。")
-            }
-            Some(Panel::Project | Panel::AssetProjects) => {
-                (Icon::Folder, "管理素材所属项目与项目层级。")
-            }
-            Some(Panel::Tasks) => (Icon::Clock, "查看处理进度，管理后台任务。"),
-            Some(Panel::ExportOptions) => (Icon::Download, "选择输出格式、尺寸与整理方式。"),
-            Some(Panel::Activity) => (Icon::Clock, "查看资源库内的操作与处理记录。"),
-            Some(Panel::Notifications) => (Icon::Bell, "查看任务结果与需要关注的消息。"),
-            Some(Panel::Location) => (Icon::Pin, "查看和编辑素材的地理位置。"),
-            Some(Panel::Storage | Panel::Maintenance) => {
-                (Icon::Database, "管理本地资源、备份与资源库完整性。")
-            }
-            Some(Panel::Delete) => (Icon::Trash, "核对本次操作的范围与影响后再继续。"),
-            Some(Panel::Versions | Panel::Compare) => {
-                (Icon::Image, "查看素材版本，保留原片与编辑记录。")
-            }
-            Some(Panel::Synco) => (Icon::Network, "发送素材副本，并接收编辑后的新版本。"),
-            Some(Panel::Similar) => (Icon::Search, "查看与当前素材接近的图片。"),
-            Some(Panel::Batch | Panel::Organize) => {
-                (Icon::Edit, "统一整理所选素材的标签、评分与其他信息。")
-            }
-            Some(Panel::Licenses) => (Icon::Package, "查看第三方组件与模型的授权说明。"),
-            _ => (Icon::Settings, "管理资源库与应用工具。"),
+            Some(Panel::Filters | Panel::Metadata | Panel::Rules) => (
+                Icon::Filter,
+                tr!(language, "组合搜索条件，快速找到需要的素材。" => "Combine filters to quickly find the assets you need."),
+            ),
+            Some(Panel::Project | Panel::AssetProjects) => (
+                Icon::Folder,
+                tr!(language, "管理素材所属项目与项目层级。" => "Manage asset membership and the project hierarchy."),
+            ),
+            Some(Panel::Tasks) => (
+                Icon::Clock,
+                tr!(language, "查看处理进度，管理后台任务。" => "View progress and manage background tasks."),
+            ),
+            Some(Panel::ExportOptions) => (
+                Icon::Download,
+                tr!(language, "选择输出格式、尺寸与整理方式。" => "Choose output format, dimensions and folder layout."),
+            ),
+            Some(Panel::Activity) => (
+                Icon::Clock,
+                tr!(language, "查看资源库内的操作与处理记录。" => "View library operations and processing history."),
+            ),
+            Some(Panel::Notifications) => (
+                Icon::Bell,
+                tr!(language, "查看任务结果与需要关注的消息。" => "View task results and messages that need attention."),
+            ),
+            Some(Panel::Location) => (
+                Icon::Pin,
+                tr!(language, "查看和编辑素材的地理位置。" => "View and edit asset locations."),
+            ),
+            Some(Panel::Storage | Panel::Maintenance) => (
+                Icon::Database,
+                tr!(language, "管理本地资源、备份与资源库完整性。" => "Manage local storage, backups and library integrity."),
+            ),
+            Some(Panel::Delete) => (
+                Icon::Trash,
+                tr!(language, "核对本次操作的范围与影响后再继续。" => "Review the scope and impact of this operation before continuing."),
+            ),
+            Some(Panel::Versions | Panel::Compare) => (
+                Icon::Image,
+                tr!(language, "查看素材版本，保留原片与编辑记录。" => "View asset versions while preserving originals and edit history."),
+            ),
+            Some(Panel::Synco) => (
+                Icon::Network,
+                tr!(language, "发送素材副本，并接收编辑后的新版本。" => "Send asset copies and receive edited versions."),
+            ),
+            Some(Panel::Similar) => (
+                Icon::Search,
+                tr!(language, "查看与当前素材接近的图片。" => "View images similar to the current asset."),
+            ),
+            Some(Panel::Batch | Panel::Organize) => (
+                Icon::Edit,
+                tr!(language, "统一整理所选素材的标签、评分与其他信息。" => "Edit tags, ratings and other information for selected assets."),
+            ),
+            Some(Panel::Licenses) => (
+                Icon::Package,
+                tr!(language, "查看第三方组件与模型的授权说明。" => "View third party component and model licenses."),
+            ),
+            _ => (
+                Icon::Settings,
+                tr!(language, "管理资源库与应用工具。" => "Manage library and application tools."),
+            ),
         };
         let header = row![
             back,
@@ -1625,7 +1718,7 @@ impl App {
             Some(Panel::Delete) => content = content.push(self.deletion_panel()),
             Some(Panel::Compare) => content = content.push(self.compare_panel()),
             Some(Panel::Licenses) => {
-                content=content.push(muted("发行包的 licenses 文件夹内提供第三方组件说明、逐项依赖清单与许可文本。模型权重的授权声明以各模型原始来源为准。"))
+                content=content.push(muted(tr!(language, "发行包的 licenses 文件夹内提供第三方组件说明、逐项依赖清单与许可文本。模型权重的授权声明以各模型原始来源为准。" => "The distribution's licenses folder contains third party notices, a dependency inventory and license texts. Model weight licenses are provided by their original sources.")))
                     .push(text(include_str!("../../../THIRD_PARTY_NOTICES.md")).size(12))
                     .push(text(include_str!("../../../assets/licenses/ONNX-Runtime-MIT.txt")).size(12))
                     .push(text(include_str!("../../../assets/licenses/file-id-MIT.txt")).size(12));
@@ -1641,30 +1734,30 @@ impl App {
             }
             Some(Panel::Help) => {
                 for line in [
-                    "Ctrl+K：定位全局搜索。搜索文件名、标签和备注，特殊符号按字面匹配。",
-                    "精确标签、RAW、日期与评分请在筛选中选择；复杂条件使用组合规则。",
-                    "Alt+← / →：后退与前进。← / →：按当前排序浏览相邻素材。",
-                    "Ctrl+A：选择当前已加载的素材（最多 128 张）。Shift+单击：范围选择。",
-                    "Ctrl+Shift+A：对全部查询结果进行批量编辑。B：打开多字段批量编辑。",
-                    "0～5：给选中范围评分。F：切换收藏。Ctrl+E：导出所选素材。",
-                    "Enter / 空格：放大选中图片。Delete：将选中范围移入回收站。",
-                    "Esc：先关闭放大查看，再关闭面板或详情。编辑文字时不触发选择、删除或相邻浏览。",
-                    "AI 分析需先在模型管理中安装模型，再建立索引；自然语言搜索使用语义搜索入口。",
+                    tr!(language, "Ctrl+K：定位全局搜索。搜索文件名、标签和备注，特殊符号按字面匹配。" => "Ctrl+K: Focus global search. Search file names, tags and notes. Special characters are matched literally."),
+                    tr!(language, "精确标签、RAW、日期与评分请在筛选中选择；复杂条件使用组合规则。" => "Use filters for exact tags, RAW, dates and ratings. Use combined rules for more complex queries."),
+                    tr!(language, "Alt+← / →：后退与前进。← / →：按当前排序浏览相邻素材。" => "Alt+← / →: Back and forward. ← / →: Browse neighboring assets in the current sort order."),
+                    tr!(language, "Ctrl+A：选择当前已加载的素材（最多 128 张）。Shift+单击：范围选择。" => "Ctrl+A: Select loaded assets (up to 128). Shift+click: Select a range."),
+                    tr!(language, "Ctrl+Shift+A：对全部查询结果进行批量编辑。B：打开多字段批量编辑。" => "Ctrl+Shift+A: Batch edit all search results. B: Open multi-field batch editing."),
+                    tr!(language, "0～5：给选中范围评分。F：切换收藏。Ctrl+E：导出所选素材。" => "0–5: Rate the selection. F: Toggle favorite. Ctrl+E: Export selected assets."),
+                    tr!(language, "Enter / 空格：放大选中图片。Delete：将选中范围移入回收站。" => "Enter / Space: Enlarge the selected image. Delete: Move the selection to Trash."),
+                    tr!(language, "Esc：先关闭放大查看，再关闭面板或详情。编辑文字时不触发选择、删除或相邻浏览。" => "Esc: Close the enlarged view, then the panel or details. Selection, deletion and browsing shortcuts are disabled while editing text."),
+                    tr!(language, "AI 分析需先在模型管理中安装模型，再建立索引；自然语言搜索使用语义搜索入口。" => "Install models and build indexes before running AI analysis. Use semantic search for natural language queries."),
                 ] {
                     content = content.push(muted(line));
                 }
             }
             Some(Panel::Similar) => {
-                content=content.push(muted("根据画面指纹、比例和颜色查找尺寸/压缩变体，最多显示100项；结果供人工判断，不自动合并或删除。"))
-                    .push(crate::components::action("建立/更新全库近似索引",Message::Jobs(crate::tasks::JobMessage::Queue("fingerprints".into()))));
+                content=content.push(muted(tr!(language, "根据画面指纹、比例和颜色查找尺寸/压缩变体，最多显示100项；结果供人工判断，不自动合并或删除。" => "Find size and compression variants using visual fingerprints, aspect ratio and color. Up to 100 results are shown for manual review; nothing is merged or deleted automatically.")))
+                    .push(crate::components::action(tr!(language, "建立/更新全库近似索引" => "Build / update library similarity index"),Message::Jobs(crate::tasks::JobMessage::Queue("fingerprints".into()))));
                 if self.manager.similar.is_empty() {
                     content = content.push(muted(
-                        "没有找到已索引的近似图片。旧图片可先建立索引，再重新查询。",
+                        tr!(language, "没有找到已索引的近似图片。旧图片可先建立索引，再重新查询。" => "No indexed similar images found. Build an index for older images and try again."),
                     ));
                 }
                 for item in &self.manager.similar {
                     content = content.push(crate::components::action(
-                        &format!("{} · 差异 {}", item.name, item.distance),
+                        &trf!(language, "{} · 差异 {}" => "{} · Difference {}", item.name, item.distance),
                         Message::Journal(crate::journal::JournalMessage::OpenAsset(item.id)),
                     ));
                 }
@@ -1673,12 +1766,24 @@ impl App {
             Some(Panel::Rules) => content = content.push(self.rules_panel()),
             Some(Panel::Location) => {
                 content = content.push(muted(
-                    "补充地点仅保存在当前图片版本中，原片 EXIF 保持不变。清除后重新显示原片 GPS。",
+                    tr!(language, "补充地点仅保存在当前图片版本中，原片 EXIF 保持不变。清除后重新显示原片 GPS。" => "Custom locations are saved only to this image version. Original EXIF is preserved. Clearing the custom location restores the original GPS display."),
                 ));
                 for (field, label, value) in [
-                    (0, "纬度（-90～90）", &self.manager.latitude),
-                    (1, "经度（-180～180）", &self.manager.longitude),
-                    (2, "地点名称（可选）", &self.manager.location_label),
+                    (
+                        0,
+                        tr!(language, "纬度（-90～90）" => "Latitude (-90 to 90)"),
+                        &self.manager.latitude,
+                    ),
+                    (
+                        1,
+                        tr!(language, "经度（-180～180）" => "Longitude (-180 to 180)"),
+                        &self.manager.longitude,
+                    ),
+                    (
+                        2,
+                        tr!(language, "地点名称（可选）" => "Location name (optional)"),
+                        &self.manager.location_label,
+                    ),
                 ] {
                     content = content.push(
                         text_input(label, value)
@@ -1690,13 +1795,13 @@ impl App {
                 content = content
                     .push(
                         row![
-                            action("保存补充地点", SaveLocation),
-                            action("清除补充地点", ClearLocation)
+                            action(tr!(language, "保存补充地点" => "Save custom location"), SaveLocation),
+                            action(tr!(language, "清除补充地点" => "Clear custom location"), ClearLocation)
                         ]
                         .spacing(10),
                     )
                     .push(muted(
-                        "仅在点击“打开地图”时将坐标交给浏览器；不会自动联网查询地名。",
+                        tr!(language, "仅在点击“打开地图”时将坐标交给浏览器；不会自动联网查询地名。" => "Coordinates are sent to your browser only when you click Open map. Place names are never looked up automatically."),
                     ));
             }
             Some(Panel::Activity) => content = content.push(self.event_list(false)),
@@ -1705,7 +1810,7 @@ impl App {
                 if let Some(asset) = &self.selected {
                     content = content.push(heading(&asset.name, 15));
                     if self.manager.details.projects.is_empty() {
-                        content = content.push(muted("这张素材尚未加入项目"));
+                        content = content.push(muted(tr!(language, "这张素材尚未加入项目" => "This asset does not belong to a project yet")));
                     }
                     if let Some(library) = &self.library {
                         for project in &library.info.projects {
@@ -1718,7 +1823,11 @@ impl App {
                                     ),
                                     Space::new().width(Length::Fill),
                                     action(
-                                        if belongs { "移出" } else { "加入" },
+                                        if belongs {
+                                            tr!(language, "移出" => "Remove")
+                                        } else {
+                                            tr!(language, "加入" => "Add")
+                                        },
                                         Edit(moriq_domain::Edit::Project(project.id, !belongs))
                                     )
                                 ]
@@ -1730,7 +1839,7 @@ impl App {
             }
             Some(Panel::Versions) => {
                 content = content.push(
-                    button("并排对比版本…")
+                    button(tr!(language, "并排对比版本…" => "Compare versions side by side…"))
                         .style(secondary)
                         .on_press(Message::Compare(crate::compare::CompareMessage::Open)),
                 );
@@ -1751,17 +1860,19 @@ impl App {
                             Version(version.id),
                         ));
                     }
-                    content = content.push(muted("切换展示版本会保留原片与全部精修版本。"));
+                    content = content.push(muted(tr!(language, "切换展示版本会保留原片与全部精修版本。" => "Changing the displayed version preserves originals and all edited versions.")));
                 }
             }
             Some(Panel::Synco) => {
-                content=content.push(checkbox(self.preferences.synco.auto_start).label("发送时自动启动 Synco").on_toggle(|v|Message::Manage(SyncoAutoStart(v))))
-                    .push(action("选择 Synco 程序",SyncoExecutable))
-                    .push(muted(self.preferences.synco.executable.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"自动查找安装位置".into())))
-                    .push(muted("需要 Synco 0.4.1 或更新版本。每张图片使用独立任务；精修结果保留为新版本，完成交接后自动回收发送副本。"))
-                    .push(row![action("发送选中图片",SendSynco),action("立即检查 / 重试连接",SyncoPoll(true))].spacing(8));
+                content=content.push(checkbox(self.preferences.synco.auto_start).label(tr!(language, "发送时自动启动 Synco" => "Start Synco automatically when sending")).on_toggle(|v|Message::Manage(SyncoAutoStart(v))))
+                    .push(action(tr!(language, "选择 Synco 程序" => "Select the Synco application"),SyncoExecutable))
+                    .push(muted(self.preferences.synco.executable.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||tr!(language, "自动查找安装位置" => "Find installation automatically").into())))
+                    .push(muted(tr!(language, "需要 Synco 0.4.1 或更新版本。每张图片使用独立任务；精修结果保留为新版本，完成交接后自动回收发送副本。" => "Requires Synco 0.4.1 or later. Each image uses a separate task. Edits become new versions; sent copies are cleaned up after handoff.")))
+                    .push(row![action(tr!(language, "发送选中图片" => "Send selected images"),SendSynco),action(tr!(language, "立即检查 / 重试连接" => "Check now / retry connection"),SyncoPoll(true))].spacing(8));
                 if self.manager.synco_running {
-                    content = content.push(muted("正在与 Synco 交接…"));
+                    content = content.push(muted(
+                        tr!(language, "正在与 Synco 交接…" => "Handing off to Synco…"),
+                    ));
                 }
                 for task in &self.manager.organizer.synco {
                     content = content
@@ -1773,7 +1884,7 @@ impl App {
                     }
                     if matches!(task.state.as_str(), "failed" | "cancelled") {
                         content = content.push(action(
-                            "使用原交接版本创建新任务重试",
+                            tr!(language, "使用原交接版本创建新任务重试" => "Retry as a new task using the original handoff version"),
                             SyncoRetry(task.id.clone()),
                         ));
                     }
@@ -1781,7 +1892,7 @@ impl App {
             }
             Some(Panel::Filters) => {
                 content = content.push(crate::components::action(
-                    "EXIF 与 GPS 高级检索",
+                    tr!(language, "EXIF 与 GPS 高级检索" => "Advanced EXIF and GPS search"),
                     Message::Metadata(MetadataMessage::Open),
                 ));
                 let q = &self.manager.filter;
@@ -1894,11 +2005,12 @@ impl App {
                 ] {
                     content = content.push(
                         row![
-                            text(label).size(13).width(100),
-                            pick_list(values, Some(selected), move |v| Message::Manage(Filter(
-                                field,
-                                v.into()
-                            )))
+                            text(crate::i18n::option_label(language, label))
+                                .size(13)
+                                .width(100),
+                            pick_list(language, values, Some(selected), move |v| Message::Manage(
+                                Filter(field, v.into())
+                            ))
                             .width(Length::Fill)
                         ]
                         .align_y(Alignment::Center),
@@ -1906,8 +2018,8 @@ impl App {
                 }
                 content = content
                     .push(row![
-                        text("最低宽度 / 像素").size(13).width(140),
-                        pick_list(
+                        text(tr!(language, "最低宽度 / 像素" => "Minimum width / pixels")).size(13).width(140),
+                        pick_list(language,
                             vec!["0", "1920", "3840", "7680"],
                             Some(match q.min_width {
                                 1920 => "1920",
@@ -1920,8 +2032,8 @@ impl App {
                         .width(Length::Fill)
                     ])
                     .push(row![
-                        text("主色调").size(13).width(140),
-                        pick_list(
+                        text(tr!(language, "主色调" => "Dominant color")).size(13).width(140),
+                        pick_list(language,
                             vec![
                                 "全部颜色",
                                 "黑",
@@ -1945,10 +2057,13 @@ impl App {
                         )
                         .width(Length::Fill)
                     ])
-                    .push(muted("旧库如尚无颜色索引，请到备份与检查中运行修复。"));
+                    .push(muted(tr!(language, "旧库如尚无颜色索引，请到备份与检查中运行修复。" => "If an older library has no color index, run repair in Backup and integrity.")));
                 content = content.push(row![
-                    text("添加方式").size(13).width(140),
+                    text(tr!(language, "添加方式" => "Import method"))
+                        .size(13)
+                        .width(140),
                     pick_list(
+                        language,
                         vec!["全部方式", "托管导入", "外部引用"],
                         Some(match q.storage {
                             1 => "托管导入",
@@ -1961,54 +2076,59 @@ impl App {
                 ]);
                 content = content.push(
                     row![
-                        text_input("开始日期 YYYY-MM-DD", &self.manager.date_start)
-                            .style(crate::theme::input)
-                            .padding(10)
-                            .on_input(|v| Message::Manage(Date(0, v))),
-                        text_input("结束日期 YYYY-MM-DD", &self.manager.date_end)
-                            .style(crate::theme::input)
-                            .padding(10)
-                            .on_input(|v| Message::Manage(Date(1, v)))
+                        text_input(
+                            tr!(language, "开始日期 YYYY-MM-DD" => "Start date YYYY-MM-DD"),
+                            &self.manager.date_start
+                        )
+                        .style(crate::theme::input)
+                        .padding(10)
+                        .on_input(|v| Message::Manage(Date(0, v))),
+                        text_input(
+                            tr!(language, "结束日期 YYYY-MM-DD" => "End date YYYY-MM-DD"),
+                            &self.manager.date_end
+                        )
+                        .style(crate::theme::input)
+                        .padding(10)
+                        .on_input(|v| Message::Manage(Date(1, v)))
                     ]
                     .spacing(8),
                 );
                 content = content
                     .push(
                         checkbox(q.untagged)
-                            .label("只看未加标签")
+                            .label(tr!(language, "只看未加标签" => "Untagged only"))
                             .on_toggle(|v| Message::Manage(Untagged(v))),
                     )
                     .push(
                         checkbox(q.unassigned)
-                            .label("只看未归入项目")
+                            .label(tr!(language, "只看未归入项目" => "Without project only"))
                             .on_toggle(|v| Message::Manage(Unassigned(v))),
                     );
             }
             Some(Panel::Organize) => {
                 content = content.push(crate::components::action(
-                    "多字段编辑 / 选择全部查询结果",
+                    tr!(language, "多字段编辑 / 选择全部查询结果" => "Multi-field editing / select all results"),
                     Message::Batch(BatchMessage::Open),
                 ));
                 content = content
-                    .push(muted(format!(
-                        "已选择 {} 张。多选模式中，点击图片可加入或移除选择。",
+                    .push(muted(trf!(language, "已选择 {} 张。多选模式中，点击图片可加入或移除选择。" => "{} images selected. Click an image in selection mode to add or remove it.",
                         self.selected_ids().len()
                     )))
                     .push(
                         row![
-                            action("选中已加载区域", SelectVisible),
-                            action("取消选择", ClearSelection)
+                            action(tr!(language, "选中已加载区域" => "Select loaded area"), SelectVisible),
+                            action(tr!(language, "取消选择" => "Deselect"), ClearSelection)
                         ]
                         .spacing(8),
                     )
                     .push(
                         row![
-                            action("收藏", Edit(moriq_domain::Edit::Favorite(true))),
-                            action("取消收藏", Edit(moriq_domain::Edit::Favorite(false)))
+                            action(tr!(language, "收藏" => "Favorite"), Edit(moriq_domain::Edit::Favorite(true))),
+                            action(tr!(language, "取消收藏" => "Unfavorite"), Edit(moriq_domain::Edit::Favorite(false)))
                         ]
                         .spacing(8),
                     );
-                let mut ratings = row![text("评分").size(13)].spacing(7);
+                let mut ratings = row![text(tr!(language, "评分" => "Rating")).size(13)].spacing(7);
                 for n in 0..=5 {
                     ratings =
                         ratings.push(action(&n.to_string(), Edit(moriq_domain::Edit::Rating(n))));
@@ -2016,13 +2136,13 @@ impl App {
                 content = content.push(ratings);
                 content = content
                     .push(
-                        text_input("要追加的标签，用逗号分隔", &self.manager.label)
+                        text_input(tr!(language, "要追加的标签，用逗号分隔" => "Tags to add, separated by commas"), &self.manager.label)
                             .on_input(|s| Message::Manage(Label(s)))
                             .padding(10)
                             .style(input),
                     )
                     .push(action(
-                        "追加标签",
+                        tr!(language, "追加标签" => "Add tags"),
                         Edit(moriq_domain::Edit::AddTags(
                             self.manager
                                 .label
@@ -2033,7 +2153,7 @@ impl App {
                         )),
                     ));
                 content = content.push(action(
-                    "移除填写的标签",
+                    tr!(language, "移除填写的标签" => "Remove entered tags"),
                     Edit(moriq_domain::Edit::RemoveTags(
                         self.manager
                             .label
@@ -2049,8 +2169,14 @@ impl App {
                         content = content.push(
                             row![
                                 text(&p.name).size(13).width(Length::Fill),
-                                action("加入", Edit(moriq_domain::Edit::Project(p.id, true))),
-                                action("移出", Edit(moriq_domain::Edit::Project(p.id, false)))
+                                action(
+                                    tr!(language, "加入" => "Add"),
+                                    Edit(moriq_domain::Edit::Project(p.id, true))
+                                ),
+                                action(
+                                    tr!(language, "移出" => "Remove"),
+                                    Edit(moriq_domain::Edit::Project(p.id, false))
+                                )
                             ]
                             .spacing(8),
                         );
@@ -2059,20 +2185,23 @@ impl App {
                 content = content
                     .push(separator())
                     .push(muted(
-                        "移入回收站保留原片、版本、标签和项目关系，可随时恢复。",
+                        tr!(language, "移入回收站保留原片、版本、标签和项目关系，可随时恢复。" => "Trash preserves originals, versions, tags and project membership. You can restore them at any time."),
                     ))
                     .push(
                         row![
-                            action("移入回收站", Edit(moriq_domain::Edit::Trash(true))),
-                            action("从回收站恢复", Edit(moriq_domain::Edit::Trash(false))),
-                            action("导出原片", Export)
+                            action(tr!(language, "移入回收站" => "Move to Trash"), Edit(moriq_domain::Edit::Trash(true))),
+                            action(tr!(language, "从回收站恢复" => "Restore from Trash"), Edit(moriq_domain::Edit::Trash(false))),
+                            action(tr!(language, "导出原片" => "Export originals"), Export)
                         ]
                         .spacing(8),
                     );
                 if self.query.trash {
-                    content = content.push(action("永久删除所选素材…", Purge));
+                    content = content.push(action(
+                        tr!(language, "永久删除所选素材…" => "Permanently delete selected assets…"),
+                        Purge,
+                    ));
                     content = content.push(crate::components::action(
-                        "清空整库回收站…",
+                        tr!(language, "清空整库回收站…" => "Empty library trash…"),
                         Message::Deletion(DeletionMessage::EmptyTrash),
                     ));
                 }
@@ -2085,10 +2214,10 @@ impl App {
                     .iter()
                     .map(|t| t.0.clone())
                     .collect();
-                content=content.push(pick_list(names,Some(self.manager.active_tag.clone()),|v|Message::Manage(ActiveTag(v))).placeholder("选择标签"))
-                    .push(text_input("新名称，或要合并到的已有标签",&self.manager.tag_new_name).on_input(|v|Message::Manage(TagName(v))).padding(10).style(input))
-                    .push(muted("目标已存在时合并素材关系，不会产生重复标签。删除标签会移除归类，原片保持不变。"))
-                    .push(row![action("重命名 / 合并",RenameTag),action("删除标签及归类",DeleteTag)].spacing(8));
+                content=content.push(choice(names,Some(self.manager.active_tag.clone()),|v|Message::Manage(ActiveTag(v))).placeholder(tr!(language, "选择标签" => "Select tag")))
+                    .push(text_input(tr!(language, "新名称，或要合并到的已有标签" => "New name, or an existing tag to merge into"),&self.manager.tag_new_name).on_input(|v|Message::Manage(TagName(v))).padding(10).style(input))
+                    .push(muted(tr!(language, "目标已存在时合并素材关系，不会产生重复标签。删除标签会移除归类，原片保持不变。" => "If the target tag exists, memberships are merged without duplicates. Deleting a tag removes its categorization and preserves originals.")))
+                    .push(row![action(tr!(language, "重命名 / 合并" => "Rename / merge"),RenameTag),action(tr!(language, "删除标签及归类" => "Delete tag and memberships"),DeleteTag)].spacing(8));
             }
             Some(Panel::ExportOptions) => {
                 let options = self.manager.export_options.clone();
@@ -2161,33 +2290,36 @@ impl App {
                     ),
                 ] {
                     content = content.push(row![
-                        text(label).width(160).size(13),
+                        text(crate::i18n::option_label(language, label))
+                            .width(160)
+                            .size(13),
                         pick_list(
+                            language,
                             values.into_iter().map(str::to_string).collect::<Vec<_>>(),
                             Some(selected),
                             move |v| Message::Manage(ExportOption(field, v))
                         )
                     ]);
                 }
-                content=content.push(checkbox(options.preserve_exif).label("保留 EXIF（JPEG / PNG / WebP 嵌入，其他格式附带 .exif）").on_toggle(|v|Message::Manage(ExportOption(7,
+                content=content.push(checkbox(options.preserve_exif).label(tr!(language, "保留 EXIF（JPEG / PNG / WebP 嵌入，其他格式附带 .exif）" => "Preserve EXIF (embedded in JPEG / PNG / WebP; .exif sidecar for other formats)")).on_toggle(|v|Message::Manage(ExportOption(7,
 v.to_string()))))
-                    .push(text_input("目录模板，例如 {year}/{month}/{camera}",
+                    .push(text_input(tr!(language, "目录模板，例如 {year}/{month}/{camera}" => "Folder template, e.g. {year}/{month}/{camera}"),
 &self.manager.export_options.directory_template).style(crate::theme::input).padding(10).on_input(|v|Message::Manage(ExportOption(8,
 v))))
-                    .push(muted("留空使用上方目录选择。变量：{date}、{year}、{month}、{day} 为导入日期，{format}、{camera}、{project}。转换图统一嵌入 sRGB；不复制私有 MakerNote 和旧缩略图。"))
-                    .push(muted("最长边 0 表示不缩放；原文件配合缩放或旋转时输出 PNG。JPEG 透明区域使用白色背景，WebP 为无损编码。"))
-                    .push(action("选择位置并导出",Export));
+                    .push(muted(tr!(language, "留空使用上方目录选择。变量：{date}、{year}、{month}、{day} 为导入日期，{format}、{camera}、{project}。转换图统一嵌入 sRGB；不复制私有 MakerNote 和旧缩略图。" => "Leave blank to use the layout above. Variables: {date}, {year}, {month}, {day} use import dates; also {format}, {camera}, {project}. Converted images embed sRGB. Private MakerNotes and old thumbnails are excluded.")))
+                    .push(muted(tr!(language, "最长边 0 表示不缩放；原文件配合缩放或旋转时输出 PNG。JPEG 透明区域使用白色背景，WebP 为无损编码。" => "Set the longest edge to 0 to keep the original size. Resizing or rotating an original file produces PNG. JPEG uses white for transparency; WebP encoding is lossless.")))
+                    .push(action(tr!(language, "选择位置并导出" => "Choose location and export"),Export));
             }
             Some(Panel::Collections) => {
                 content = content.push(self.folders_panel()).push(separator());
                 let mut collections = iced::widget::column![form_heading(
                     Icon::Sparkles,
-                    "智能集合",
-                    "将当前的搜索、筛选及排序保存为智能集合；集合会随素材变化自动更新。"
+                    tr!(language, "智能集合" => "Smart collections"),
+                    tr!(language, "将当前的搜索、筛选及排序保存为智能集合；集合会随素材变化自动更新。" => "Save the current search, filters and sort order as a smart collection. Results update automatically as assets change.")
                 )]
                 .spacing(16)
                 .push(
-                    text_input("集合名称", &self.manager.collection_name)
+                    text_input(tr!(language, "集合名称" => "Collection name"), &self.manager.collection_name)
                         .on_input(|s| Message::Manage(CollectionName(s)))
                         .padding(10)
                         .style(input),
@@ -2196,13 +2328,13 @@ v))))
                     row![
                         form_action(
                             Icon::Filter,
-                            "编辑组合条件…",
+                            tr!(language, "编辑组合条件…" => "Edit combined rules…"),
                             Message::Rules(crate::rules::RuleMessage::Open),
                             true
                         ),
                         form_action(
                             Icon::Collection,
-                            "保存当前条件",
+                            tr!(language, "保存当前条件" => "Save current filters"),
                             Message::Manage(SaveCollection),
                             false
                         )
@@ -2217,7 +2349,10 @@ v))))
                     collections = collections.push(row![
                         action(&c.name, UseCollection(c.id.clone())),
                         Space::new().width(Length::Fill),
-                        action("删除规则", DeleteCollection(c.id.clone()))
+                        action(
+                            tr!(language, "删除规则" => "Delete rule"),
+                            DeleteCollection(c.id.clone())
+                        )
                     ]);
                 }
                 content = content
@@ -2225,13 +2360,13 @@ v))))
                     .push(separator())
                     .push(form_heading(
                         Icon::Tag,
-                        "标签",
-                        "管理标签，支持重命名、合并或删除标签。",
+                        tr!(language, "标签" => "Tags"),
+                        tr!(language, "管理标签，支持重命名、合并或删除标签。" => "Manage tags: rename, merge or delete."),
                     ))
                     .push(
                         form_action(
                             Icon::Tag,
-                            "重命名、合并或删除标签",
+                            tr!(language, "重命名、合并或删除标签" => "Rename, merge or delete tags"),
                             Message::Manage(Tags),
                             false,
                         )
@@ -2244,16 +2379,16 @@ v))))
             Some(Panel::Project) => content = content.push(self.project_form()),
             Some(Panel::Maintenance) => {
                 content = content.push(crate::components::action(
-                    "清空整库回收站…",
+                    tr!(language, "清空整库回收站…" => "Empty library trash…"),
                     Message::Deletion(DeletionMessage::EmptyTrash),
                 ));
                 content = content.push(self.lifecycle_panel());
-                content = content.push(action("恢复中断的导入（每次最多 100 项）", Recover));
-                content=content.push(muted("备份包含托管原片、版本、项目、标签和 AI 数据，不包含可再生缓存及外部引用原片。引用文件需要另行备份。备份库可直接打开。"))
-                    .push(action("选择库外位置备份",Backup))
-                    .push(muted("检查会在后台逐个校验版本文件，较大的资源库可能需要较长时间。"))
-                    .push(row![action("完整性检查",Check(false)),action("校验并修复缩略图",Check(true))].spacing(8))
-                    .push(muted(format!("保留的中断导入记录：{}",self.manager.organizer.interrupted)));
+                content = content.push(action(tr!(language, "恢复中断的导入（每次最多 100 项）" => "Resume interrupted imports (up to 100 at a time)"), Recover));
+                content=content.push(muted(tr!(language, "备份包含托管原片、版本、项目、标签和 AI 数据，不包含可再生缓存及外部引用原片。引用文件需要另行备份。备份库可直接打开。" => "Backups include managed originals, versions, projects, tags and AI data. Regenerable caches and external originals are excluded. Back up referenced files separately. Backup libraries can be opened directly.")))
+                    .push(action(tr!(language, "选择库外位置备份" => "Back up outside the library"),Backup))
+                    .push(muted(tr!(language, "检查会在后台逐个校验版本文件，较大的资源库可能需要较长时间。" => "Version files are checked individually in the background. Large libraries may take some time.")))
+                    .push(row![action(tr!(language, "完整性检查" => "Integrity check"),Check(false)),action(tr!(language, "校验并修复缩略图" => "Verify and repair thumbnails"),Check(true))].spacing(8))
+                    .push(muted(trf!(language, "保留的中断导入记录：{}" => "Retained interrupted import records: {}",self.manager.organizer.interrupted)));
             }
             _ => {}
         }
@@ -2263,21 +2398,26 @@ v))))
             let total = control.total.load(Ordering::Relaxed);
             let finished = control.finished.load(Ordering::Relaxed);
             content = content.push(muted(if total == 0 {
-                "正在检查数据库、准备文件清单…".to_string()
+                tr!(language, "正在检查数据库、准备文件清单…" => "Checking the database and preparing the file list…").to_string()
             } else {
-                format!("已检查 {finished} / {total} 个版本")
+                trf!(language, "已检查 {finished} / {total} 个版本" => "Checked {finished} / {total} versions")
             }));
             if total > 0 {
                 content = content
                     .push(iced::widget::progress_bar(0.0..=total as f32, finished as f32).girth(5));
             }
             if control.cancel.load(Ordering::Relaxed) {
-                content = content.push(muted("正在停止并清理临时文件…"));
+                content = content.push(muted(tr!(language, "正在停止并清理临时文件…" => "Stopping and cleaning up temporary files…")));
             } else {
-                content = content.push(action("停止检查", CancelCheck));
+                content = content.push(action(
+                    tr!(language, "停止检查" => "Stop check"),
+                    CancelCheck,
+                ));
             }
         } else if self.manager.busy {
-            content = content.push(muted("正在处理，请等待完成…"));
+            content = content.push(muted(
+                tr!(language, "正在处理，请等待完成…" => "Processing, please wait…"),
+            ));
         }
         if !self.manager.report.is_empty() && self.manager.report_panel == self.manager.panel {
             content = content
@@ -2311,13 +2451,13 @@ v))))
         if has_footer {
             form = form.push(
                 row![
-                    action("清空条件", ClearFilters),
-                    button("组合条件…")
+                    action(tr!(language, "清空条件" => "Clear filters"), ClearFilters),
+                    button(tr!(language, "组合条件…" => "Combined rules…"))
                         .padding([8, 12])
                         .style(secondary)
                         .on_press(Message::Rules(crate::rules::RuleMessage::Open)),
                     Space::new().width(Length::Fill),
-                    action("应用", ApplyFilter)
+                    action(tr!(language, "应用" => "Apply"), ApplyFilter)
                 ]
                 .spacing(10)
                 .height(44)

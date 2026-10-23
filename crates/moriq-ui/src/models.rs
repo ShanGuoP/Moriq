@@ -9,6 +9,7 @@ use iced::widget::{
 use iced::{Alignment, Border, Color, Length};
 impl App {
     pub(super) fn models(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let can_organize = self.library.is_some()
             && !self.switching
             && self.ai.models.iter().any(|model| model.installed);
@@ -40,8 +41,10 @@ impl App {
                             container(icon(kind, 18.0, TEXT))
                                 .center_x(32)
                                 .center_y(32)
-                                .style(|_| container::Style {
-                                    background: Some(Color::WHITE.into()),
+                                .style(|theme| container::Style {
+                                    background: Some(
+                                        crate::theme::adaptive(theme, Color::WHITE).into()
+                                    ),
                                     border: Border {
                                         radius: 16.0.into(),
                                         ..Default::default()
@@ -61,11 +64,11 @@ impl App {
                             container(
                                 row![
                                     column![
-                                        heading(label, 14),
+                                        heading(crate::i18n::category(language, label), 14),
                                         muted(if self.library.is_some() {
-                                            format!("{} 张素材", number(count))
+                                            trf!(language, "{} 张素材" => "{} assets", number(count))
                                         } else {
-                                            "选择资源库后查看".into()
+                                            tr!(language, "选择资源库后查看" => "Select a library to view").into()
                                         })
                                     ]
                                     .spacing(4)
@@ -112,7 +115,7 @@ impl App {
             .any(|(section, _)| *section == OrganizerSection::Categories)
         {
             category_rows =
-                category_rows.push(muted("分类信息暂时无法读取，请重新打开资源库重试。"));
+                category_rows.push(muted(tr!(language, "分类信息暂时无法读取，请重新打开资源库重试。" => "Categories are temporarily unavailable. Reopen the library to retry.")));
         }
         let organization = container(
             column![
@@ -120,26 +123,26 @@ impl App {
                     icon(Icon::Network, 34.0, BLUE),
                     column![
                         row![
-                            heading("智能整理", 22),
+                            heading(tr!(language, "智能整理" => "Smart organization"), 22),
                             chip(
                                 if can_organize {
-                                    "本地 AI"
+                                    tr!(language, "本地 AI" => "Local AI")
                                 } else {
-                                    "按需安装模型"
+                                    tr!(language, "按需安装模型" => "Install models on demand")
                                 },
                                 BLUE
                             )
                         ]
                         .spacing(12)
                         .align_y(Alignment::Center),
-                        muted("在本机理解照片内容，自动分类、识别文字并建立相似搜索索引。")
+                        muted(tr!(language, "在本机理解照片内容，自动分类、识别文字并建立相似搜索索引。" => "Understand photos locally: categorize content, recognize text and build similarity indexes."))
                     ]
                     .spacing(6)
                     .width(Length::Fill),
                     button(
                         row![
                             icon(Icon::Refresh, 17.0, BLUE),
-                            text("重新整理").size(13).color(BLUE)
+                            text(tr!(language, "重新整理" => "Organize again")).size(13).style(crate::theme::text_color(BLUE))
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center)
@@ -183,13 +186,13 @@ impl App {
         if visible.is_empty() {
             models = models.push(
                 container(muted(if self.ai.loading {
-                    "正在读取模型…"
+                    tr!(language, "正在读取模型…" => "Loading models…")
                 } else if self.ai.models.is_empty() {
-                    "模型列表尚未就绪，请刷新重试"
+                    tr!(language, "模型列表尚未就绪，请刷新重试" => "Model list is not ready. Refresh and try again.")
                 } else if self.model_search.is_empty() {
-                    "当前没有此类模型，可切换到全部模型安装"
+                    tr!(language, "当前没有此类模型，可切换到全部模型安装" => "No models in this category. Switch to All models to install one.")
                 } else {
-                    "没有找到匹配的模型"
+                    tr!(language, "没有找到匹配的模型" => "No matching models")
                 }))
                 .center_x(Length::Fill)
                 .center_y(130)
@@ -204,9 +207,15 @@ impl App {
             .count();
         let mut tabs = Row::new().spacing(6);
         for (index, (label, count)) in [
-            ("已安装模型", installed),
-            ("可用模型", self.ai.models.len() - installed),
-            ("全部模型", self.ai.models.len()),
+            (tr!(language, "已安装模型" => "Installed models"), installed),
+            (
+                tr!(language, "可用模型" => "Available models"),
+                self.ai.models.len() - installed,
+            ),
+            (
+                tr!(language, "全部模型" => "All models"),
+                self.ai.models.len(),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -214,26 +223,31 @@ impl App {
             tabs = tabs.push(
                 button(text(format!("{label} {count}")).size(12))
                     .padding([7, 10])
-                    .style(if self.model_filter == index as u8 {
-                        primary
-                    } else {
-                        flat
-                    })
+                    .style(liquid_nav(self.model_filter == index as u8))
                     .on_press(Message::ModelFilter(index as u8)),
             );
         }
+        let tabs = crate::liquid::selection(
+            tabs.wrap(),
+            Some(usize::from(self.model_filter)),
+            crate::liquid::Treatment::Selection,
+            self.preferences.reduced_motion,
+        );
         let search = container(
             row![
                 icon(Icon::Search, 15.0, MUTED),
-                text_input("搜索模型…", &self.model_search)
-                    .on_input(Message::ModelSearch)
-                    .padding(0)
-                    .size(12)
-                    .style(|theme, status| {
-                        let mut style = input(theme, status);
-                        style.border.width = 0.0;
-                        style
-                    })
+                text_input(
+                    tr!(language, "搜索模型…" => "Search models…"),
+                    &self.model_search
+                )
+                .on_input(Message::ModelSearch)
+                .padding(0)
+                .size(12)
+                .style(|theme, status| {
+                    let mut style = input(theme, status);
+                    style.border.width = 0.0;
+                    style
+                })
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -247,16 +261,16 @@ impl App {
                 .align_y(Alignment::Center)
                 .into()
         } else {
-            column![tabs.wrap(), search].spacing(10).into()
+            column![tabs, search].spacing(10).into()
         };
         let model_management = container(
             column![
                 row![
                     icon(Icon::Cube, 34.0, BLUE),
                     column![
-                        heading("AI 模型管理", 21),
+                        heading(tr!(language, "AI 模型管理" => "AI model management"), 21),
                         muted(
-                            "管理本地 AI 模型，按需安装，支持图像识别、相似搜索、文字识别等能力。"
+                            tr!(language, "管理本地 AI 模型，按需安装，支持图像识别、相似搜索、文字识别等能力。" => "Manage local AI models. Install image recognition, similarity search and OCR capabilities as needed.")
                         )
                     ]
                     .spacing(6)
@@ -275,10 +289,10 @@ impl App {
         scroll(
             column![
                 column![
-                    heading("AI 智能整理与模型管理", 26),
-                    text("基于 AI 理解你的照片，自动整理、搜索与更多可能。")
+                    heading(tr!(language, "AI 智能整理与模型管理" => "AI organization and models"), 26),
+                    text(tr!(language, "基于 AI 理解你的照片，自动整理、搜索与更多可能。" => "Understand, organize and search your photos with AI."))
                         .size(14)
-                        .color(MUTED)
+                        .style(crate::theme::text_color(MUTED))
                 ]
                 .spacing(6),
                 organization,
@@ -301,13 +315,18 @@ impl App {
         .into()
     }
     fn model_grouping(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         if self.library.is_none() {
-            button(text("选择资源库后分组").size(13))
-                .padding([8, 12])
-                .style(secondary)
-                .into()
+            button(
+                text(tr!(language, "选择资源库后分组" => "Select a library to group assets"))
+                    .size(13),
+            )
+            .padding([8, 12])
+            .style(secondary)
+            .into()
         } else {
-            crate::components::choice(
+            crate::components::localized_choice(
+                language,
                 vec!["按内容类型分组", "人物管理与纠正"],
                 Some("按内容类型分组"),
                 |value| {
@@ -340,6 +359,7 @@ impl App {
         }
     }
     fn model_visible(&self, model: &moriq_app::ModelInfo) -> bool {
+        let language = self.preferences.language;
         (match self.model_filter {
             0 => model.installed,
             1 => !model.installed,
@@ -348,12 +368,13 @@ impl App {
             "{} {} {}",
             model.spec.name,
             model.spec.id,
-            model_description(&model.spec.id)
+            model_description(language, &model.spec.id)
         )
         .to_lowercase()
         .contains(&self.model_search.trim().to_lowercase())
     }
     fn model_card<'a>(&'a self, model: &'a moriq_app::ModelInfo) -> Element<'a, Message> {
+        let language = self.preferences.language;
         let id = &model.spec.id;
         let downloading = self.ai.downloads.get(id);
         let kind = match id.as_str() {
@@ -363,11 +384,11 @@ impl App {
         };
         let color = if id == "florence" { PURPLE } else { BLUE };
         let badge = if downloading.is_some() {
-            chip("下载中", BLUE)
+            chip(tr!(language, "下载中" => "Downloading"), BLUE)
         } else if model.installed {
-            chip("已安装", GREEN)
+            chip(tr!(language, "已安装" => "Installed"), GREEN)
         } else {
-            chip("未安装", MUTED)
+            chip(tr!(language, "未安装" => "Not installed"), MUTED)
         };
         let mut content = column![
             row![
@@ -387,7 +408,9 @@ impl App {
                         badge
                     ]
                     .spacing(5),
-                    text(model_description(id)).size(11).color(MUTED)
+                    text(model_description(language, id))
+                        .size(11)
+                        .style(crate::theme::text_color(MUTED))
                 ]
                 .spacing(8)
                 .width(Length::Fill)
@@ -401,7 +424,7 @@ impl App {
                 )),
                 Space::new().width(Length::Fill),
                 action(
-                    "查看许可",
+                    tr!(language, "查看许可" => "View license"),
                     Message::Manage(crate::manage::ManageMessage::Licenses)
                 )
             ]
@@ -434,9 +457,9 @@ impl App {
                             row![
                                 icon(Icon::Pause, 13.0, ICON),
                                 text(if control.stop.load(Ordering::Relaxed) {
-                                    "暂停中…"
+                                    tr!(language, "暂停中…" => "Pausing…")
                                 } else {
-                                    "暂停"
+                                    tr!(language, "暂停" => "Pause")
                                 })
                                 .size(12)
                             ]
@@ -457,13 +480,16 @@ impl App {
             content = content.push(
                 row![
                     action(
-                        "重新分析",
+                        tr!(language, "重新分析" => "Analyze again"),
                         Message::Jobs(tasks::JobMessage::Queue(format!("analysis:{id}")))
                     )
                     .on_press_maybe(self.library.as_ref().map(|_| {
                         Message::Jobs(tasks::JobMessage::Queue(format!("analysis:{id}")))
                     })),
-                    action("卸载", Message::Ai(AiMessage::Uninstall(id.clone())))
+                    action(
+                        tr!(language, "卸载" => "Uninstall"),
+                        Message::Ai(AiMessage::Uninstall(id.clone()))
+                    )
                 ]
                 .spacing(7)
                 .wrap(),
@@ -473,9 +499,9 @@ impl App {
                 Space::new().width(Length::Fill),
                 action(
                     if model.resumable {
-                        "继续安装"
+                        tr!(language, "继续安装" => "Resume installation")
                     } else {
-                        "安装"
+                        tr!(language, "安装" => "Install")
                     },
                     Message::Ai(AiMessage::Install(id.clone()))
                 )
@@ -489,8 +515,8 @@ impl App {
                 .style(panel),
             container(
                 column![
-                    muted(format!("模型版本：{}", model.spec.revision)),
-                    muted(format!("建议内存：{} MiB", model.spec.minimum_memory_mib)),
+                    muted(trf!(language, "模型版本：{}" => "Model version: {}", model.spec.revision)),
+                    muted(trf!(language, "建议内存：{} MiB" => "Recommended memory: {} MiB", model.spec.minimum_memory_mib)),
                     text(model.spec.source.clone())
                         .size(11)
                         .wrapping(text::Wrapping::Glyph),
@@ -507,6 +533,7 @@ impl App {
         .into()
     }
     fn model_settings(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let jobs: Vec<_> = self
             .manager
             .organizer
@@ -530,41 +557,41 @@ impl App {
             }
         });
         let mut content = column![
-            row![icon(Icon::Settings, 19.0, ICON), heading("模型设置", 14)]
+            row![icon(Icon::Settings, 19.0, ICON), heading(tr!(language, "模型设置" => "Model settings"), 14)]
                 .spacing(12)
                 .align_y(Alignment::Center),
             self.model_setting(
                 Icon::Package,
-                "国内下载加速",
+                tr!(language, "国内下载加速" => "Download mirror"),
                 if self.preferences.ai.use_mirror {
-                    "下载源：HF-Mirror · hf-mirror.com"
+                    tr!(language, "下载源：HF-Mirror · hf-mirror.com" => "Source: HF-Mirror · hf-mirror.com")
                 } else {
-                    "下载源：Hugging Face · huggingface.co"
+                    tr!(language, "下载源：Hugging Face · huggingface.co" => "Source: Hugging Face · huggingface.co")
                 },
                 self.preferences.ai.use_mirror,
                 Message::ToggleModelMirror
             ),
-            muted("切换源在下次安装或继续时生效，保留下载断点。"),
+            muted(tr!(language, "切换源在下次安装或继续时生效，保留下载断点。" => "The new source applies to the next install or resume. Download progress is preserved.")),
             self.model_setting(
                 Icon::Package,
-                "按需加载模型",
-                "闲置时释放模型，下次使用再加载",
+                tr!(language, "按需加载模型" => "Load models on demand"),
+                tr!(language, "闲置时释放模型，下次使用再加载" => "Release idle models and reload them when needed"),
                 self.on_demand_models,
                 Message::ToggleModelPolicy
             ),
             self.model_setting(
                 Icon::Clock,
-                "卸载模型后保留索引",
-                "保留已生成的索引与整理结果",
+                tr!(language, "卸载模型后保留索引" => "Keep indexes after uninstalling models"),
+                tr!(language, "保留已生成的索引与整理结果" => "Preserve generated indexes and organization results"),
                 self.retain_indexes,
                 Message::ToggleRetainIndexes
             ),
             separator(),
             row![
                 icon(Icon::Refresh, 18.0, ICON),
-                heading("后台索引任务", 13),
+                heading(tr!(language, "后台索引任务" => "Background indexing tasks"), 13),
                 Space::new().width(Length::Fill),
-                button(text("全部任务").size(11).color(BLUE))
+                button(text(tr!(language, "全部任务" => "All tasks")).size(11).style(crate::theme::text_color(BLUE)))
                     .padding(0)
                     .style(flat)
                     .on_press(Message::Manage(ManageMessage::Tasks))
@@ -584,50 +611,53 @@ impl App {
                 ),
                 column![
                     heading(
-                        current.map_or("当前没有索引任务", |job| job_title(&job.kind)),
+                        current.map_or(tr!(language, "当前没有索引任务" => "No indexing tasks"), |job| job_title(language, &job.kind)),
                         11
                     ),
                     progress_bar(0.0..=1.0, ratio)
                         .girth(4)
                         .style(theme::progress),
                     text(current.map_or_else(
-                        || "安装模型后可主动开始分析".into(),
-                        |job| format!(
-                            "已处理 {} / {} 张 · 失败 {} 张",
+                        || tr!(language, "安装模型后可主动开始分析" => "Install a model to start analysis").into(),
+                        |job| trf!(language, "已处理 {} / {} 张 · 失败 {} 张" => "Processed {} / {} images · {} failed",
                             job.completed, job.total, job.failed
                         )
                     ))
                     .size(10)
-                    .color(MUTED),
+                    .style(crate::theme::text_color(MUTED)),
                 ]
                 .spacing(9)
                 .width(Length::Fill)
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            heading(format!("当前任务 ({})", jobs.len()), 11),
+            heading(trf!(language, "当前任务 ({})" => "Current tasks ({})", jobs.len()), 11),
         ]
         .spacing(17);
         if self.jobs.error.is_some() {
-            content = content.push(muted("任务信息暂时无法读取，请在全部任务中查看。"));
+            content = content.push(muted(tr!(language, "任务信息暂时无法读取，请在全部任务中查看。" => "Task information is temporarily unavailable. Check All tasks.")));
         }
         for job in jobs.iter().take(3) {
             content = content.push(muted(format!(
                 "{} · {}",
-                job_title(&job.kind),
-                job_state(&job.state)
+                job_title(language, &job.kind),
+                job_state(language, &job.state)
             )));
         }
         if jobs.is_empty() {
-            content = content.push(muted("暂无后台任务"));
+            content = content.push(muted(
+                tr!(language, "暂无后台任务" => "No background tasks"),
+            ));
         }
         if let Some(hardware) = &self.ai.hardware {
-            content = content.push(separator()).push(muted(format!(
-                "{} · {} 核 · 可用内存 {} MiB",
+            content = content.push(separator()).push(muted(trf!(language, "{} · {} 核 · 可用内存 {} MiB" => "{} · {} cores · {} MiB available memory",
                 hardware.provider, hardware.logical_cpus, hardware.available_mib
             )));
         }
-        content = content.push(action("刷新模型列表", Message::Ai(AiMessage::Refresh)));
+        content = content.push(action(
+            tr!(language, "刷新模型列表" => "Refresh models"),
+            Message::Ai(AiMessage::Refresh),
+        ));
         container(content)
             .padding(18)
             .width(336)
@@ -646,43 +676,32 @@ impl App {
             icon(kind, 18.0, ICON),
             column![
                 heading(title, 12),
-                text(description.to_string()).size(10).color(MUTED)
+                text(description.to_string())
+                    .size(10)
+                    .style(crate::theme::text_color(MUTED))
             ]
             .spacing(4)
             .width(Length::Fill),
-            button(
-                container(Space::new().width(15).height(15)).style(|_| container::Style {
-                    background: Some(Color::WHITE.into()),
-                    border: Border {
-                        radius: 8.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
-            )
-            .padding(if on {
-                iced::Padding {
-                    top: 3.0,
-                    right: 3.0,
-                    bottom: 3.0,
-                    left: 20.0,
-                }
-            } else {
-                iced::Padding {
-                    top: 3.0,
-                    right: 20.0,
-                    bottom: 3.0,
-                    left: 3.0,
-                }
-            })
-            .style(move |_, status| button::Style {
+            button(crate::liquid::selection(
+                row![
+                    Space::new().width(15).height(15),
+                    Space::new().width(15).height(15),
+                ]
+                .spacing(2)
+                .padding(3),
+                Some(usize::from(on)),
+                crate::liquid::Treatment::Thumb,
+                self.preferences.reduced_motion,
+            ))
+            .padding(0)
+            .style(move |theme, status| button::Style {
                 background: Some(
                     if matches!(status, button::Status::Disabled) {
-                        LINE
+                        crate::theme::adaptive(theme, LINE)
                     } else if on {
-                        BLUE
+                        crate::theme::adaptive(theme, BLUE)
                     } else {
-                        LINE
+                        crate::theme::adaptive(theme, LINE)
                     }
                     .into()
                 ),
@@ -700,30 +719,40 @@ impl App {
     }
 }
 
-fn model_description(id: &str) -> &'static str {
+fn model_description(language: Language, id: &str) -> &'static str {
     match id {
-        "chinese-clip" => "图像内容分类、中文语义检索与相似搜索。",
-        "florence" => "识别照片中的文字，并生成图像描述。",
-        "faces" => "人脸检测、特征提取与人物聚类。",
-        _ => "在本机分析图片内容。",
+        "chinese-clip" => {
+            tr!(language, "图像内容分类、中文语义检索与相似搜索。" => "Image categorization, Chinese semantic search and similarity search.")
+        }
+        "florence" => {
+            tr!(language, "识别照片中的文字，并生成图像描述。" => "Recognize text in photos and generate image descriptions.")
+        }
+        "faces" => {
+            tr!(language, "人脸检测、特征提取与人物聚类。" => "Face detection, feature extraction and people clustering.")
+        }
+        _ => tr!(language, "在本机分析图片内容。" => "Analyze image content locally."),
     }
 }
-fn job_title(kind: &str) -> &'static str {
+fn job_title(language: Language, kind: &str) -> &'static str {
     match kind {
-        "analysis:chinese-clip" => "内容分类与语义索引",
-        "analysis:florence" => "文字识别与图像描述",
-        "analysis:faces" => "人物识别与聚类",
-        "fingerprints" => "近似图片索引",
-        "thumbnails" => "重建图片缩略图",
-        _ => "图片元数据索引",
+        "analysis:chinese-clip" => {
+            tr!(language, "内容分类与语义索引" => "Content categories and semantic index")
+        }
+        "analysis:florence" => {
+            tr!(language, "文字识别与图像描述" => "Text recognition and image descriptions")
+        }
+        "analysis:faces" => tr!(language, "人物识别与聚类" => "People recognition and clustering"),
+        "fingerprints" => tr!(language, "近似图片索引" => "Image similarity index"),
+        "thumbnails" => tr!(language, "重建图片缩略图" => "Rebuild image thumbnails"),
+        _ => tr!(language, "图片元数据索引" => "Image metadata index"),
     }
 }
-fn job_state(state: &str) -> &'static str {
+fn job_state(language: Language, state: &str) -> &'static str {
     match state {
-        "running" => "分析中…",
-        "queued" => "等待中",
-        "paused" => "已暂停",
-        "failed" => "失败",
-        _ => "等待恢复",
+        "running" => tr!(language, "分析中…" => "Analyzing…"),
+        "queued" => tr!(language, "等待中" => "Queued"),
+        "paused" => tr!(language, "已暂停" => "Paused"),
+        "failed" => tr!(language, "失败" => "Failed"),
+        _ => tr!(language, "等待恢复" => "Waiting to resume"),
     }
 }

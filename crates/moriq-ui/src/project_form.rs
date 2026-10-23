@@ -7,6 +7,7 @@ use crate::{
 use iced::widget::{button, column, row, text_input};
 impl App {
     pub(super) fn project_form(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         use ManageMessage::*;
         let projects = self
             .library
@@ -18,7 +19,7 @@ impl App {
             .find(|p| Some(p.id) == self.manager.project_target);
         let mut project_choices = vec![ProjectDestination {
             id: None,
-            name: "选择要管理的项目".into(),
+            name: tr!(language, "选择要管理的项目" => "Select a project to manage").into(),
         }];
         project_choices.extend(projects.iter().map(|p| ProjectDestination {
             id: Some(p.id),
@@ -29,7 +30,7 @@ impl App {
             .find(|c| c.id == self.manager.project_target)
             .cloned();
         let mut content = column![
-            muted("管理项目"),
+            muted(tr!(language, "管理项目" => "Manage project")),
             choice(project_choices, selected, |v| v
                 .id
                 .map(|id| Message::Manage(ProjectMenu(id)))
@@ -38,16 +39,24 @@ impl App {
         .spacing(12);
         if let Some(project) = current {
             content = content
-                .push(muted(format!("{} 张素材", project.count)))
-                .push(action("打开项目", Message::Project(project.id)))
+                .push(muted(
+                    trf!(language, "{} 张素材" => "{} assets", project.count),
+                ))
+                .push(action(
+                    tr!(language, "打开项目" => "Open project"),
+                    Message::Project(project.id),
+                ))
                 .push(
-                    text_input("项目名称", &self.manager.label)
-                        .padding(10)
-                        .style(input)
-                        .on_input(|s| Message::Manage(Label(s))),
+                    text_input(
+                        tr!(language, "项目名称" => "Project name"),
+                        &self.manager.label,
+                    )
+                    .padding(10)
+                    .style(input)
+                    .on_input(|s| Message::Manage(Label(s))),
                 )
                 .push(
-                    button("保存名称")
+                    button(tr!(language, "保存名称" => "Save name"))
                         .padding([8, 12])
                         .style(secondary)
                         .on_press_maybe(
@@ -60,7 +69,7 @@ impl App {
         }
         let mut parents = vec![ProjectDestination {
             id: None,
-            name: "顶层".into(),
+            name: tr!(language, "顶层" => "Top level").into(),
         }];
         parents.extend(
             projects
@@ -90,11 +99,11 @@ impl App {
         let changed = current.is_some_and(|p| p.parent != self.manager.parent);
         content = content
             .push(separator())
-            .push(muted("上级项目"))
+            .push(muted(tr!(language, "上级项目" => "Parent project")))
             .push(
                 row![
                     choice(parents, selected, |p| Message::Manage(Parent(p.id))),
-                    button("保存层级")
+                    button(tr!(language, "保存层级" => "Save hierarchy"))
                         .padding([8, 12])
                         .style(secondary)
                         .on_press_maybe(
@@ -103,17 +112,17 @@ impl App {
                 ]
                 .spacing(10),
             )
-            .push(muted("层级调整不会搬动或改写原片。"))
+            .push(muted(tr!(language, "层级调整不会搬动或改写原片。" => "Changing the hierarchy does not move or modify originals.")))
             .push(separator())
-            .push(muted("在所选上级下新建项目"))
+            .push(muted(tr!(language, "在所选上级下新建项目" => "Create project under selected parent")))
             .push(
-                text_input("新项目名称", &self.manager.new_project_name)
+                text_input(tr!(language, "新项目名称" => "New project name"), &self.manager.new_project_name)
                     .padding(10)
                     .style(input)
                     .on_input(|s| Message::Manage(NewProjectName(s))),
             )
             .push(
-                button("新建项目")
+                button(tr!(language, "新建项目" => "New project"))
                     .padding([8, 12])
                     .style(secondary)
                     .on_press_maybe(
@@ -123,7 +132,7 @@ impl App {
             );
         if current.is_some() {
             content = content.push(separator()).push(
-                button("永久删除项目及内容…")
+                button(tr!(language, "永久删除项目及内容…" => "Delete project and contents permanently…"))
                     .padding([8, 12])
                     .style(destructive)
                     .on_press_maybe((!self.manager.busy).then_some(Message::Manage(DeleteProject))),

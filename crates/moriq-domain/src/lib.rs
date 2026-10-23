@@ -303,6 +303,32 @@ pub struct UserSettings {
     pub import: ImportPreferences,
     pub diagnostic_logging: bool,
     pub reduced_motion: bool,
+    pub language: Language,
+    pub appearance: Appearance,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Language {
+    #[default]
+    SimplifiedChinese,
+    English,
+}
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::SimplifiedChinese => "简体中文",
+            Self::English => "English",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Appearance {
+    #[default]
+    Light,
+    Dark,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

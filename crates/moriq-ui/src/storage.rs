@@ -48,6 +48,7 @@ impl App {
         })
     }
     pub(super) fn storage_message(&mut self, event: StorageMessage) -> Task<Message> {
+        let language = self.preferences.language;
         match event {
             StorageMessage::Trim(clear) if !self.storage.cache_running && self.import.is_none() => {
                 if let Some(library) = &self.library {
@@ -113,7 +114,9 @@ impl App {
             {
                 match result {
                     Ok(volume) => self.storage.volume = Some(volume),
-                    Err(e) => self.status = format!("卷容量暂不可用：{e}"),
+                    Err(e) => {
+                        self.status = trf!(language, "卷容量暂不可用：{e}" => "Volume capacity unavailable: {e}")
+                    }
                 }
             }
             _ => {}
@@ -121,22 +124,30 @@ impl App {
         Task::none()
     }
     pub(super) fn storage_panel(&self) -> Element<'_, Message> {
-        let mut content=column![muted("统计当前资源库内的实际文件分配空间，硬链接按文件身份去重。外部引用原片仅显示登记量，不扫描来源磁盘；采样期间文件可能变化。")].spacing(12);
-        content=content.push(heading("集中预览缓存",16)).push(muted("内存预览缓存上限 256 MiB，磁盘预览缓存每 5 分钟按 4 GiB 预算回收较早内容。只处理可再生预览，不删除原片、缩略图或 AI 结果。"));
+        let language = self.preferences.language;
+        let mut content=column![muted(tr!(language, "统计当前资源库内的实际文件分配空间，硬链接按文件身份去重。外部引用原片仅显示登记量，不扫描来源磁盘；采样期间文件可能变化。" => "Measure allocated disk space within this library. Hard links are deduplicated by file identity. External originals show registered sizes only; their drives are not scanned. Files may change during sampling."))].spacing(12);
+        content=content.push(heading(tr!(language, "集中预览缓存" => "Shared preview cache"),16)).push(muted(tr!(language, "内存预览缓存上限 256 MiB，磁盘预览缓存每 5 分钟按 4 GiB 预算回收较早内容。只处理可再生预览，不删除原片、缩略图或 AI 结果。" => "Memory previews are limited to 256 MiB. Every 5 minutes, older disk previews are removed to meet a 4 GiB budget. Only regenerable previews are removed; originals, thumbnails and AI results are preserved.")));
         if self.storage.cache_running {
-            content = content.push(muted("正在回收预览缓存…"));
+            content = content.push(muted(
+                tr!(language, "正在回收预览缓存…" => "Cleaning preview cache…"),
+            ));
         } else {
             content = content.push(
                 row![
-                    action("按预算回收", Message::Storage(StorageMessage::Trim(false))),
-                    action("清空预览缓存", Message::Storage(StorageMessage::Trim(true)))
+                    action(
+                        tr!(language, "按预算回收" => "Clean to budget"),
+                        Message::Storage(StorageMessage::Trim(false))
+                    ),
+                    action(
+                        tr!(language, "清空预览缓存" => "Clear preview cache"),
+                        Message::Storage(StorageMessage::Trim(true))
+                    )
                 ]
                 .spacing(8),
             );
         }
         if let Some(report) = &self.storage.cache_report {
-            content = content.push(muted(format!(
-                "回收 {} 个预览（{}），剩余 {}，跳过 {} 项。",
+            content = content.push(muted(trf!(language, "回收 {} 个预览（{}），剩余 {}，跳过 {} 项。" => "Removed {} previews ({}), {} remaining, {} skipped.",
                 report.removed_files,
                 size(report.removed_bytes),
                 size(report.remaining_bytes),
@@ -146,22 +157,23 @@ impl App {
         if let Some(control) = &self.storage.control {
             content = content.push(
                 row![
-                    muted(format!(
-                        "已检查 {} 个文件",
+                    muted(trf!(language, "已检查 {} 个文件" => "Checked {} files",
                         control.files.load(Ordering::Relaxed)
                     )),
-                    action("停止统计", Message::Storage(StorageMessage::Stop))
+                    action(
+                        tr!(language, "停止统计" => "Stop calculation"),
+                        Message::Storage(StorageMessage::Stop)
+                    )
                 ]
                 .spacing(12),
             );
         }
         if let Some(stats) = &self.storage.stats {
             content = content.push(heading(
-                format!(
-                    "库内分配空间 {}{}",
+                trf!(language, "库内分配空间 {}{}" => "Allocated library space {}{}",
                     size(stats.allocated),
                     if stats.cancelled {
-                        " · 已停止，部分结果"
+                        tr!(language, " · 已停止，部分结果" => " · Stopped, partial results")
                     } else {
                         ""
                     }
@@ -179,14 +191,38 @@ impl App {
                 );
             }
             for (label, value) in [
-                ("库内唯一文件字节量", size(stats.unique_file_bytes)),
-                ("托管版本登记量", size(stats.managed_registered)),
-                ("外部引用登记量（库外）", size(stats.referenced_registered)),
-                ("所在卷容量", size(stats.volume_total)),
-                ("所在卷可用空间", size(stats.volume_available)),
-                ("硬链接重复路径", stats.linked_paths.to_string()),
-                ("未统计/变化/跳过的条目", stats.warnings.to_string()),
-                ("采样时间", date(stats.measured_at)),
+                (
+                    tr!(language, "库内唯一文件字节量" => "Unique file bytes in library"),
+                    size(stats.unique_file_bytes),
+                ),
+                (
+                    tr!(language, "托管版本登记量" => "Registered managed version size"),
+                    size(stats.managed_registered),
+                ),
+                (
+                    tr!(language, "外部引用登记量（库外）" => "External reference size (outside library)"),
+                    size(stats.referenced_registered),
+                ),
+                (
+                    tr!(language, "所在卷容量" => "Volume capacity"),
+                    size(stats.volume_total),
+                ),
+                (
+                    tr!(language, "所在卷可用空间" => "Volume available space"),
+                    size(stats.volume_available),
+                ),
+                (
+                    tr!(language, "硬链接重复路径" => "Duplicate hard link paths"),
+                    stats.linked_paths.to_string(),
+                ),
+                (
+                    tr!(language, "未统计/变化/跳过的条目" => "Uncounted / changed / skipped entries"),
+                    stats.warnings.to_string(),
+                ),
+                (
+                    tr!(language, "采样时间" => "Sample time"),
+                    date(stats.measured_at),
+                ),
             ] {
                 content = content.push(row![
                     muted(label),
@@ -197,7 +233,7 @@ impl App {
         }
         content
             .push(
-                button(text("重新统计").size(13))
+                button(text(tr!(language, "重新统计" => "Recalculate")).size(13))
                     .padding(9)
                     .style(secondary)
                     .on_press_maybe(
@@ -208,10 +244,10 @@ impl App {
                     ),
             )
             .push(action(
-                "检查或修复缓存",
+                tr!(language, "检查或修复缓存" => "Check or repair caches"),
                 Message::Manage(ManageMessage::Maintenance),
             ))
-            .push(muted("恢复日志、交接副本和 AI 成果不会作为缓存自动删除。"))
+            .push(muted(tr!(language, "恢复日志、交接副本和 AI 成果不会作为缓存自动删除。" => "Recovery logs, handoff copies and AI outputs are never deleted automatically as caches.")))
             .into()
     }
 }

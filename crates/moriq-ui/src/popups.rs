@@ -14,18 +14,19 @@ impl App {
         )
     }
     pub(super) fn popup<'a>(&'a self, base: Element<'a, Message>) -> Element<'a, Message> {
+        let language = self.preferences.language;
         use ManageMessage::*;
         let mut content = column![].spacing(2);
         let title = if self.manager.panel == Some(Panel::AssetMenu) {
             self.selected
                 .as_ref()
                 .map(|a| a.name.as_str())
-                .unwrap_or("素材操作")
+                .unwrap_or(tr!(language, "素材操作" => "Asset actions"))
         } else {
             match self.manager.panel {
-                Some(Panel::Menu) => "资源库工具",
-                Some(Panel::Import) => "导入",
-                _ => "显示方式",
+                Some(Panel::Menu) => tr!(language, "资源库工具" => "Library tools"),
+                Some(Panel::Import) => tr!(language, "导入" => "Import"),
+                _ => tr!(language, "显示方式" => "Display options"),
             }
         };
         let title = if title.chars().count() > 36 {
@@ -34,46 +35,61 @@ impl App {
             title.into()
         };
         content = content
-            .push(container(text(title).size(12).color(MUTED)).padding([8, 10]))
+            .push(
+                container(text(title).size(12).style(crate::theme::text_color(MUTED)))
+                    .padding([8, 10]),
+            )
             .push(separator());
         let mut entries = Vec::<(Icon, &str, Message, bool, bool)>::new();
         match self.manager.panel {
             Some(Panel::AssetMenu) => {
                 if self.selected.is_some() {
                     entries.extend([
-                        (Icon::Image, "放大查看", Message::ExpandPreview, false, true),
-                        (Icon::Edit, "重命名", Message::ShowRenameAsset, false, true),
+                        (
+                            Icon::Image,
+                            tr!(language, "放大查看" => "Enlarge"),
+                            Message::ExpandPreview,
+                            false,
+                            true,
+                        ),
+                        (
+                            Icon::Edit,
+                            tr!(language, "重命名" => "Rename"),
+                            Message::ShowRenameAsset,
+                            false,
+                            true,
+                        ),
                         (
                             Icon::Download,
-                            "导出图片…",
+                            tr!(language, "导出图片…" => "Export images…"),
                             Message::Manage(ExportMenu),
                             false,
                             true,
                         ),
                         (
                             Icon::Folder,
-                            "项目归属…",
+                            tr!(language, "项目归属…" => "Project membership…"),
                             Message::Manage(AssetProjects),
                             false,
                             true,
                         ),
                         (
                             Icon::Collection,
-                            "版本与对比…",
+                            tr!(language, "版本与对比…" => "Versions and comparison…"),
                             Message::Manage(Versions),
                             false,
                             true,
                         ),
                         (
                             Icon::Folder,
-                            "在文件夹中显示",
+                            tr!(language, "在文件夹中显示" => "Show in folder"),
                             Message::Manage(RevealAsset),
                             false,
                             true,
                         ),
                         (
                             Icon::Edit,
-                            "发送到 Synco 精修",
+                            tr!(language, "发送到 Synco 精修" => "Send to Synco for editing"),
                             Message::Manage(SendSynco),
                             false,
                             !self.manager.synco_running,
@@ -81,9 +97,9 @@ impl App {
                         (
                             Icon::Trash,
                             if self.query.trash {
-                                "从回收站恢复"
+                                tr!(language, "从回收站恢复" => "Restore from Trash")
                             } else {
-                                "移入回收站"
+                                tr!(language, "移入回收站" => "Move to Trash")
                             },
                             Message::Manage(Edit(moriq_domain::Edit::Trash(!self.query.trash))),
                             true,
@@ -93,7 +109,7 @@ impl App {
                     if self.query.trash {
                         entries.push((
                             Icon::Trash,
-                            "永久删除…",
+                            tr!(language, "永久删除…" => "Delete permanently…"),
                             Message::Manage(Purge),
                             true,
                             true,
@@ -102,28 +118,46 @@ impl App {
                 }
             }
             Some(Panel::ViewOptions) => entries.extend([
-                (Icon::Grid, "瀑布流", Message::SetMasonry(true), false, true),
                 (
                     Icon::Grid,
-                    "固定网格",
+                    tr!(language, "瀑布流" => "Masonry"),
+                    Message::SetMasonry(true),
+                    false,
+                    true,
+                ),
+                (
+                    Icon::Grid,
+                    tr!(language, "固定网格" => "Fixed grid"),
                     Message::SetMasonry(false),
                     false,
                     true,
                 ),
-                (Icon::List, "列表", Message::List(true), false, true),
+                (
+                    Icon::List,
+                    tr!(language, "列表" => "List"),
+                    Message::List(true),
+                    false,
+                    true,
+                ),
             ]),
             Some(Panel::Import) => entries.extend([
-                (Icon::Image, "选择图片文件…", Message::Import, false, true),
+                (
+                    Icon::Image,
+                    tr!(language, "选择图片文件…" => "Choose image files…"),
+                    Message::Import,
+                    false,
+                    true,
+                ),
                 (
                     Icon::Folder,
-                    "导入文件夹…",
+                    tr!(language, "导入文件夹…" => "Import folder…"),
                     Message::Manage(FolderImport),
                     false,
                     true,
                 ),
                 (
                     Icon::Folder,
-                    "引用外部原片…",
+                    tr!(language, "引用外部原片…" => "Reference external originals…"),
                     Message::Manage(ReferenceImport),
                     false,
                     true,
@@ -132,84 +166,84 @@ impl App {
             Some(Panel::Menu) => entries.extend([
                 (
                     Icon::Edit,
-                    "编辑资源库信息…",
+                    tr!(language, "编辑资源库信息…" => "Edit library information…"),
                     Message::ShowRenameLibrary,
                     false,
                     true,
                 ),
                 (
                     Icon::Image,
-                    "更换资源库封面…",
+                    tr!(language, "更换资源库封面…" => "Change library cover…"),
                     Message::Manage(Cover),
                     false,
                     true,
                 ),
                 (
                     Icon::Folder,
-                    "项目管理…",
+                    tr!(language, "项目管理…" => "Manage projects…"),
                     Message::Manage(Project),
                     false,
                     true,
                 ),
                 (
                     Icon::Tag,
-                    "标签与智能集合…",
+                    tr!(language, "标签与智能集合…" => "Tags and smart collections…"),
                     Message::Manage(Collections),
                     false,
                     true,
                 ),
                 (
                     Icon::Download,
-                    "导出所选素材…",
+                    tr!(language, "导出所选素材…" => "Export selected assets…"),
                     Message::Manage(ExportMenu),
                     false,
                     self.selected.is_some() || !self.manager.selection.is_empty(),
                 ),
                 (
                     Icon::Clock,
-                    "Synco 交接任务…",
+                    tr!(language, "Synco 交接任务…" => "Synco handoff tasks…"),
                     Message::Manage(Synco),
                     false,
                     true,
                 ),
                 (
                     Icon::Folder,
-                    "备份与完整性检查…",
+                    tr!(language, "备份与完整性检查…" => "Backup and integrity…"),
                     Message::Manage(Maintenance),
                     false,
                     true,
                 ),
                 (
                     Icon::Folder,
-                    "空间明细…",
+                    tr!(language, "空间明细…" => "Storage details…"),
                     Message::Storage(StorageMessage::Open),
                     false,
                     true,
                 ),
                 (
                     Icon::Clock,
-                    "活动记录…",
+                    tr!(language, "活动记录…" => "Activity…"),
                     Message::Journal(JournalMessage::Open(false)),
                     false,
                     true,
                 ),
                 (
                     Icon::Clock,
-                    "后台任务…",
+                    tr!(language, "后台任务…" => "Background tasks…"),
                     Message::Manage(Tasks),
                     false,
                     true,
                 ),
                 (
                     Icon::Settings,
-                    "搜索与快捷键…",
+                    tr!(language, "搜索与快捷键…" => "Search and shortcuts…"),
                     Message::Manage(Help),
                     false,
                     true,
                 ),
                 (
                     Icon::Package,
-                    "开源组件声明…",
+                    tr!(language, "开源组件声明…" => "Open source notices…"),
                     Message::Manage(Licenses),
                     false,
                     true,
@@ -235,9 +269,12 @@ impl App {
             };
             content = content.push(
                 button(
-                    row![icon(kind, 15.0, color), text(label).size(13).color(color)]
-                        .spacing(10)
-                        .align_y(iced::Alignment::Center),
+                    row![
+                        icon(kind, 15.0, color),
+                        text(label).size(13).style(crate::theme::text_color(color))
+                    ]
+                    .spacing(10)
+                    .align_y(iced::Alignment::Center),
                 )
                 .width(iced::Length::Fill)
                 .padding([9, 10])
@@ -260,10 +297,10 @@ impl App {
             .padding(6)
             .width(width)
             .max_height((self.viewport.height - y - 12.0).max(120.0))
-            .style(|_| container::Style {
+            .style(|theme| container::Style {
                 background: Some(iced::Color::WHITE.into()),
                 border: iced::Border {
-                    color: LINE,
+                    color: crate::theme::adaptive(theme, LINE),
                     width: 1.0,
                     radius: 8.0.into(),
                 },

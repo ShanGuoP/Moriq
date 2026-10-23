@@ -43,6 +43,7 @@ pub enum DeletionMessage {
 }
 impl App {
     pub(super) fn deletion_message(&mut self, event: DeletionMessage) -> Task<Message> {
+        let language = self.preferences.language;
         use DeletionMessage::*;
         match event {
             EmptyTrash => {
@@ -73,7 +74,10 @@ impl App {
                     Ok(ids) if !ids.is_empty() => {
                         self.deletion.target = Some(Target::AllTrash(ids))
                     }
-                    Ok(_) => self.deletion.error = Some("回收站已为空".into()),
+                    Ok(_) => {
+                        self.deletion.error =
+                            Some(tr!(language, "回收站已为空" => "Trash is empty").into())
+                    }
                     Err(e) => self.deletion.error = Some(e),
                 }
             }
@@ -110,7 +114,10 @@ impl App {
                     return Task::none();
                 };
                 if ids.is_empty() {
-                    self.error = Some("请先选择回收站内的素材".into());
+                    self.error = Some(
+                        tr!(language, "请先选择回收站内的素材" => "Select an asset in Trash first")
+                            .into(),
+                    );
                     return Task::none();
                 }
                 self.deletion.reset();
@@ -129,7 +136,7 @@ impl App {
                         self.deletion.target = Some(Target::Project(plan))
                     }
                     Ok(_) => {
-                        self.deletion.error = Some("项目目标已变化，请重新打开删除确认。".into())
+                        self.deletion.error = Some(tr!(language, "项目目标已变化，请重新打开删除确认。" => "The target project has changed. Please reopen the deletion confirmation.").into())
                     }
                     Err(e) => self.deletion.error = Some(e),
                 }
@@ -230,46 +237,50 @@ impl App {
             && !self.switching
     }
     pub(super) fn deletion_panel(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let mut content = column![].spacing(14);
         if self.deletion.loading {
-            content = content.push(muted("正在检查删除范围…"));
+            content = content.push(muted(
+                tr!(language, "正在检查删除范围…" => "Checking deletion scope…"),
+            ));
         }
         if let Some(target) = &self.deletion.target {
             match target {
                 Target::AllTrash(ids) => {
-                    content=content.push(heading("清空整库回收站",18)).push(text(format!("将永久删除确认时回收站中的 {} 项素材及其全部版本，保留库外引用原片。期间被恢复的素材会跳过。",ids.len())).size(14));
+                    content=content.push(heading(tr!(language, "清空整库回收站" => "Empty library trash"),18)).push(text(trf!(language, "将永久删除确认时回收站中的 {} 项素材及其全部版本，保留库外引用原片。期间被恢复的素材会跳过。" => "Permanently delete the {} assets currently in Trash and all their versions. External originals remain untouched. Assets restored during deletion will be skipped.",ids.len())).size(14));
                 }
                 Target::Project(plan) => {
-                    content = content.push(heading(format!("删除项目「{}」", plan.name), 18));
+                    content = content.push(heading(
+                        trf!(language, "删除项目「{}」" => "Delete project “{}”", plan.name),
+                        18,
+                    ));
                     if plan.projects.len() > 1 {
-                        content = content.push(muted(format!(
-                            "同时删除 {} 个子项目。",
+                        content = content.push(muted(trf!(language, "同时删除 {} 个子项目。" => "Also delete {} subprojects.",
                             plan.projects.len() - 1
                         )));
                     }
                     if plan.assets.is_empty() {
                         content = content.push(
-                            text("没有需要删除的独占图片，将移除项目及其归属关系。").size(14),
+                            text(tr!(language, "没有需要删除的独占图片，将移除项目及其归属关系。" => "There are no exclusive images to delete. The project and its memberships will be removed.")).size(14),
                         );
                     } else {
-                        content=content.push(text(format!("将永久删除 {} 张独占图片及其全部 {} 个版本，清除库内文件与数据库记录。",plan.assets.len(),plan.versions.len())).size(14));
+                        content=content.push(text(trf!(language, "将永久删除 {} 张独占图片及其全部 {} 个版本，清除库内文件与数据库记录。" => "Permanently delete {} exclusive images and all {} versions, removing library files and catalog records.",plan.assets.len(),plan.versions.len())).size(14));
                     }
                     if !plan.shared.is_empty() {
-                        content = content.push(muted(format!(
-                            "{} 张图片也属于其他项目，将保留这些图片和其他项目的关系。",
+                        content = content.push(muted(trf!(language, "{} 张图片也属于其他项目，将保留这些图片和其他项目的关系。" => "{} images also belong to other projects. These images and their other memberships will be kept.",
                             plan.shared.len()
                         )));
                     }
                     if plan.referenced > 0 {
                         content = content
-                            .push(muted(format!("{} 个外部引用原文件保留。", plan.referenced)));
+                            .push(muted(trf!(language, "{} 个外部引用原文件保留。" => "{} external original files will be kept.", plan.referenced)));
                     }
                 }
                 Target::Assets(ids) => {
                     content = content
-                        .push(heading(format!("永久删除 {} 张图片", ids.len()), 18))
+                        .push(heading(trf!(language, "永久删除 {} 张图片" => "Permanently delete {} images", ids.len()), 18))
                         .push(muted(
-                            "将删除所选图片的托管原片、全部版本和库内副本；外部引用原文件保留。",
+                            tr!(language, "将删除所选图片的托管原片、全部版本和库内副本；外部引用原文件保留。" => "Delete the selected images' managed originals, all versions and library copies. External original files will be kept."),
                         ));
                 }
             }
@@ -277,38 +288,38 @@ impl App {
                 content = content.push(
                     text(
                         if matches!(target,Target::Project(plan) if plan.assets.is_empty()) {
-                            "请再次确认。删除后无法恢复此项目。"
+                            tr!(language, "请再次确认。删除后无法恢复此项目。" => "Confirm again. This project cannot be restored after deletion.")
                         } else {
-                            "请再次确认。删除后无法从回收站恢复，图片需要重新导入。"
+                            tr!(language, "请再次确认。删除后无法从回收站恢复，图片需要重新导入。" => "Confirm again. These images cannot be restored from Trash and will need to be imported again.")
                         },
                     )
                     .size(14)
-                    .color(iced::Color::from_rgb8(190, 38, 38)),
+                    .style(crate::theme::text_color(iced::Color::from_rgb8(190, 38, 38))),
                 );
             } else {
-                content = content.push(muted("请核对范围，下一步将再次确认。"));
+                content = content.push(muted(tr!(language, "请核对范围，下一步将再次确认。" => "Check the scope. A final confirmation follows.")));
             }
         }
         if let Some(error) = &self.deletion.error {
-            content = content.push(
-                text(error)
-                    .size(14)
-                    .color(iced::Color::from_rgb8(190, 38, 38)),
-            );
+            content = content.push(text(error).size(14).style(crate::theme::text_color(
+                iced::Color::from_rgb8(190, 38, 38),
+            )));
             if let Some(project) = self.deletion.project {
                 content = content.push(action(
-                    "重试",
+                    tr!(language, "重试" => "Retry"),
                     Message::Deletion(DeletionMessage::Project(project)),
                 ));
             }
         }
         if self.deletion.running {
-            content = content.push(muted("正在删除，请稍候…"));
+            content = content.push(muted(
+                tr!(language, "正在删除，请稍候…" => "Deleting, please wait…"),
+            ));
         }
         content
             .push(
                 row![
-                    button("取消")
+                    button(tr!(language, "取消" => "Cancel"))
                         .padding([9, 16])
                         .style(secondary)
                         .on_press_maybe(
@@ -316,9 +327,9 @@ impl App {
                                 .then_some(Message::Deletion(DeletionMessage::Cancel))
                         ),
                     button(if self.deletion.final_step {
-                        "永久删除"
+                        tr!(language, "永久删除" => "Delete permanently")
                     } else {
-                        "继续确认"
+                        tr!(language, "继续确认" => "Continue")
                     })
                     .padding([9, 16])
                     .style(destructive)

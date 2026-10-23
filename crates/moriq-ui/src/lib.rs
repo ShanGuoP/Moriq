@@ -1,4 +1,6 @@
 //! Native presentation. All disk, catalog and decoding work belongs to Service.
+#[macro_use]
+mod i18n;
 mod ai;
 mod batch;
 mod folders;
@@ -16,6 +18,9 @@ pub(crate) use regions::RegionMessage;
 mod browsing;
 mod compare;
 mod deletion;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod interface_tests;
 mod popups;
 mod project_form;
 mod settings;
@@ -40,6 +45,9 @@ mod models;
 mod navigation;
 pub(crate) use journal::JournalMessage;
 pub(crate) use manage::ManageMessage;
+mod liquid;
+#[cfg(feature = "capture")]
+mod liquid_proof;
 mod motion;
 mod overview;
 mod preview;
@@ -174,9 +182,16 @@ pub(crate) enum Message {
     Dismiss,
     DiagnosticLogging(bool),
     ReducedMotion(bool),
+    LanguageChanged(Language),
+    AppearanceChanged(Appearance),
+    InterfaceSaved(Language, Appearance, Result<(), String>),
     CardHovered(AssetId, bool),
     #[cfg(feature = "capture")]
     Captured(iced::window::Screenshot),
+    #[cfg(feature = "capture")]
+    LiquidProof(u8),
+    #[cfg(feature = "capture")]
+    LiquidFrame(u8, iced::window::Screenshot),
     #[cfg(feature = "capture")]
     VideoProof(iced::window::Screenshot),
     #[cfg(feature = "capture")]
@@ -262,6 +277,7 @@ pub(crate) struct App {
     modifiers: iced::keyboard::Modifiers,
     manager: manage::Manager,
     preferences: UserSettings,
+    interface: settings::InterfaceState,
     library_covers: HashMap<PathBuf, image::Handle>,
     library_picker: bool,
     service: Service,
@@ -351,7 +367,7 @@ pub fn run(launch: LaunchOptions) -> iced::Result {
         App::view,
     )
     .title("Moriq Space")
-    .theme(|_: &App| theme::application_theme())
+    .theme(|app: &App| theme::application_theme(app.preferences.appearance))
     .default_font(Font {
         family: iced::font::Family::Name("Microsoft YaHei UI"),
         ..Font::DEFAULT
@@ -366,9 +382,9 @@ pub fn run(launch: LaunchOptions) -> iced::Result {
         ..Default::default()
     })
     .antialiasing(true)
-    .style(|_: &App, _: &Theme| iced::theme::Style {
-        background_color: iced::Color::WHITE,
-        text_color: theme::TEXT,
+    .style(|_: &App, theme: &Theme| iced::theme::Style {
+        background_color: theme.palette().background,
+        text_color: theme.palette().text,
     })
     .subscription(App::subscription)
     .run()
@@ -403,6 +419,7 @@ impl App {
                 surface_motion: None,
                 manager: Default::default(),
                 preferences: Default::default(),
+                interface: Default::default(),
                 library_covers: HashMap::new(),
                 library_picker: false,
                 service,
@@ -748,6 +765,7 @@ impl App {
         ])
     }
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        let language = self.preferences.language;
         match message {
             Message::TagFilter(choice) => {
                 let tag = match choice {
@@ -913,7 +931,7 @@ impl App {
                     self.retain_indexes = prefs.ai.retain_indexes;
                     let value = prefs.ai;
                     let service = self.service.clone();
-                    self.preferences = prefs;
+                    self.apply_settings(prefs);
                     let cards_service = self.service.clone();
                     let paths = self
                         .preferences
@@ -990,6 +1008,13 @@ impl App {
                 return iced::window::oldest().and_then(iced::window::toggle_maximize);
             }
             Message::WindowClose => {
+                if self.interface.saving.is_some()
+                    || (self.preferences.language, self.preferences.appearance)
+                        != self.interface.saved
+                {
+                    self.interface.close_after_save = true;
+                    return self.save_interface();
+                }
                 let playback = self.playback.take();
                 self.stop_viewer();
                 for control in self.ai.downloads.values() {
@@ -1015,7 +1040,8 @@ impl App {
                     handle.abort();
                 }
                 let service = self.service.clone();
-                self.status = "正在安全关闭资源库…".into();
+                self.status =
+                    tr!(language, "正在安全关闭资源库…" => "Closing the library safely…").into();
                 let navigation = self
                     .library
                     .as_ref()
@@ -1056,19 +1082,28 @@ impl App {
                 if let Some(library) = &self.library {
                     let service = self.service.clone();
                     let id = library.info.id;
-                    return Task::perform(async move { service.reveal(id).await }, |r| {
-                        Message::PlatformDone("已请求在文件夹中显示资源库", r)
+                    return Task::perform(async move { service.reveal(id).await }, move |r| {
+                        Message::PlatformDone(
+                            tr!(language, "已请求在文件夹中显示资源库" => "Requested to reveal the library folder"),
+                            r,
+                        )
                     });
                 }
             }
             Message::OpenSourceRepository => {
-                return Task::perform(moriq_app::open_source_repository(), |r| {
-                    Message::PlatformDone("已请求在浏览器中打开项目开源地址", r)
+                return Task::perform(moriq_app::open_source_repository(), move |r| {
+                    Message::PlatformDone(
+                        tr!(language, "已请求在浏览器中打开项目开源地址" => "Requested to open the source repository in your browser"),
+                        r,
+                    )
                 });
             }
             Message::OpenModelsDirectory => {
-                return Task::perform(moriq_app::open_models_directory(), |r| {
-                    Message::PlatformDone("已请求打开模型文件夹", r)
+                return Task::perform(moriq_app::open_models_directory(), move |r| {
+                    Message::PlatformDone(
+                        tr!(language, "已请求打开模型文件夹" => "Requested to open the model folder"),
+                        r,
+                    )
                 });
             }
             Message::PlatformDone(success, result) => match result {
@@ -1100,11 +1135,11 @@ impl App {
                 );
             }
             Message::AiPolicySaved(value, result) if self.preferences.ai == value => match result {
-                Ok(prefs) => self.preferences = prefs,
+                Ok(prefs) => self.apply_settings(prefs),
                 Err(e) => self.error = Some(e),
             },
             Message::ShowCreate => {
-                self.name = "我的素材库".into();
+                self.name = tr!(language, "我的素材库" => "My Library").into();
                 self.dialog = Some(Dialog::CreateLibrary);
             }
             Message::HideCreate => self.dialog = None,
@@ -1176,7 +1211,7 @@ impl App {
             }
             Message::Notice(message) => {
                 self.status = message.clone();
-                return self.persist_notice("提示", message, 0, "");
+                return self.persist_notice(tr!(language, "提示" => "Notice"), message, 0, "");
             }
             Message::AssetRenamed(id, asset, result)
                 if self
@@ -1221,9 +1256,9 @@ impl App {
             Message::Create if self.import.is_none() && !self.switching && !self.manager.busy => {
                 self.switching = true;
                 return Task::perform(
-                    async {
+                    async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("选择资源库保存位置")
+                            .set_title(tr!(language, "选择资源库保存位置" => "Choose a location for the library"))
                             .pick_folder()
                             .await
                             .map(|f| f.path().to_path_buf())
@@ -1234,9 +1269,9 @@ impl App {
             Message::Open if self.import.is_none() && !self.switching && !self.manager.busy => {
                 self.switching = true;
                 return Task::perform(
-                    async {
+                    async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("选择 .moriq 资源库目录")
+                            .set_title(tr!(language, "选择 .moriq 资源库目录" => "Select a .moriq library folder"))
                             .pick_folder()
                             .await
                             .map(|f| f.path().to_path_buf())
@@ -1299,7 +1334,7 @@ impl App {
                         self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
                         self.query = Query::default();
                         self.error = None;
-                        self.status = "资源库已就绪".into();
+                        self.status = tr!(language, "资源库已就绪" => "Library ready").into();
                         let imports = std::mem::take(&mut self.launch.import_paths);
                         return Task::batch([
                             self.reset_query(),
@@ -1396,10 +1431,10 @@ impl App {
 
                 self.manager.busy = true;
                 return Task::perform(
-                    async {
+                    async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("导入图片 · 原文件保持不变")
-                            .add_filter("图片", moriq_app::IMPORT_EXTENSIONS)
+                            .set_title(tr!(language, "导入图片 · 原文件保持不变" => "Import images · Original files are preserved"))
+                            .add_filter(tr!(language, "图片" => "Images"), moriq_app::IMPORT_EXTENSIONS)
                             .pick_files()
                             .await
                             .map(|files| {
@@ -1433,7 +1468,7 @@ impl App {
                 let id = library.info.id;
                 let project = self.query.project;
                 self.screen = Screen::Assets;
-                self.status = "正在扫描并导入，原文件保持不变…".into();
+                self.status = tr!(language, "正在扫描并导入，原文件保持不变…" => "Scanning and importing. Original files are preserved…").into();
                 return Task::perform(
                     async move { service.import_sources(id, paths, project, control).await },
                     Message::Imported,
@@ -1458,8 +1493,8 @@ impl App {
             }
             Message::ImportPreferencesSaved(value, result) => match result {
                 Ok(prefs) if self.preferences.import == value => {
-                    self.preferences = prefs;
-                    self.status = "导入设置已保存，下次导入生效".into();
+                    self.apply_settings(prefs);
+                    self.status = tr!(language, "导入设置已保存，下次导入生效" => "Import settings saved. Changes apply to the next import.").into();
                 }
                 Err(error) => self.error = Some(error),
                 _ => {}
@@ -1467,7 +1502,7 @@ impl App {
             Message::CancelImport => {
                 if let Some(import) = &self.import {
                     import.cancel.store(true, Ordering::Relaxed);
-                    self.status = "正在完成当前文件，随后停止导入…".into();
+                    self.status = tr!(language, "正在完成当前文件，随后停止导入…" => "Finishing the current file, then stopping import…").into();
                 }
             }
             Message::Imported(report) => {
@@ -1475,8 +1510,7 @@ impl App {
                     .import
                     .as_ref()
                     .map(|job| {
-                        format!(
-                            " · 解码峰值 {} 张 / 上限 {} 张",
+                        trf!(language, " · 解码峰值 {} 张 / 上限 {} 张" => " · Peak decoding {} / limit {}",
                             job.peak.load(Ordering::Relaxed),
                             job.workers
                         )
@@ -1484,10 +1518,9 @@ impl App {
                     .unwrap_or_default();
                 self.import = None;
                 self.manager.referenced_import = false;
-                self.status = format!(
-                    "{}导入 {} 张 · 跳过 {} 张重复图片 · 失败 {} 张",
+                self.status = trf!(language, "{}导入 {} 张 · 跳过 {} 张重复图片 · 失败 {} 张" => "{}Imported {} · Skipped {} duplicates · Failed {}",
                     if report.cancelled {
-                        "已停止 · "
+                        tr!(language, "已停止 · " => "Stopped · ")
                     } else {
                         ""
                     },
@@ -1501,7 +1534,7 @@ impl App {
                 }
                 return Task::batch([
                     self.persist_notice(
-                        "导入结果",
+                        tr!(language, "导入结果" => "Import results"),
                         self.status.clone() + "\n" + &report.failures.join("\n"),
                         if report.failed > 0 { 2 } else { 0 },
                         if report.failed > 0 { "recover" } else { "" },
@@ -1558,7 +1591,7 @@ impl App {
                     self.playback = None;
                     self.video_frame = None;
                     self.video_upload = false;
-                    self.error = Some("内置播放器已停止。请重新打开视频；原文件保留。".into());
+                    self.error = Some(tr!(language, "内置播放器已停止。请重新打开视频；原文件保留。" => "The built-in player stopped. Reopen the video to retry. The original file is preserved.").into());
                 }
                 if !self.ai.loaded && !self.ai.loading {
                     return self.ai_message(AiMessage::Refresh);
@@ -1594,6 +1627,32 @@ impl App {
                     && !self.switching
                 {
                     self.capture_ticks = self.capture_ticks.saturating_add(1);
+                    if self.launch.panel.as_deref() == Some("liquid-proof")
+                        && self.capture_ticks == 2
+                    {
+                        if !self.ai.loaded {
+                            self.capture_ticks = 1;
+                            return if self.ai.loading {
+                                Task::none()
+                            } else {
+                                self.ai_message(AiMessage::Refresh)
+                            };
+                        }
+                        return self.liquid_proof_step(0);
+                    }
+                    if self.launch.panel.as_deref() == Some("interface-switch") {
+                        let event = match self.capture_ticks {
+                            2 => Some(Message::ShowSettings),
+                            3 | 6 => Some(Message::LanguageChanged(Language::English)),
+                            4 | 8 => Some(Message::AppearanceChanged(Appearance::Dark)),
+                            5 => Some(Message::LanguageChanged(Language::SimplifiedChinese)),
+                            7 => Some(Message::AppearanceChanged(Appearance::Light)),
+                            _ => None,
+                        };
+                        if let Some(event) = event {
+                            return self.update(event);
+                        }
+                    }
                     if self.launch.panel.as_deref() == Some("video-motion")
                         && self.capture_ticks == 6
                     {
@@ -1864,6 +1923,12 @@ impl App {
                 }
             }
             #[cfg(feature = "capture")]
+            Message::LiquidProof(step) => return self.liquid_proof_step(step),
+            #[cfg(feature = "capture")]
+            Message::LiquidFrame(step, screenshot) => {
+                return self.liquid_proof_frame(step, screenshot);
+            }
+            #[cfg(feature = "capture")]
             Message::Captured(screenshot) => {
                 if let Some(path) = self.launch.capture.take() {
                     let service = self.service.clone();
@@ -1948,7 +2013,7 @@ impl App {
                         self.tiles = tiles;
                         self.drain_uploads();
                         if page.warnings > 0 {
-                            self.status = format!("{} 张缩略图不可用，原片仍被保留", page.warnings);
+                            self.status = trf!(language, "{} 张缩略图不可用，原片仍被保留" => "{} thumbnails unavailable. Original files are preserved.", page.warnings);
                         }
                         if let Some(selected) = self.selected.as_mut()
                             && let Some(tile) =
@@ -2212,7 +2277,9 @@ impl App {
             {
                 match result {
                     Ok(()) => {
-                        self.status = "更改已保存到资源库".into();
+                        self.status =
+                            tr!(language, "更改已保存到资源库" => "Changes saved to the library")
+                                .into();
                         let browse = self
                             .selected
                             .as_ref()
@@ -2287,34 +2354,13 @@ impl App {
                     self.preferences.reduced_motion,
                 );
             }
-            Message::ReducedMotion(enabled) => {
-                self.preferences.reduced_motion = enabled;
-                self.gallery_feedback.clear();
-                self.surface_motion = None;
-                let pending = self
-                    .transition
-                    .take()
-                    .and_then(|mut transition| transition.pending.take());
-                let navigation = pending
-                    .map(|message| self.commit_navigation(*message))
-                    .unwrap_or_else(Task::none);
-                let service = self.service.clone();
-                return Task::batch([
-                    navigation,
-                    Task::perform(
-                        async move { service.reduced_motion(enabled).await },
-                        Message::SettingsLoaded,
-                    ),
-                ]);
+            Message::ReducedMotion(enabled) => return self.set_reduced_motion(enabled),
+            Message::LanguageChanged(language) => return self.set_language(language),
+            Message::AppearanceChanged(appearance) => return self.set_appearance(appearance),
+            Message::InterfaceSaved(language, appearance, result) => {
+                return self.finish_interface_save(language, appearance, result);
             }
-            Message::DiagnosticLogging(enabled) => {
-                self.preferences.diagnostic_logging = enabled;
-                let service = self.service.clone();
-                return Task::perform(
-                    async move { service.diagnostic_logging(enabled).await },
-                    Message::SettingsLoaded,
-                );
-            }
+            Message::DiagnosticLogging(enabled) => return self.set_diagnostic_logging(enabled),
             // Disabled actions and receipts from an older request are intentionally ignored.
             Message::ShowLibraries
             | Message::OpenRecent(..)

@@ -87,6 +87,7 @@ pub enum CompareMessage {
 }
 impl App {
     pub(super) fn compare_message(&mut self, event: CompareMessage) -> Task<Message> {
+        let language = self.preferences.language;
         match event {
             CompareMessage::Open => {
                 self.compare.clear();
@@ -105,7 +106,7 @@ impl App {
                     })
                     .collect();
                 let Some(first) = self.compare.choices.first() else {
-                    self.error = Some("版本信息尚未加载，请稍后重试".into());
+                    self.error = Some(tr!(language, "版本信息尚未加载，请稍后重试" => "Version information is still loading. Please try again shortly.").into());
                     return Task::none();
                 };
                 let right = if asset.version_id != first.id {
@@ -185,7 +186,8 @@ impl App {
         task
     }
     pub(super) fn compare_panel(&self) -> Element<'_, Message> {
-        let mut view=column![muted("左右独立选择版本，不改变展示版本。两侧均为最长边 1600 像素预览；未接入 ICC/HDR 色彩校准。")].spacing(12);
+        let language = self.preferences.language;
+        let mut view=column![muted(tr!(language, "左右独立选择版本，不改变展示版本。两侧均为最长边 1600 像素预览；未接入 ICC/HDR 色彩校准。" => "Select versions independently without changing the displayed version. Both previews have a maximum edge of 1600 pixels; ICC/HDR calibration is unavailable."))].spacing(12);
         let mut sides = row![].spacing(16);
         for index in 0..2 {
             let selected = self.compare.pair.and_then(|p| {
@@ -215,7 +217,9 @@ impl App {
         }
         view = view.push(sides);
         if self.compare.loading {
-            view = view.push(muted("正在读取所选版本…"));
+            view = view.push(muted(
+                tr!(language, "正在读取所选版本…" => "Loading selected versions…"),
+            ));
         }
         view.into()
     }

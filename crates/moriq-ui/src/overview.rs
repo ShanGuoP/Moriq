@@ -7,6 +7,7 @@ use iced::widget::{Column, Row, Space, button, column, container, image, row, st
 use iced::{Alignment, Border, Color, ContentFit, Length};
 impl App {
     pub(super) fn overview(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let Some(library) = &self.library else {
             return self.welcome();
         };
@@ -29,7 +30,7 @@ impl App {
         let title = row![
             text(format!("{}.moriq", info.name))
                 .size(26)
-                .color(Color::WHITE)
+                .style(crate::theme::text_color(Color::WHITE))
                 .font(iced::Font {
                     weight: iced::font::Weight::Semibold,
                     ..iced::Font::DEFAULT
@@ -42,18 +43,18 @@ impl App {
         .spacing(10)
         .align_y(Alignment::Center);
         let description = text(if self.manager.organizer.description.is_empty() {
-            "收集、整理与保存你的创作素材。"
+            tr!(language, "收集、整理与保存你的创作素材。" => "Collect, organize and preserve your creative assets.")
         } else {
             &self.manager.organizer.description
         })
         .size(14)
         .line_height(1.7)
-        .color(Color::from_rgba8(255, 255, 255, 0.9));
+        .style(crate::theme::text_color(Color::from_rgba8(255, 255, 255, 0.9)));
         let location = row![
             icon(Icon::Folder, 16.0, Color::WHITE),
             text(display_path(&library.root))
                 .size(13)
-                .color(Color::WHITE),
+                .style(crate::theme::text_color(Color::WHITE)),
             button(icon(Icon::Copy, 14.0, Color::WHITE))
                 .padding(0)
                 .style(flat)
@@ -64,9 +65,9 @@ impl App {
         let hero_info = row![
             container(photo(cover, Length::Fixed(110.0), 110.0))
                 .padding(2)
-                .style(|_| container::Style {
+                .style(|theme| container::Style {
                     border: Border {
-                        color: Color::WHITE,
+                        color: crate::theme::adaptive(theme, Color::WHITE),
                         width: 2.0,
                         radius: 9.0.into()
                     },
@@ -90,18 +91,23 @@ impl App {
         .spacing(22)
         .align_y(Alignment::Start);
         let stats = row![
-            hero_stat(Icon::Image, BLUE, number(info.count), "图片素材"),
+            hero_stat(
+                Icon::Image,
+                BLUE,
+                number(info.count),
+                tr!(language, "图片素材" => "Image assets")
+            ),
             hero_stat(
                 Icon::Folder,
                 GREEN,
                 info.projects.len().to_string(),
-                "项目数量"
+                tr!(language, "项目数量" => "Projects")
             ),
             hero_stat(
                 Icon::Star,
                 Color::from_rgb8(246, 159, 11),
                 number(info.favorites),
-                "收藏数量"
+                tr!(language, "收藏数量" => "Favorites")
             ),
             hero_stat(
                 Icon::Database,
@@ -112,9 +118,9 @@ impl App {
                     .map(|s| size(s.allocated))
                     .unwrap_or_else(|| size(info.bytes)),
                 if self.storage.stats.is_some() {
-                    "库内占用"
+                    tr!(language, "库内占用" => "Library storage")
                 } else {
-                    "素材登记量"
+                    tr!(language, "素材登记量" => "Registered asset size")
                 }
             )
         ]
@@ -141,9 +147,12 @@ impl App {
             container(row![
                 Space::new().width(Length::Fill),
                 button(
-                    row![icon(Icon::Image, 14.0, ICON), text("更换封面").size(13)]
-                        .spacing(6)
-                        .align_y(Alignment::Center)
+                    row![
+                        icon(Icon::Image, 14.0, ICON),
+                        text(tr!(language, "更换封面" => "Change cover")).size(13)
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
                 )
                 .padding([9, 16])
                 .style(secondary)
@@ -161,29 +170,29 @@ impl App {
             self.quick_action(
                 Icon::Person,
                 BLUE,
-                "导入图片",
-                "支持文件与整个文件夹",
+                tr!(language, "导入图片" => "Import images"),
+                tr!(language, "支持文件与整个文件夹" => "Supports files and entire folders"),
                 Message::Manage(ManageMessage::ImportMenu)
             ),
             self.quick_action(
                 Icon::Plus,
                 GREEN,
-                "新建项目",
-                "创建项目管理素材",
+                tr!(language, "新建项目" => "New project"),
+                tr!(language, "创建项目管理素材" => "Create a project to organize assets"),
                 Message::ShowProject
             ),
             self.quick_action(
                 Icon::Collection,
                 PURPLE,
-                "创建智能集合",
-                "保存搜索与筛选规则",
+                tr!(language, "创建智能集合" => "Create smart collection"),
+                tr!(language, "保存搜索与筛选规则" => "Save search and filter rules"),
                 Message::Manage(ManageMessage::Collections)
             ),
             self.quick_action(
                 Icon::Folder,
                 BLUE,
-                "打开资源库",
-                "在文件夹中查看",
+                tr!(language, "打开资源库" => "Open library"),
+                tr!(language, "在文件夹中查看" => "View in folder"),
                 Message::RevealLibrary
             )
         ]
@@ -208,8 +217,11 @@ impl App {
                     container(
                         row![
                             button(
-                                column![heading(title, 13), muted(format!("{} 张", number(count)))]
-                                    .spacing(4)
+                                column![
+                                    heading(title, 13),
+                                    muted(trf!(language, "{} 张" => "{} photos", number(count)))
+                                ]
+                                .spacing(4)
                             )
                             .padding(0)
                             .style(flat)
@@ -232,8 +244,8 @@ impl App {
             projects = projects.push(
                 container(
                     column![
-                        muted("创建项目，开始整理一次拍摄或一个新想法。"),
-                        action("新建项目", Message::ShowProject)
+                        muted(tr!(language, "创建项目，开始整理一次拍摄或一个新想法。" => "Create a project for a shoot or a new idea.")),
+                        action(tr!(language, "新建项目" => "New project"), Message::ShowProject)
                     ]
                     .spacing(10),
                 )
@@ -265,19 +277,31 @@ impl App {
                 .width(Length::Fill)
                 .into()
         } else {
-            container(muted("收藏喜欢的素材，让灵感随手可得。"))
-                .height(105)
-                .width(Length::Fill)
-                .center_y(105)
-                .padding(16)
-                .style(panel)
-                .into()
+            container(muted(tr!(language, "收藏喜欢的素材，让灵感随手可得。" => "Favorite assets to keep inspiration at hand.")))
+                    .height(105)
+                    .width(Length::Fill)
+                    .center_y(105)
+                    .padding(16)
+                    .style(panel)
+                    .into()
         };
         let mut smart = Column::new().spacing(7);
         for (label, count, builtin) in [
-            ("最近导入", self.manager.organizer.recent_count, 0),
-            ("未加标签", self.manager.organizer.untagged_count, 1),
-            ("高评分", self.manager.organizer.high_rating_count, 2),
+            (
+                tr!(language, "最近导入" => "Recently imported"),
+                self.manager.organizer.recent_count,
+                0,
+            ),
+            (
+                tr!(language, "未加标签" => "Untagged"),
+                self.manager.organizer.untagged_count,
+                1,
+            ),
+            (
+                tr!(language, "高评分" => "Highly rated"),
+                self.manager.organizer.high_rating_count,
+                2,
+            ),
         ] {
             smart = smart.push(action(
                 &format!("{label}  {count}"),
@@ -293,13 +317,29 @@ impl App {
 
         let bottom = row![
             column![
-                column![section("收藏夹", Message::Favorites), favorites].spacing(10),
+                column![
+                    section(
+                        self.preferences.language,
+                        tr!(language, "收藏夹" => "Favorites"),
+                        Message::Favorites
+                    ),
+                    favorites
+                ]
+                .spacing(10),
                 Space::new().height(18),
-                section("标签概览", Message::Manage(ManageMessage::Tags))
+                section(
+                    self.preferences.language,
+                    tr!(language, "标签概览" => "Tag overview"),
+                    Message::Manage(ManageMessage::Tags)
+                )
             ]
             .width(Length::FillPortion(3)),
             column![
-                section("智能集合", Message::Manage(ManageMessage::Collections)),
+                section(
+                    self.preferences.language,
+                    tr!(language, "智能集合" => "Smart collections"),
+                    Message::Manage(ManageMessage::Collections)
+                ),
                 smart
             ]
             .spacing(10)
@@ -320,11 +360,16 @@ impl App {
         let center = column![
             hero,
             Space::new().height(18),
-            column![heading("快速操作", 17), quick].spacing(9),
+            column![
+                heading(tr!(language, "快速操作" => "Quick actions"), 17),
+                quick
+            ]
+            .spacing(9),
             Space::new().height(26),
             column![
                 section(
-                    "项目 · 最近访问优先",
+                    self.preferences.language,
+                    tr!(language, "项目 · 最近访问优先" => "Projects · Recently visited first"),
                     Message::Manage(ManageMessage::Project)
                 ),
                 iced::widget::scrollable(projects)
@@ -411,6 +456,7 @@ impl App {
         .into()
     }
     fn library_details(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let Some(library) = &self.library else {
             return Space::new().into();
         };
@@ -418,26 +464,37 @@ impl App {
         let info_panel = container(
             column![
                 row![
-                    heading("资源库信息", 17),
+                    heading(tr!(language, "资源库信息" => "Library information"), 17),
                     Space::new().width(Length::Fill),
-                    action("编辑", Message::ShowRenameLibrary)
+                    action(tr!(language, "编辑" => "Edit"), Message::ShowRenameLibrary)
                 ]
                 .align_y(Alignment::Center),
-                info_row("名称", format!("{}.moriq", info.name)),
                 info_row(
-                    "描述",
+                    tr!(language, "名称" => "Name"),
+                    format!("{}.moriq", info.name)
+                ),
+                info_row(
+                    tr!(language, "描述" => "Description"),
                     if self.manager.organizer.description.is_empty() {
-                        "暂无描述".into()
+                        tr!(language, "暂无描述" => "No description").into()
                     } else {
                         self.manager.organizer.description.clone()
                     }
                 ),
                 separator(),
-                info_row("创建时间", date(info.created_at)),
-                info_row("更新时间", date(info.updated_at)),
+                info_row(
+                    tr!(language, "创建时间" => "Created"),
+                    date(info.created_at)
+                ),
+                info_row(
+                    tr!(language, "更新时间" => "Updated"),
+                    date(info.updated_at)
+                ),
                 row![
-                    muted("资源库路径").width(80),
-                    text(display_path(&library.root)).size(10).color(ICON),
+                    muted(tr!(language, "资源库路径" => "Library path")).width(80),
+                    text(display_path(&library.root))
+                        .size(10)
+                        .style(crate::theme::text_color(ICON)),
                     button(icon(Icon::Copy, 13.0, ICON))
                         .padding(0)
                         .style(flat)
@@ -455,7 +512,7 @@ impl App {
             .stats
             .as_ref()
             .map(|s| size(s.allocated))
-            .unwrap_or_else(|| "待统计".into());
+            .unwrap_or_else(|| tr!(language, "待统计" => "Not calculated").into());
         let mut legend = Column::new().spacing(14);
         if let Some(stats) = &self.storage.stats {
             for (label, bytes) in &stats.categories {
@@ -467,29 +524,31 @@ impl App {
                     .spacing(8),
                 );
             }
-            legend = legend.push(muted(format!(
-                "采样 {}{}",
+            legend = legend.push(muted(trf!(language, "采样 {}{}" => "Sampled {}{}",
                 date(stats.measured_at),
                 if stats.cancelled || stats.warnings > 0 {
-                    " · 部分结果"
+                    tr!(language, " · 部分结果" => " · Partial results")
                 } else {
                     ""
                 }
             )));
         } else {
-            legend = legend.push(muted(format!(
-                "素材登记量 {}，含外部引用；尚未统计实际磁盘空间。",
-                size(info.bytes)
-            )));
+            legend = legend.push(muted(trf!(language, "素材登记量 {}，含外部引用；尚未统计实际磁盘空间。" => "Registered assets: {}, including external references. Actual disk usage has not been calculated.",
+                    size(info.bytes)
+                )));
         }
 
         let storage = container(
             column![
-                section("存储使用情况", Message::Storage(StorageMessage::Open)),
+                section(
+                    self.preferences.language,
+                    tr!(language, "存储使用情况" => "Storage usage"),
+                    Message::Storage(StorageMessage::Open)
+                ),
                 row![
                     donut(
                         storage_value,
-                        "库内占用",
+                        tr!(language, "库内占用" => "Library storage"),
                         self.storage
                             .stats
                             .as_ref()
@@ -519,7 +578,7 @@ impl App {
             activities = activities.push(
                 button(
                     column![
-                        heading(journal::event_label(&event.kind), 12),
+                        heading(journal::event_label(language, &event.kind), 12),
                         text(&event.detail).size(12),
                         muted(date(event.at))
                     ]
@@ -531,7 +590,9 @@ impl App {
             );
         }
         if self.journal.recent.is_empty() {
-            activities = activities.push(muted("暂无已记录的活动"));
+            activities = activities.push(muted(
+                tr!(language, "暂无已记录的活动" => "No recorded activity"),
+            ));
         }
 
         column![
@@ -539,7 +600,11 @@ impl App {
             storage,
             container(
                 column![
-                    section("最近活动", Message::Journal(JournalMessage::Open(false))),
+                    section(
+                        self.preferences.language,
+                        tr!(language, "最近活动" => "Recent activity"),
+                        Message::Journal(JournalMessage::Open(false))
+                    ),
                     activities
                 ]
                 .spacing(14)
@@ -556,8 +621,8 @@ fn hero_stat<'a>(kind: Icon, color: Color, value: String, label: &str) -> Elemen
         row![
             container(icon(kind, 23.0, color))
                 .padding(8)
-                .style(|_| container::Style {
-                    background: Some(Color::WHITE.into()),
+                .style(|theme| container::Style {
+                    background: Some(crate::theme::adaptive(theme, Color::WHITE).into()),
                     border: Border {
                         radius: 8.0.into(),
                         ..Default::default()
@@ -565,10 +630,14 @@ fn hero_stat<'a>(kind: Icon, color: Color, value: String, label: &str) -> Elemen
                     ..Default::default()
                 }),
             column![
-                text(value).size(18).color(Color::WHITE),
+                text(value)
+                    .size(18)
+                    .style(crate::theme::text_color(Color::WHITE)),
                 text(label.to_string())
                     .size(13)
-                    .color(Color::from_rgba8(255, 255, 255, 0.78))
+                    .style(crate::theme::text_color(Color::from_rgba8(
+                        255, 255, 255, 0.78
+                    )))
             ]
             .spacing(4)
         ]
@@ -590,7 +659,10 @@ fn hero_stat<'a>(kind: Icon, color: Color, value: String, label: &str) -> Elemen
 fn info_row<'a>(label: &str, value: String) -> Element<'a, Message> {
     row![
         muted(label).width(80),
-        text(value).size(13).line_height(1.6).color(ICON)
+        text(value)
+            .size(13)
+            .line_height(1.6)
+            .style(crate::theme::text_color(ICON))
     ]
     .spacing(8)
     .into()

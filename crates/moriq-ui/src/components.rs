@@ -3,36 +3,38 @@ use crate::icons::{Icon, icon};
 use crate::theme::*;
 use iced::widget::{Space, button, column, container, image, row, scrollable, svg, text};
 use iced::{Alignment, Border, Color, ContentFit, Font, Length, font};
+type Choice<'a, T> = iced::widget::PickList<'a, T, Vec<T>, T, Message>;
+
 pub fn choice<'a, T: ToString + PartialEq + Clone + 'a>(
     values: Vec<T>,
     selected: Option<T>,
     changed: impl Fn(T) -> Message + 'a,
-) -> iced::widget::PickList<'a, T, Vec<T>, T, Message> {
+) -> Choice<'a, T> {
     iced::widget::pick_list(values, selected, changed)
         .text_size(13)
         .padding([8, 10])
-        .menu_style(|_| iced::widget::overlay::menu::Style {
-            background: Color::WHITE.into(),
-            text_color: TEXT,
-            selected_text_color: BLUE,
-            selected_background: PALE.into(),
+        .menu_style(|theme| iced::widget::overlay::menu::Style {
+            background: adaptive(theme, Color::WHITE).into(),
+            text_color: adaptive(theme, TEXT),
+            selected_text_color: adaptive(theme, BLUE),
+            selected_background: adaptive(theme, PALE).into(),
             border: Border {
-                color: LINE,
+                color: adaptive(theme, LINE),
                 width: 1.0,
                 radius: 7.0.into(),
             },
             shadow: iced::Shadow::default(),
         })
-        .style(|_, status| iced::widget::pick_list::Style {
-            text_color: TEXT,
-            placeholder_color: MUTED,
-            handle_color: ICON,
-            background: Color::WHITE.into(),
+        .style(|theme, status| iced::widget::pick_list::Style {
+            text_color: adaptive(theme, TEXT),
+            placeholder_color: adaptive(theme, MUTED),
+            handle_color: adaptive(theme, ICON),
+            background: adaptive(theme, Color::WHITE).into(),
             border: Border {
                 color: if matches!(status, iced::widget::pick_list::Status::Active) {
-                    CONTROL_LINE
+                    adaptive(theme, CONTROL_LINE)
                 } else {
-                    BLUE
+                    adaptive(theme, BLUE)
                 },
                 width: 1.0,
                 radius: 7.0.into(),
@@ -40,13 +42,16 @@ pub fn choice<'a, T: ToString + PartialEq + Clone + 'a>(
         })
 }
 pub fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
-    text(value.into()).size(size).color(TEXT).font(Font {
-        weight: font::Weight::Semibold,
-        ..Font::DEFAULT
-    })
+    text(value.into())
+        .size(size)
+        .style(text_color(TEXT))
+        .font(Font {
+            weight: font::Weight::Semibold,
+            ..Font::DEFAULT
+        })
 }
 pub fn muted<'a>(value: impl Into<String>) -> iced::widget::Text<'a> {
-    text(value.into()).size(12).color(MUTED)
+    text(value.into()).size(12).style(text_color(MUTED))
 }
 pub fn action<'a>(label: &str, message: Message) -> iced::widget::Button<'a, Message> {
     button(text(label.to_owned()).size(13))
@@ -75,8 +80,8 @@ pub fn form_icon<'a>(kind: Icon, large: bool) -> Element<'a, Message> {
     container(icon(kind, if large { 26.0 } else { 22.0 }, BLUE))
         .center_x(side)
         .center_y(side)
-        .style(|_| container::Style {
-            background: Some(PALE.into()),
+        .style(|theme| container::Style {
+            background: Some(adaptive(theme, PALE).into()),
             border: Border {
                 radius: 12.0.into(),
                 ..Default::default()
@@ -143,7 +148,7 @@ pub fn photo<'a>(
     }
 }
 pub fn chip<'a>(label: impl Into<String>, color: Color) -> Element<'a, Message> {
-    container(text(label.into()).size(11).color(color))
+    container(text(label.into()).size(11).style(text_color(color)))
         .padding([3, 9])
         .style(move |_| container::Style {
             background: Some(Color { a: 0.08, ..color }.into()),
@@ -155,13 +160,15 @@ pub fn chip<'a>(label: impl Into<String>, color: Color) -> Element<'a, Message> 
         })
         .into()
 }
-pub fn section<'a>(title: &str, message: Message) -> Element<'a, Message> {
+pub fn section<'a>(language: Language, title: &str, message: Message) -> Element<'a, Message> {
     row![
         heading(title, 17),
         Space::new().width(Length::Fill),
         button(
             row![
-                text("查看全部").size(12).color(BLUE),
+                text(tr!(language, "查看全部" => "View all"))
+                    .size(12)
+                    .style(text_color(BLUE)),
                 icon(Icon::Right, 13.0, BLUE)
             ]
             .spacing(3)
@@ -177,8 +184,8 @@ pub fn section<'a>(title: &str, message: Message) -> Element<'a, Message> {
 pub fn separator<'a>() -> Element<'a, Message> {
     container(Space::new().height(1))
         .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(LINE.into()),
+        .style(|theme| container::Style {
+            background: Some(adaptive(theme, LINE).into()),
             ..Default::default()
         })
         .into()
@@ -199,7 +206,7 @@ pub fn metadata<'a>(kind: Icon, label: &str, value: impl Into<String>) -> Elemen
     row![
         icon(kind, 14.0, MUTED),
         muted(label).width(74),
-        text(value.into()).size(12).color(ICON)
+        text(value.into()).size(12).style(text_color(ICON))
     ]
     .spacing(8)
     .align_y(Alignment::Center)
@@ -266,4 +273,49 @@ pub(super) fn grouped_number(value: u64) -> String {
         out.push(c);
     }
     out
+}
+
+#[derive(Clone)]
+pub struct LocalizedOption<T> {
+    value: T,
+    label: String,
+}
+impl<T: PartialEq> PartialEq for LocalizedOption<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+impl<T> std::fmt::Display for LocalizedOption<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+pub fn localized_choice<'a, T: ToString + PartialEq + Clone + 'a>(
+    language: Language,
+    values: Vec<T>,
+    selected: Option<T>,
+    changed: impl Fn(T) -> Message + 'a,
+) -> Choice<'a, LocalizedOption<T>> {
+    choice_labels(
+        values,
+        selected,
+        move |value| crate::i18n::option_label(language, &value.to_string()).to_owned(),
+        changed,
+    )
+}
+pub fn choice_labels<'a, T: PartialEq + Clone + 'a>(
+    values: Vec<T>,
+    selected: Option<T>,
+    label: impl Fn(&T) -> String,
+    changed: impl Fn(T) -> Message + 'a,
+) -> Choice<'a, LocalizedOption<T>> {
+    let localize = |value: T| LocalizedOption {
+        label: label(&value),
+        value,
+    };
+    choice(
+        values.into_iter().map(&localize).collect(),
+        selected.map(localize),
+        move |option| changed(option.value),
+    )
 }

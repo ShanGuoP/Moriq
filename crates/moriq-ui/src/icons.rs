@@ -136,7 +136,6 @@ pub fn icon<'a>(kind: Icon, size: f32, color: Color) -> Element<'a, Message> {
             r#"<circle cx="12" cy="4" r="2"/><circle cx="4" cy="19" r="2"/><circle cx="20" cy="19" r="2"/><circle cx="12" cy="13" r="2"/><path d="M12 6v5m-2 4-4 3m8-3 4 3"/>"#
         }
         Icon::Text => r#"<path d="M5 2h10l4 4v16H5ZM15 2v5h4M8 11h8m-8 4h8m-8 3h5"/>"#,
-
         Icon::Sparkles => r#"<path d="m12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z"/>"#,
         Icon::Pause => r#"<path d="M8 5v14M16 5v14"/>"#,
         Icon::External => r#"<path d="M14 3h7v7m0-7L10 14M9 3H3v18h18v-6"/>"#,
@@ -156,6 +155,8 @@ pub fn icon<'a>(kind: Icon, size: f32, color: Color) -> Element<'a, Message> {
     svg(svg::Handle::from_memory(markup.into_bytes()))
         .width(size)
         .height(size)
-        .style(move |_, _| svg::Style { color: Some(color) })
+        .style(move |theme, _| svg::Style {
+            color: Some(crate::theme::foreground(theme, color)),
+        })
         .into()
 }

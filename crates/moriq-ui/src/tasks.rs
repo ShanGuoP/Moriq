@@ -234,65 +234,73 @@ impl App {
         Task::none()
     }
     pub(super) fn tasks_panel(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let mut view = column![muted(
-            "此处显示当前导入、AI 分析、索引、资源检查、空间统计与 Synco 交接。"
+            tr!(language, "此处显示当前导入、AI 分析、索引、资源检查、空间统计与 Synco 交接。" => "Current imports, AI analysis, indexing, integrity checks, storage calculations and Synco handoffs appear here.")
         )]
         .spacing(12);
         if self.jobs.error.is_some() {
             view = view.push(muted(
-                "任务列表暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。",
+                tr!(language, "任务列表暂时无法读取。请重新打开资源库重试，诊断信息已写入日志。" => "Task list is temporarily unavailable. Reopen the library to retry. Diagnostics were written to the log."),
             ));
         }
         view = view
             .push(action(
-                "原文件完整性检查（可暂停与断点继续）",
+                tr!(language, "原文件完整性检查（可暂停与断点继续）" => "Original file integrity check (pause and resume supported)"),
                 Message::Jobs(JobMessage::Queue("integrity".into())),
             ))
             .push(crate::components::action(
-                "建立/更新近似图片索引",
+                tr!(language, "建立/更新近似图片索引" => "Build / update image similarity index"),
                 Message::Jobs(JobMessage::Queue("fingerprints".into())),
             ))
             .push(crate::components::action(
-                "重建全部图片缩略图",
+                tr!(language, "重建全部图片缩略图" => "Rebuild all image thumbnails"),
                 Message::Jobs(JobMessage::Queue("thumbnails".into())),
             ))
             .push(muted(
-                "索引与缩略图任务按优先级逐项执行；暂停在当前图片完成后生效，重开资源库继续。",
+                tr!(language, "索引与缩略图任务按优先级逐项执行；暂停在当前图片完成后生效，重开资源库继续。" => "Indexing and thumbnail tasks run by priority, one image at a time. Pausing takes effect after the current image; reopen the library to resume."),
             ));
         let mut count = 0;
         for job in &self.manager.organizer.jobs {
             count += 1;
             let title = match job.kind.as_str() {
-                "integrity" => "原文件完整性检查",
-                "batch" => "批量字段编辑",
-                "metadata" => "EXIF 与 GPS 索引",
-                "fingerprints" => "近似图片索引",
-                "thumbnails" => "缩略图重建",
-                "analysis:chinese-clip" => "自动分类与语义索引",
-                "analysis:florence" => "图片描述、OCR 与物体识别",
-                "analysis:faces" => "人脸识别与人物聚类",
-                _ => "后台处理",
+                "integrity" => tr!(language, "原文件完整性检查" => "Original file integrity check"),
+                "batch" => tr!(language, "批量字段编辑" => "Batch field editing"),
+                "metadata" => tr!(language, "EXIF 与 GPS 索引" => "EXIF and GPS index"),
+                "fingerprints" => tr!(language, "近似图片索引" => "Image similarity index"),
+                "thumbnails" => tr!(language, "缩略图重建" => "Thumbnail rebuild"),
+                "analysis:chinese-clip" => {
+                    tr!(language, "自动分类与语义索引" => "Automatic categories and semantic index")
+                }
+                "analysis:florence" => {
+                    tr!(language, "图片描述、OCR 与物体识别" => "Image descriptions, OCR and object recognition")
+                }
+                "analysis:faces" => {
+                    tr!(language, "人脸识别与人物聚类" => "Face recognition and people clustering")
+                }
+                _ => tr!(language, "后台处理" => "Background processing"),
             };
             view = view
                 .push(heading(
                     format!("{title} · {} / {}", job.completed, job.total),
                     15,
                 ))
-                .push(muted(format!(
-                    "{} · 优先级 {} · 失败 {}",
-                    job.state, job.priority, job.failed
-                )));
+                .push(muted(
+                    trf!(language, "{} · 优先级 {} · 失败 {}" => "{} · Priority {} · {} failed",
+                        job.state, job.priority, job.failed
+                    ),
+                ));
             if !job.error.is_empty() {
                 view = view.push(muted(&job.error));
             }
             if job.failed > 0 {
                 view = view.push(action(
-                    "查看失败明细（前100项）",
+                    tr!(language, "查看失败明细（前100项）" => "View failures (first 100)"),
                     Message::Jobs(JobMessage::Failures(job.id.clone())),
                 ));
                 if matches!(job.state.as_str(), "completed" | "cancelled") {
                     view = view.push(action(
-                        "仅重试失败素材",
+                        tr!(language, "仅重试失败素材" => "Retry failed assets only"),
                         Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::RetryFailed)),
                     ));
                 }
@@ -304,7 +312,7 @@ impl App {
                         view = view.push(muted(format!("{}：{}", item.name, item.message)));
                         if let Some(asset) = item.asset {
                             view = view.push(action(
-                                "查看此素材",
+                                tr!(language, "查看此素材" => "View this asset"),
                                 Message::Journal(journal::JournalMessage::OpenAsset(asset)),
                             ));
                         }
@@ -320,25 +328,25 @@ impl App {
                 view = view
                     .push(crate::components::action(
                         if job.state == "paused" {
-                            "继续任务"
+                            tr!(language, "继续任务" => "Resume task")
                         } else {
-                            "暂停任务"
+                            tr!(language, "暂停任务" => "Pause task")
                         },
                         Message::Jobs(JobMessage::Control(job.id.clone(), command)),
                     ))
                     .push(crate::components::action(
-                        "提高优先级",
+                        tr!(language, "提高优先级" => "Raise priority"),
                         Message::Jobs(JobMessage::Control(
                             job.id.clone(),
                             JobCommand::Priority((job.priority + 10).min(100)),
                         )),
                     ))
                     .push(crate::components::action(
-                        "取消任务",
+                        tr!(language, "取消任务" => "Cancel task"),
                         Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::Cancel)),
                     ));
                 view = view.push(action(
-                    "降低优先级",
+                    tr!(language, "降低优先级" => "Lower priority"),
                     Message::Jobs(JobMessage::Control(
                         job.id.clone(),
                         JobCommand::Priority((job.priority - 10).max(-100)),
@@ -348,8 +356,7 @@ impl App {
         }
         if let Some(control) = &self.import {
             count += 1;
-            view = view.push(heading("图片导入", 15)).push(muted(format!(
-                "已处理 {}，已发现 {}，解码 {} / 上限 {}，峰值 {}，等待内存 {}",
+            view = view.push(heading(tr!(language, "图片导入" => "Image import"), 15)).push(muted(trf!(language, "已处理 {}，已发现 {}，解码 {} / 上限 {}，峰值 {}，等待内存 {}" => "Processed {}, discovered {}, decoding {} / limit {}, peak {}, waiting for memory {}",
                 control.finished.load(Ordering::Relaxed),
                 control.discovered.load(Ordering::Relaxed),
                 control.active.load(Ordering::Relaxed),
@@ -358,22 +365,27 @@ impl App {
                 control.waiting_memory.load(Ordering::Relaxed)
             )));
             if !control.cancel.load(Ordering::Relaxed) {
-                view = view.push(action("停止导入", Message::CancelImport));
+                view = view.push(action(
+                    tr!(language, "停止导入" => "Stop import"),
+                    Message::CancelImport,
+                ));
             } else {
-                view = view.push(muted("正在停止并收尾…"));
+                view = view.push(muted(
+                    tr!(language, "正在停止并收尾…" => "Stopping and finishing up…"),
+                ));
             }
         }
         if self.manager.maintenance.is_some() {
             count += 1;
             view = view.push(action(
-                "查看资源检查进度",
+                tr!(language, "查看资源检查进度" => "View integrity check progress"),
                 Message::Manage(ManageMessage::Maintenance),
             ));
         }
         if self.storage.control.is_some() {
             count += 1;
             view = view.push(action(
-                "查看空间统计进度",
+                tr!(language, "查看空间统计进度" => "View storage calculation progress"),
                 Message::Storage(StorageMessage::Open),
             ));
         }
@@ -389,12 +401,14 @@ impl App {
         if pending > 0 {
             count += pending;
             view = view.push(action(
-                &format!("查看 {} 个 Synco 交接任务", pending),
+                &trf!(language, "查看 {} 个 Synco 交接任务" => "View {} Synco handoff tasks", pending),
                 Message::Manage(ManageMessage::Synco),
             ));
         }
         if count == 0 {
-            view = view.push(muted("当前没有后台任务。"));
+            view = view.push(muted(
+                tr!(language, "当前没有后台任务。" => "No background tasks."),
+            ));
         }
         view.into()
     }

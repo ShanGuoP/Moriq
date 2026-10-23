@@ -94,6 +94,7 @@ impl App {
         )
     }
     pub(super) fn journal_message(&mut self, message: JournalMessage) -> Task<Message> {
+        let language = self.preferences.language;
         use JournalMessage::*;
         match message {
             Open(notices) => {
@@ -191,7 +192,7 @@ impl App {
                         };
                         return Task::batch([self.reset_query(), self.load_neighborhood(asset, 0)]);
                     }
-                    Ok(None) => self.status = "关联素材已被永久删除，活动记录仍保留。".into(),
+                    Ok(None) => self.status = tr!(language, "关联素材已被永久删除，活动记录仍保留。" => "The linked asset was permanently deleted. The activity record is retained.").into(),
                     Err(e) => self.error = Some(e),
                 }
             }
@@ -208,6 +209,7 @@ impl App {
         Task::none()
     }
     pub(super) fn event_list(&self, notices: bool) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let index = usize::from(notices);
         let page = if notices {
             &self.journal.notifications
@@ -218,35 +220,38 @@ impl App {
         if notices {
             content = content.push(
                 row![
-                    muted(format!("{} 条未读", page.unread)),
+                    muted(trf!(language, "{} 条未读" => "{} unread", page.unread)),
                     Space::new().width(Length::Fill),
-                    action("全部标为已读", Message::Journal(JournalMessage::Read))
+                    action(
+                        tr!(language, "全部标为已读" => "Mark all as read"),
+                        Message::Journal(JournalMessage::Read)
+                    )
                 ]
                 .align_y(Alignment::Center),
             );
         }
         if self.journal.loading[index] {
-            content = content.push(muted("正在读取…"));
+            content = content.push(muted(tr!(language, "正在读取…" => "Loading…")));
         }
         if page.items.is_empty() && !self.journal.loading[index] {
             content = content.push(muted(if notices {
-                "暂无通知"
+                tr!(language, "暂无通知" => "No notifications")
             } else {
-                "暂无活动记录"
+                tr!(language, "暂无活动记录" => "No activity yet")
             }));
         }
         for event in &page.items {
             let title = if notices {
                 event.kind.as_str()
             } else {
-                event_label(&event.kind)
+                event_label(language, &event.kind)
             };
             let mut controls = row![muted(date(event.at)), Space::new().width(Length::Fill)]
                 .spacing(8)
                 .align_y(Alignment::Center);
             if let Some(asset) = event.asset {
                 controls = controls.push(action(
-                    "打开素材",
+                    tr!(language, "打开素材" => "Open asset"),
                     Message::Journal(JournalMessage::OpenAsset(asset)),
                 ));
             }
@@ -256,12 +261,15 @@ impl App {
                     .as_ref()
                     .is_some_and(|l| l.info.projects.iter().any(|p| p.id == project))
             {
-                controls = controls.push(action("打开项目", Message::Project(project)));
+                controls = controls.push(action(
+                    tr!(language, "打开项目" => "Open project"),
+                    Message::Project(project),
+                ));
             }
             if !event.retry.is_empty() {
                 controls =
                     controls.push(
-                        button(text("重试").size(12))
+                        button(text(tr!(language, "重试" => "Retry")).size(12))
                             .style(secondary)
                             .padding(7)
                             .on_press_maybe((!self.manager.busy && !self.switching).then(|| {
@@ -284,7 +292,7 @@ impl App {
         }
         content
             .push(row![
-                button(text("较新").size(12))
+                button(text(tr!(language, "较新" => "Newer")).size(12))
                     .style(secondary)
                     .padding(8)
                     .on_press_maybe(
@@ -292,7 +300,7 @@ impl App {
                             .then_some(Message::Journal(JournalMessage::Page(notices, false)))
                     ),
                 Space::new().width(Length::Fill),
-                button(text("较早").size(12))
+                button(text(tr!(language, "较早" => "Older")).size(12))
                     .style(secondary)
                     .padding(8)
                     .on_press_maybe(
@@ -303,19 +311,19 @@ impl App {
             .into()
     }
 }
-pub(super) fn event_label(kind: &str) -> &str {
+pub(super) fn event_label(language: Language, kind: &str) -> &str {
     match kind {
-        "import" => "导入素材",
-        "favorite" => "收藏变更",
-        "rating" => "评分变更",
-        "rename" => "重命名素材",
-        "notes" => "备注更新",
-        "trash" => "回收站变更",
-        "purge" => "永久删除",
-        "membership" => "项目归属变更",
-        "project" => "项目管理",
-        "version" => "新增素材版本",
-        "tag" => "标签变更",
-        _ => "整理活动",
+        "import" => tr!(language, "导入素材" => "Assets imported"),
+        "favorite" => tr!(language, "收藏变更" => "Favorites updated"),
+        "rating" => tr!(language, "评分变更" => "Rating updated"),
+        "rename" => tr!(language, "重命名素材" => "Asset renamed"),
+        "notes" => tr!(language, "备注更新" => "Notes updated"),
+        "trash" => tr!(language, "回收站变更" => "Trash updated"),
+        "purge" => tr!(language, "永久删除" => "Delete permanently"),
+        "membership" => tr!(language, "项目归属变更" => "Project membership updated"),
+        "project" => tr!(language, "项目管理" => "Project management"),
+        "version" => tr!(language, "新增素材版本" => "Asset version added"),
+        "tag" => tr!(language, "标签变更" => "Tags updated"),
+        _ => tr!(language, "整理活动" => "Organization activity"),
     }
 }

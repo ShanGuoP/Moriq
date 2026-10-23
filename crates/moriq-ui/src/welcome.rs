@@ -6,6 +6,7 @@ use iced::widget::{Row, Space, button, column, container, row, text, text_input,
 use iced::{Alignment, Length};
 impl App {
     pub(super) fn welcome(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         if !self.preferences.recent.is_empty() {
             let can_open = !self.switching && self.import.is_none() && !self.manager.busy;
             let mut cards = Row::new().spacing(20);
@@ -48,7 +49,7 @@ impl App {
                                 heading(name.clone(), 13),
                                 text(display_path(path))
                                     .size(12)
-                                    .color(ICON)
+                                    .style(crate::theme::text_color(ICON))
                                     .wrapping(text::Wrapping::Glyph),
                             ]
                             .spacing(6),
@@ -68,17 +69,16 @@ impl App {
                     column![
                         row![
                             column![
-                                heading("我的资源库", 28),
-                                muted(format!(
-                                    "{} 个资源库 · 选择一个，继续整理灵感",
+                                heading(tr!(language, "我的资源库" => "My libraries"), 28),
+                                muted(trf!(language, "{} 个资源库 · 选择一个，继续整理灵感" => "{} libraries · Choose one to continue organizing inspiration",
                                     self.preferences.recent.len()
                                 ))
                             ]
                             .spacing(9),
                             Space::new().width(Length::Fill),
-                            action("打开已有资源库", Message::Open)
+                            action(tr!(language, "打开已有资源库" => "Open an existing library"), Message::Open)
                                 .on_press_maybe(can_open.then_some(Message::Open)),
-                            action("新建资源库", Message::ShowCreate)
+                            action(tr!(language, "新建资源库" => "New library"), Message::ShowCreate)
                                 .style(primary)
                                 .on_press_maybe(can_open.then_some(Message::ShowCreate)),
                         ]
@@ -96,17 +96,24 @@ impl App {
             .into();
         }
         let mut create = button(text(if self.switching {
-            "正在打开…"
+            tr!(language, "正在打开…" => "Opening…")
         } else {
-            "选择位置并创建"
+            tr!(language, "选择位置并创建" => "Choose location and create")
         }))
         .padding([13, 24])
         .style(primary);
-        let mut open = action("打开已有资源库", Message::Open);
+        let mut open = action(
+            tr!(language, "打开已有资源库" => "Open an existing library"),
+            Message::Open,
+        );
         if !self.switching {
             create = create.on_press(Message::Create);
         } else {
-            open = button(text("打开已有资源库")).padding(13).style(secondary);
+            open = button(text(
+                tr!(language, "打开已有资源库" => "Open an existing library"),
+            ))
+            .padding(13)
+            .style(secondary);
         }
         container(
             column![
@@ -114,17 +121,17 @@ impl App {
                     .center_x(100)
                     .center_y(100),
                 Space::new().height(12),
-                heading("每一份灵感，都有归处。", 32),
-                muted("欢迎使用 Moriq Space。创建一个资源库，开始整理你的照片与创意。"),
+                heading(tr!(language, "每一份灵感，都有归处。" => "A home for every inspiration."), 32),
+                muted(tr!(language, "欢迎使用 Moriq Space。创建一个资源库，开始整理你的照片与创意。" => "Welcome to Moriq Space. Create a library to organize your photos and ideas.")),
                 Space::new().height(12),
                 container(
                     column![
-                        heading("创建你的第一个资源库", 18),
-                        text_input("资源库名称", &self.name)
+                        heading(tr!(language, "创建你的第一个资源库" => "Create your first library"), 18),
+                        text_input(tr!(language, "资源库名称" => "Library name"), &self.name)
                             .on_input(Message::Name)
                             .padding(13)
                             .style(input),
-                        muted("选择保存位置后，原片、标签和项目将一起保存在 .moriq 文件夹中。"),
+                        muted(tr!(language, "选择保存位置后，原片、标签和项目将一起保存在 .moriq 文件夹中。" => "After choosing a location, originals, tags and projects are stored together in a .moriq folder.")),
                         row![create, open].spacing(10),
                     ]
                     .spacing(18)
@@ -132,7 +139,7 @@ impl App {
                 .padding(28)
                 .width(580)
                 .style(panel),
-                muted("本地存储  ·  原片不覆盖  ·  AI 模型按需安装"),
+                muted(tr!(language, "本地存储  ·  原片不覆盖  ·  AI 模型按需安装" => "Local storage  ·  Originals preserved  ·  AI models on demand")),
             ]
             .spacing(16)
             .align_x(Alignment::Center),

@@ -98,6 +98,7 @@ fn budget(rule: &Rule, depth: usize, count: &mut usize) -> bool {
 }
 impl App {
     pub(super) fn rule_message(&mut self, event: RuleMessage) -> Task<Message> {
+        let language = self.preferences.language;
         use RuleMessage::*;
         match event {
             Open => {
@@ -201,23 +202,24 @@ impl App {
                 if budget(&draft, 0, &mut 0) {
                     self.manager.rule_draft = Some(draft);
                 } else {
-                    self.error = Some("组合规则最多 8 层、64 个条件及分组".into());
+                    self.error = Some(tr!(language, "组合规则最多 8 层、64 个条件及分组" => "Combined rules support up to 8 levels and 64 conditions or groups").into());
                 }
             }
         }
         Task::none()
     }
     pub(super) fn rules_panel(&self) -> Element<'_, Message> {
-        let mut view=Column::new().spacing(12).push(muted("这些组合条件与现有筛选同时生效。应用后可保存为智能集合；地点条件仅检查手动补充的地点。"));
+        let language = self.preferences.language;
+        let mut view=Column::new().spacing(12).push(muted(tr!(language, "这些组合条件与现有筛选同时生效。应用后可保存为智能集合；地点条件仅检查手动补充的地点。" => "Combined rules apply alongside current filters. Save them as a smart collection after applying. Location conditions check only manually added locations.")));
         if let Some(rule) = &self.manager.rule_draft {
-            view = view.push(node(rule, vec![], false));
+            view = view.push(node(language, rule, vec![], false));
         }
         view.push(
             row![
-                button("移除组合条件")
+                button(tr!(language, "移除组合条件" => "Remove combined rules"))
                     .style(secondary)
                     .on_press(Message::Rules(RuleMessage::Clear)),
-                button("应用条件")
+                button(tr!(language, "应用条件" => "Apply rules"))
                     .style(secondary)
                     .on_press(Message::Rules(RuleMessage::Apply))
             ]
@@ -226,7 +228,12 @@ impl App {
         .into()
     }
 }
-fn node(rule: &Rule, path: Vec<usize>, removable: bool) -> Element<'_, Message> {
+fn node(
+    language: Language,
+    rule: &Rule,
+    path: Vec<usize>,
+    removable: bool,
+) -> Element<'_, Message> {
     let (inner, negated, inner_path) = if let Rule::Not(inner) = rule {
         let mut p = path.clone();
         p.push(0);
@@ -249,17 +256,17 @@ fn node(rule: &Rule, path: Vec<usize>, removable: bool) -> Element<'_, Message> 
     let set = inner_path.clone();
     let negate = path.clone();
     let mut header = row![
-        choice(Kind::ALL.to_vec(), Some(kind), move |k| Message::Rules(
-            RuleMessage::Set(set.clone(), k)
-        )),
+        localized_choice(language, Kind::ALL.to_vec(), Some(kind), move |k| {
+            Message::Rules(RuleMessage::Set(set.clone(), k))
+        }),
         checkbox(negated)
-            .label("排除")
+            .label(tr!(language, "排除" => "Exclude"))
             .on_toggle(move |_| Message::Rules(RuleMessage::Negate(negate.clone())))
     ]
     .spacing(10);
     if removable {
         header = header.push(
-            button("移除")
+            button(tr!(language, "移除" => "Remove"))
                 .style(secondary)
                 .on_press(Message::Rules(RuleMessage::Remove(path))),
         );
@@ -270,17 +277,17 @@ fn node(rule: &Rule, path: Vec<usize>, removable: bool) -> Element<'_, Message> 
             for (i, item) in items.iter().enumerate() {
                 let mut p = inner_path.clone();
                 p.push(i);
-                view = view.push(node(item, p, items.len() > 1));
+                view = view.push(node(language, item, p, items.len() > 1));
             }
             view = view.push(
-                button("添加条件 / 分组")
+                button(tr!(language, "添加条件 / 分组" => "Add condition / group"))
                     .style(secondary)
                     .on_press(Message::Rules(RuleMessage::Add(inner_path))),
             );
         }
         Rule::Name(s) | Rule::Notes(s) | Rule::Tag(s) | Rule::Format(s) => {
             view = view.push(
-                text_input("输入条件", s)
+                text_input(tr!(language, "输入条件" => "Enter condition"), s)
                     .style(input)
                     .on_input(move |v| Message::Rules(RuleMessage::Text(inner_path.clone(), v))),
             )
@@ -292,7 +299,7 @@ fn node(rule: &Rule, path: Vec<usize>, removable: bool) -> Element<'_, Message> 
                     .on_input(move |v| Message::Rules(RuleMessage::Text(inner_path.clone(), v))),
             )
         }
-        Rule::Not(_) => view = view.push(node(inner, inner_path, false)),
+        Rule::Not(_) => view = view.push(node(language, inner, inner_path, false)),
         _ => {}
     }
     container(view).padding(10).into()

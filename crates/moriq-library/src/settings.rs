@@ -8,6 +8,8 @@ struct Stored {
     import: ImportPreferences,
     diagnostic_logging: bool,
     reduced_motion: bool,
+    language: Language,
+    appearance: Appearance,
 }
 #[derive(Serialize, Deserialize)]
 struct Recent {
@@ -61,6 +63,14 @@ pub fn reduced_motion(enabled: bool) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+pub fn interface(language: Language, appearance: Appearance) -> Result<UserSettings> {
+    let folder = location()?;
+    let mut prefs = load_from(&folder)?;
+    prefs.language = language;
+    prefs.appearance = appearance;
+    save_to(&folder, &prefs)?;
+    Ok(prefs)
+}
 pub fn diagnostic_logging(enabled: bool) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -99,6 +109,8 @@ fn load_from(folder: &Path) -> Result<UserSettings> {
         recent,
         diagnostic_logging: stored.diagnostic_logging,
         reduced_motion: stored.reduced_motion,
+        language: stored.language,
+        appearance: stored.appearance,
         import: stored
             .import
             .validated()
@@ -125,6 +137,8 @@ fn save_to(folder: &Path, prefs: &UserSettings) -> Result<()> {
         recent,
         diagnostic_logging: prefs.diagnostic_logging,
         reduced_motion: prefs.reduced_motion,
+        language: prefs.language,
+        appearance: prefs.appearance,
         import: prefs.import,
     };
     let serialized = toml::to_string_pretty(&stored).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -177,6 +191,33 @@ pub fn card_cover(root: &Path) -> Result<Option<Pixels>> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn interface_settings_migrate_old_files_and_preserve_other_preferences() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("settings.toml"),
+            "diagnostic_logging = true\nreduced_motion = true\n[import]\nworkers = 3\nmemory_mib = 1024\n").unwrap();
+        let mut prefs = load_from(folder.path()).unwrap();
+        assert_eq!(prefs.language, Language::SimplifiedChinese);
+        assert_eq!(prefs.appearance, Appearance::Light);
+        prefs.language = Language::English;
+        prefs.appearance = Appearance::Dark;
+        prefs
+            .recent
+            .push(("收藏".into(), folder.path().join("我的素材.moriq")));
+        save_to(folder.path(), &prefs).unwrap();
+        let mut reopened = load_from(folder.path()).unwrap();
+        assert_eq!(reopened.language, Language::English);
+        assert_eq!(reopened.appearance, Appearance::Dark);
+        assert_eq!(reopened.recent, prefs.recent);
+        assert_eq!(reopened.import, prefs.import);
+        assert!(reopened.diagnostic_logging);
+        assert!(reopened.reduced_motion);
+        reopened.ai.use_mirror = false;
+        save_to(folder.path(), &reopened).unwrap();
+        let final_prefs = load_from(folder.path()).unwrap();
+        assert_eq!(final_prefs.language, Language::English);
+        assert_eq!(final_prefs.appearance, Appearance::Dark);
+    }
     #[test]
     fn registry_retains_more_than_twelve_libraries_and_same_names() {
         let dir = tempfile::tempdir().unwrap();
@@ -247,6 +288,8 @@ mod tests {
                 workers: 12,
                 memory_mib: 2048,
             },
+            language: Language::English,
+            appearance: Appearance::Dark,
         };
         save_to(dir.path(), &prefs).unwrap();
         let loaded = load_from(dir.path()).unwrap();
@@ -254,6 +297,8 @@ mod tests {
         assert_eq!(loaded.recent, prefs.recent);
         assert!(loaded.diagnostic_logging);
         assert_eq!(loaded.import, prefs.import);
+        assert_eq!(loaded.language, prefs.language);
+        assert_eq!(loaded.appearance, prefs.appearance);
         fs::write(dir.path().join("settings.toml"), "[broken").unwrap();
         assert!(load_from(dir.path()).is_err());
         assert_eq!(

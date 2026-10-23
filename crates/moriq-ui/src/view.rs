@@ -1,6 +1,6 @@
 use super::*;
-use crate::components::choice as pick_list;
 use crate::components::grouped_number as number;
+use crate::components::localized_choice as pick_list;
 use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
@@ -21,6 +21,7 @@ impl App {
         }
     }
     pub(super) fn shell(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let content = match self.content_screen() {
             None => self.welcome(),
             Some(Screen::Overview) => self.overview(),
@@ -42,20 +43,25 @@ impl App {
             container(Space::new())
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .style(move |_| container::Style {
-                    background: Some(Color::from_rgba(1.0, 1.0, 1.0, alpha * 0.14).into()),
+                .style(move |theme: &Theme| container::Style {
+                    background: Some(
+                        Color {
+                            a: alpha * 0.14,
+                            ..theme.palette().background
+                        }
+                        .into()
+                    ),
                     ..Default::default()
                 })
         ]
         .into();
         let mut body = column![self.header(), content].height(Length::Fill);
         let status = if let Some(import) = &self.import {
-            format!(
-                "{} {} / {} · 解码 {} / 上限 {} · 峰值 {} · 等待内存 {}",
+            trf!(language, "{} {} / {} · 解码 {} / 上限 {} · 峰值 {} · 等待内存 {}" => "{} {} / {} · Decoding {} / limit {} · Peak {} · Waiting for memory {}",
                 if import.scanning.load(Ordering::Relaxed) {
-                    "扫描并导入"
+                    tr!(language, "扫描并导入" => "Scanning and importing")
                 } else {
-                    "正在导入"
+                    tr!(language, "正在导入" => "Importing")
                 },
                 import.finished.load(Ordering::Relaxed),
                 import.discovered.load(Ordering::Relaxed).max(import.total),
@@ -65,54 +71,65 @@ impl App {
                 import.waiting_memory.load(Ordering::Relaxed)
             )
         } else if let Some(control) = &self.manager.maintenance {
-            format!(
-                "{} · {} / {} 个版本",
+            trf!(language, "{} · {} / {} 个版本" => "{} · {} / {} versions",
                 if control.cancel.load(Ordering::Relaxed) {
-                    "正在停止检查"
+                    tr!(language, "正在停止检查" => "Stopping check")
                 } else {
-                    "正在检查资源库"
+                    tr!(language, "正在检查资源库" => "Checking library")
                 },
                 control.finished.load(Ordering::Relaxed),
                 control.total.load(Ordering::Relaxed)
             )
         } else if let Some(control) = &self.storage.control {
-            format!(
-                "空间统计 · 已检查 {} 个文件",
+            trf!(language, "空间统计 · 已检查 {} 个文件" => "Storage calculation · {} files checked",
                 control.files.load(Ordering::Relaxed)
             )
         } else if self.loading {
-            "正在读取素材…".into()
+            tr!(language, "正在读取素材…" => "Loading assets…").into()
         } else {
-            self.status.clone()
+            crate::i18n::status(language, &self.status).to_owned()
         };
         let mut footer = row![muted(status), Space::new().width(Length::Fill)];
         if !self.manager.organizer.errors.is_empty() {
             footer = footer.push(
                 action(
-                    "部分信息读取失败 · 查看详情",
+                    tr!(language, "部分信息读取失败 · 查看详情" => "Some information could not be loaded · View details"),
                     Message::Manage(ManageMessage::Menu),
                 )
                 .padding([4, 10]),
             );
         }
         if self.import.is_some() {
-            footer = footer.push(action("停止导入", Message::CancelImport).padding([4, 10]));
+            footer = footer.push(
+                action(
+                    tr!(language, "停止导入" => "Stop import"),
+                    Message::CancelImport,
+                )
+                .padding([4, 10]),
+            );
         }
         if self.manager.maintenance.is_some() {
             footer = footer.push(
-                action("查看检查进度", Message::Manage(ManageMessage::Maintenance))
-                    .padding([4, 10]),
+                action(
+                    tr!(language, "查看检查进度" => "View check progress"),
+                    Message::Manage(ManageMessage::Maintenance),
+                )
+                .padding([4, 10]),
             );
         }
         if self.storage.control.is_some() {
             footer = footer.push(
-                action("查看空间统计", Message::Storage(StorageMessage::Open)).padding([4, 10]),
+                action(
+                    tr!(language, "查看空间统计" => "View storage calculation"),
+                    Message::Storage(StorageMessage::Open),
+                )
+                .padding([4, 10]),
             );
         }
         if self.screen == Screen::Assets {
-            footer = footer
-                .push(icon(Icon::Maximize, 13.0, MUTED))
-                .push(muted(format!("共 {} 项", self.total)));
+            footer = footer.push(icon(Icon::Maximize, 13.0, MUTED)).push(muted(
+                trf!(language, "共 {} 项" => "{} items in total", self.total),
+            ));
         }
         {
             body = body.push(
@@ -124,12 +141,12 @@ impl App {
             );
         }
         let base = container(row![self.sidebar(), body].height(Length::Fill))
-            .style(|_| container::Style {
-                background: Some(Color::WHITE.into()),
-                text_color: Some(TEXT),
+            .style(|theme| container::Style {
+                background: Some(crate::theme::adaptive(theme, Color::WHITE).into()),
+                text_color: Some(crate::theme::adaptive(theme, TEXT)),
                 border: Border {
                     radius: 0.0.into(),
-                    color: Color::WHITE,
+                    color: crate::theme::adaptive(theme, Color::WHITE),
                     width: 0.0,
                 },
                 ..Default::default()
@@ -139,11 +156,13 @@ impl App {
         let result: Element<'_, Message> = if let Some(dialog) = self.dialog {
             let project = dialog == Dialog::CreateProject;
             let title = match dialog {
-                Dialog::CreateLibrary => "新建资源库",
-                Dialog::CreateProject => "新建项目",
-                Dialog::RenameLibrary => "编辑资源库信息",
-                Dialog::RenameAsset => "重命名素材",
-                Dialog::Settings => "设置",
+                Dialog::CreateLibrary => tr!(language, "新建资源库" => "New library"),
+                Dialog::CreateProject => tr!(language, "新建项目" => "New project"),
+                Dialog::RenameLibrary => {
+                    tr!(language, "编辑资源库信息" => "Edit library information")
+                }
+                Dialog::RenameAsset => tr!(language, "重命名素材" => "Asset renamed"),
+                Dialog::Settings => tr!(language, "设置" => "Settings"),
             };
             let commit = match dialog {
                 Dialog::CreateLibrary => Message::Create,
@@ -153,14 +172,26 @@ impl App {
                 Dialog::Settings => Message::Noop,
             };
             let description = match dialog {
-                Dialog::CreateLibrary => "原图、标签和项目将一起保存在你选择的 .moriq 文件夹中。",
-                Dialog::CreateProject => "项目用于归类素材，原图仍保存在资源库中。",
-                Dialog::RenameLibrary => "修改资源库的显示名称，托管文件的位置保持不变。",
-                Dialog::RenameAsset => "修改素材的显示名称，保留原片与所有版本。",
+                Dialog::CreateLibrary => {
+                    tr!(language, "原图、标签和项目将一起保存在你选择的 .moriq 文件夹中。" => "Originals, tags and projects are stored together in the .moriq folder you choose.")
+                }
+                Dialog::CreateProject => {
+                    tr!(language, "项目用于归类素材，原图仍保存在资源库中。" => "Projects organize assets. Originals remain in the library.")
+                }
+                Dialog::RenameLibrary => {
+                    tr!(language, "修改资源库的显示名称，托管文件的位置保持不变。" => "Change the display name of this library. Managed files stay in their current location.")
+                }
+                Dialog::RenameAsset => {
+                    tr!(language, "修改素材的显示名称，保留原片与所有版本。" => "Change the display name of this asset while preserving its original and all versions.")
+                }
                 Dialog::Settings => "",
             };
             let entry = text_input(
-                if project { "项目名称" } else { "名称" },
+                if project {
+                    tr!(language, "项目名称" => "Project name")
+                } else {
+                    tr!(language, "名称" => "Name")
+                },
                 if project {
                     &self.project_name
                 } else {
@@ -178,9 +209,9 @@ impl App {
             .size(14);
             let profile: Element<'_, Message> = if dialog == Dialog::RenameLibrary {
                 column![
-                    muted("描述"),
+                    muted(tr!(language, "描述" => "Description")),
                     text_input(
-                        "资源库描述",
+                        tr!(language, "资源库描述" => "Library description"),
                         self.manager
                             .description_draft
                             .as_deref()
@@ -217,13 +248,13 @@ impl App {
                     entry,
                     profile,
                     row![
-                        action("取消", Message::HideCreate),
+                        action(tr!(language, "取消" => "Cancel"), Message::HideCreate),
                         Space::new().width(Length::Fill),
                         button(
                             text(if dialog == Dialog::CreateLibrary {
-                                "选择位置并创建"
+                                tr!(language, "选择位置并创建" => "Choose location and create")
                             } else {
-                                "保存"
+                                tr!(language, "保存" => "Save")
                             })
                             .size(14)
                         )
@@ -273,9 +304,13 @@ impl App {
         let result: Element<'_, Message> = if let Some(error) = &self.error {
             let toast = container(
                 row![
-                    scroll(text(error).size(12).color(Color::from_rgb8(176, 46, 46)))
-                        .height(Length::Shrink)
-                        .width(Length::Fill),
+                    scroll(
+                        text(error)
+                            .size(12)
+                            .style(crate::theme::text_color(Color::from_rgb8(176, 46, 46)))
+                    )
+                    .height(Length::Shrink)
+                    .width(Length::Fill),
                     icon_button(Icon::Close, Message::Dismiss)
                 ]
                 .spacing(12),
@@ -283,10 +318,10 @@ impl App {
             .padding(14)
             .width((self.viewport.width - 40.0).clamp(260.0, 480.0))
             .max_height(150)
-            .style(|_| container::Style {
-                background: Some(Color::WHITE.into()),
+            .style(|theme| container::Style {
+                background: Some(crate::theme::adaptive(theme, Color::WHITE).into()),
                 border: Border {
-                    color: Color::from_rgb8(244, 208, 208),
+                    color: crate::theme::adaptive(theme, Color::from_rgb8(244, 208, 208)),
                     width: 1.0,
                     radius: 8.0.into(),
                 },
@@ -321,12 +356,13 @@ impl App {
             .into()
     }
     fn header(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         // Fixed chrome slots: page-specific labels never move search or window controls.
         let search_width = (self.viewport.width - self.sidebar_width() - 668.0).clamp(160.0, 700.0);
         let search = container(
             row![
                 icon(Icon::Search, 17.0, MUTED),
-                button(text("语义").size(11))
+                button(text(tr!(language, "语义" => "Semantic")).size(11))
                     .on_press_maybe(
                         (self.screen != Screen::Models
                             && self
@@ -339,9 +375,9 @@ impl App {
                     .style(flat),
                 text_input(
                     if self.screen == Screen::Models {
-                        "搜索模型与功能说明…"
+                        tr!(language, "搜索模型与功能说明…" => "Search models and capabilities…")
                     } else {
-                        "搜索文件名、标签或备注…"
+                        tr!(language, "搜索文件名、标签或备注…" => "Search file names, tags or notes…")
                     },
                     if self.screen == Screen::Models {
                         &self.model_search
@@ -366,7 +402,7 @@ impl App {
                 container(
                     text(if cfg!(windows) { "Ctrl K" } else { "⌘ K" })
                         .size(11)
-                        .color(MUTED)
+                        .style(crate::theme::text_color(MUTED))
                 )
                 .padding([2, 6])
                 .style(sidebar)
@@ -384,6 +420,7 @@ impl App {
             && !self.manager.busy
         {
             pick_list(
+                language,
                 vec!["选择图片文件", "导入文件夹", "引用外部原片"],
                 None::<&str>,
                 |choice| match choice {
@@ -392,7 +429,7 @@ impl App {
                     _ => Message::Import,
                 },
             )
-            .placeholder("导入")
+            .placeholder(tr!(language, "导入" => "Import"))
             .width(96)
             .text_size(13)
             .padding([8, 12])
@@ -411,9 +448,9 @@ impl App {
             button(
                 container(
                     text(if self.import.is_some() {
-                        "导入中…"
+                        tr!(language, "导入中…" => "Importing…")
                     } else {
-                        "导入"
+                        tr!(language, "导入" => "Import")
                     })
                     .size(13),
                 )
@@ -432,38 +469,43 @@ impl App {
         for (kind, label, message, active) in [
             (
                 Icon::Grid,
-                "网格视图",
+                tr!(language, "网格视图" => "Grid view"),
                 Message::List(false),
                 self.screen == Screen::Assets && !self.list,
             ),
             (
                 Icon::List,
-                "列表视图",
+                tr!(language, "列表视图" => "List view"),
                 Message::List(true),
                 self.screen == Screen::Assets && self.list,
             ),
             (
                 Icon::Filter,
-                "筛选素材",
+                tr!(language, "筛选素材" => "Filter assets"),
                 Message::Manage(ManageMessage::Filters),
                 false,
             ),
             (
                 Icon::More,
-                "资源库工具",
+                tr!(language, "资源库工具" => "Library tools"),
                 Message::Manage(ManageMessage::Menu),
                 false,
             ),
             (
                 Icon::Collection,
-                "智能集合",
+                tr!(language, "智能集合" => "Smart collections"),
                 Message::Manage(ManageMessage::Collections),
                 false,
             ),
-            (Icon::Settings, "设置", Message::ShowSettings, false),
+            (
+                Icon::Settings,
+                tr!(language, "设置" => "Settings"),
+                Message::ShowSettings,
+                false,
+            ),
             (
                 Icon::Bell,
-                "通知",
+                tr!(language, "通知" => "Notifications"),
                 Message::Journal(JournalMessage::Open(true)),
                 self.journal.notifications.unread > 0,
             ),
@@ -506,7 +548,10 @@ impl App {
                         let mut style = flat(theme, status);
                         if matches!(kind, Icon::Close) && matches!(status, button::Status::Hovered)
                         {
-                            style.background = Some(Color::from_rgb8(255, 224, 225).into());
+                            style.background = Some(
+                                crate::theme::adaptive(theme, Color::from_rgb8(255, 224, 225))
+                                    .into(),
+                            );
                         }
                         style
                     }),
@@ -557,8 +602,8 @@ impl App {
         .padding([0, 20])
         .center_y(self.titlebar_height())
         .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(Color::WHITE.into()),
+        .style(|theme| container::Style {
+            background: Some(crate::theme::adaptive(theme, Color::WHITE).into()),
             ..Default::default()
         })
         .into()
@@ -581,19 +626,21 @@ impl App {
         };
         let mut line = row![
             icon(kind, 18.0, color),
-            text(label.to_string()).size(13).color(if unavailable {
-                MUTED
-            } else if active {
-                BLUE
-            } else {
-                TEXT
-            }),
+            text(label.to_string())
+                .size(13)
+                .style(crate::theme::text_color(if unavailable {
+                    MUTED
+                } else if active {
+                    BLUE
+                } else {
+                    TEXT
+                })),
             Space::new().width(Length::Fill)
         ]
         .spacing(11)
         .align_y(Alignment::Center);
         if let Some(count) = count {
-            line = line.push(text(count).size(11).color(MUTED));
+            line = line.push(text(count).size(11).style(crate::theme::text_color(MUTED)));
         }
         let reason = if unavailable {
             match &message {
@@ -607,7 +654,7 @@ impl App {
             .on_press_maybe((!unavailable).then_some(message))
             .width(Length::Fill)
             .padding([6, 12])
-            .style(theme::nav(active));
+            .style(theme::liquid_nav(active));
         if let Some(reason) = reason {
             iced::widget::tooltip(
                 control,
@@ -620,6 +667,7 @@ impl App {
         }
     }
     fn sidebar(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let logo = container(
             mouse_area(
                 row![icon(Icon::Logo, 34.0, BLUE), heading("Moriq Space", 18)]
@@ -632,35 +680,41 @@ impl App {
         .width(Length::Fill)
         .padding([0, 22])
         .align_y(Alignment::Center);
-        let mut content = column![
-            self.nav_row(
-                Icon::Folder,
-                "资源库",
-                None,
-                Message::ShowLibraries,
-                self.screen != Screen::Models
-            ),
-            self.nav_row(
-                Icon::Cube,
-                "AI 模型",
-                None,
-                Message::Navigate(2),
-                self.screen == Screen::Models
-            )
-        ]
-        .spacing(5);
+        let navigation = crate::liquid::selection(
+            column![
+                self.nav_row(
+                    Icon::Folder,
+                    tr!(language, "资源库" => "Library"),
+                    None,
+                    Message::ShowLibraries,
+                    self.screen != Screen::Models
+                ),
+                self.nav_row(
+                    Icon::Cube,
+                    tr!(language, "AI 模型" => "AI Models"),
+                    None,
+                    Message::Navigate(2),
+                    self.screen == Screen::Models
+                )
+            ]
+            .spacing(5),
+            Some(usize::from(self.screen == Screen::Models)),
+            crate::liquid::Treatment::Selection,
+            self.preferences.reduced_motion,
+        );
+        let mut content = column![navigation];
         content = content
             .push(Space::new().height(if self.screen == Screen::Assets { 6 } else { 13 }))
             .push(separator())
             .push(Space::new().height(if self.screen == Screen::Assets { 3 } else { 10 }));
         if self.screen == Screen::Models {
             content = content
-                .push(heading("资源库", 13))
+                .push(heading(tr!(language, "资源库" => "Library"), 13))
                 .push(Space::new().height(6));
             let can_switch = !self.switching && self.import.is_none() && !self.manager.busy;
             let libraries = self.model_libraries();
             if libraries.is_empty() {
-                content = content.push(muted("暂无资源库，打开后会显示在这里"));
+                content = content.push(muted(tr!(language, "暂无资源库，打开后会显示在这里" => "No libraries yet. Open a library to see it here.")));
             }
             for (name, path, active) in libraries {
                 let cover = photo(self.library_covers.get(&path), Length::Fixed(34.0), 34.0);
@@ -675,10 +729,14 @@ impl App {
                                     .width(Length::Fill)
                                     .height(18)
                                     .wrapping(text::Wrapping::None)
-                                    .color(if active { BLUE } else { TEXT }),
+                                    .style(crate::theme::text_color(if active {
+                                        BLUE
+                                    } else {
+                                        TEXT
+                                    })),
                                 text(compact(&location, 21))
                                     .size(10)
-                                    .color(MUTED)
+                                    .style(crate::theme::text_color(MUTED))
                                     .width(Length::Fill)
                                     .height(14)
                                     .wrapping(text::Wrapping::None),
@@ -688,7 +746,13 @@ impl App {
                         )
                         .width(Length::Fill)
                         .clip(true),
-                        text(if active { "当前" } else { "" }).size(10).color(BLUE)
+                        text(if active {
+                            tr!(language, "当前" => "Current")
+                        } else {
+                            ""
+                        })
+                        .size(10)
+                        .style(crate::theme::text_color(BLUE))
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
@@ -708,7 +772,7 @@ impl App {
                                 heading(name, 13),
                                 text(display_path(&path))
                                     .size(12)
-                                    .color(ICON)
+                                    .style(crate::theme::text_color(ICON))
                                     .wrapping(text::Wrapping::Glyph)
                             ]
                             .spacing(6),
@@ -724,13 +788,13 @@ impl App {
             }
             content = content
                 .push(
-                    action("打开其他资源库…", Message::Open)
+                    action(tr!(language, "打开其他资源库…" => "Open another library…"), Message::Open)
                         .on_press_maybe(can_switch.then_some(Message::Open)),
                 )
                 .push(muted(if self.switching {
-                    "正在切换资源库…"
+                    tr!(language, "正在切换资源库…" => "Switching libraries…")
                 } else {
-                    "模型安装与设置全局可用"
+                    tr!(language, "模型安装与设置全局可用" => "Model installation and settings are available globally")
                 }))
                 .push(Space::new().height(10))
                 .push(separator())
@@ -749,7 +813,7 @@ impl App {
             content = content
                 .push(
                     row![
-                        heading("我的资源库", 13),
+                        heading(tr!(language, "我的资源库" => "My libraries"), 13),
                         Space::new().width(Length::Fill),
                         icon_button(Icon::More, Message::Open)
                     ]
@@ -759,7 +823,9 @@ impl App {
                     button(
                         row![
                             icon(Icon::Plus, 17.0, BLUE),
-                            text("新建资源库").size(13).color(BLUE)
+                            text(tr!(language, "新建资源库" => "New library"))
+                                .size(13)
+                                .style(crate::theme::text_color(BLUE))
                         ]
                         .spacing(7)
                         .align_y(Alignment::Center),
@@ -772,7 +838,6 @@ impl App {
             if let Some(library) = &self.library {
                 let name = &library.info.name;
                 let count = library.info.count;
-
                 let thumbnail = self.tiles.first().and_then(|tile| tile.handle.as_ref());
                 content = content.push(
                     button(
@@ -780,7 +845,7 @@ impl App {
                             photo(thumbnail, Length::Fixed(48.0), 48.0),
                             column![
                                 heading(format!("{name}.moriq"), 13),
-                                muted(format!("{} 张", number(count)))
+                                muted(trf!(language, "{} 张" => "{} photos", number(count)))
                             ]
                             .spacing(6)
                         ]
@@ -794,18 +859,24 @@ impl App {
                 );
             }
             content = content.push(
-                button(row![icon(Icon::Folder, 16.0, MUTED), muted("打开已有资源库…")].spacing(10))
-                    .on_press(Message::Open)
-                    .padding(10)
-                    .style(flat),
+                button(
+                    row![
+                        icon(Icon::Folder, 16.0, MUTED),
+                        muted(tr!(language, "打开已有资源库…" => "Open an existing library…"))
+                    ]
+                    .spacing(10),
+                )
+                .on_press(Message::Open)
+                .padding(10)
+                .style(flat),
             );
         } else if self.library.is_some() {
             content = content.push(
                 row![
                     muted(if self.screen == Screen::Models {
-                        "我的项目"
+                        tr!(language, "我的项目" => "My projects")
                     } else {
-                        "项目"
+                        tr!(language, "项目" => "Projects")
                     }),
                     Space::new().width(Length::Fill),
                     icon_button(Icon::Plus, Message::ShowProject)
@@ -828,7 +899,9 @@ impl App {
                             text(manage::project_label(&library.info.projects, project.id))
                                 .size(13),
                             Space::new().width(Length::Fill),
-                            text(number(project.count)).size(11).color(MUTED)
+                            text(number(project.count))
+                                .size(11)
+                                .style(crate::theme::text_color(MUTED))
                         ]
                         .align_y(Alignment::Center)
                         .into()
@@ -836,8 +909,12 @@ impl App {
                         column![
                             text(manage::project_label(&library.info.projects, project.id))
                                 .size(13)
-                                .color(if selected { BLUE } else { TEXT }),
-                            muted(format!("{} 张", number(project.count)))
+                                .style(crate::theme::text_color(if selected {
+                                    BLUE
+                                } else {
+                                    TEXT
+                                })),
+                            muted(trf!(language, "{} 张" => "{} photos", number(project.count)))
                         ]
                         .spacing(5)
                         .into()
@@ -863,9 +940,9 @@ impl App {
                 .push(separator())
                 .push(Space::new().height(10))
                 .push(muted(if self.screen == Screen::Models {
-                    "智能集合"
+                    tr!(language, "智能集合" => "Smart collections")
                 } else {
-                    "素材库"
+                    tr!(language, "素材库" => "Assets")
                 }));
             let total = self.library.as_ref().map(|l| l.info.count).unwrap_or(0);
             let favorites = self.library.as_ref().map(|l| l.info.favorites).unwrap_or(0);
@@ -873,84 +950,94 @@ impl App {
                 vec![
                     (
                         Icon::Clock,
-                        "最近导入",
+                        tr!(language, "最近导入" => "Recently imported"),
                         self.manager.organizer.recent_count,
                         Message::Manage(ManageMessage::Builtin(0)),
                     ),
                     (
                         Icon::Tag,
-                        "未加标签",
+                        tr!(language, "未加标签" => "Untagged"),
                         self.manager.organizer.untagged_count,
                         Message::Manage(ManageMessage::Builtin(1)),
                     ),
                     (
                         Icon::Star,
-                        "高评分",
+                        tr!(language, "高评分" => "Highly rated"),
                         self.manager.organizer.high_rating_count,
                         Message::Manage(ManageMessage::Builtin(2)),
                     ),
                     (
                         Icon::Raw,
-                        "RAW 文件",
+                        tr!(language, "RAW 文件" => "RAW files"),
                         self.manager.organizer.raw_count,
                         Message::Manage(ManageMessage::Builtin(6)),
                     ),
                     (
                         Icon::Video,
-                        "视频",
+                        tr!(language, "视频" => "Video"),
                         self.manager.organizer.video_count,
-                        Message::Notice("当前尚不支持视频预览".into()),
+                        Message::Notice(tr!(language, "当前尚不支持视频预览" => "Video preview is currently unavailable").into()),
                     ),
                     (
                         Icon::Image,
-                        "截图",
+                        tr!(language, "截图" => "Screenshots"),
                         self.category_count("截图"),
                         Message::Ai(AiMessage::Category("截图".into())),
                     ),
                     (
                         Icon::Duplicate,
-                        "重复文件",
+                        tr!(language, "重复文件" => "Duplicate files"),
                         0,
-                        Message::Notice("导入时会自动跳过完全相同的图片".into()),
+                        Message::Notice(tr!(language, "导入时会自动跳过完全相同的图片" => "Identical images are automatically skipped during import").into()),
                     ),
                 ]
             } else {
                 vec![
-                    (Icon::Folder, "全部素材", total, Message::AllAssets),
+                    (
+                        Icon::Folder,
+                        tr!(language, "全部素材" => "All assets"),
+                        total,
+                        Message::AllAssets,
+                    ),
                     (
                         Icon::Clock,
-                        "最近添加",
+                        tr!(language, "最近添加" => "Recently added"),
                         self.manager.organizer.recent_count,
                         Message::Manage(ManageMessage::Builtin(0)),
                     ),
                     (
                         Icon::Edit,
-                        "最近编辑",
+                        tr!(language, "最近编辑" => "Recently edited"),
                         self.manager.organizer.edited_count,
                         Message::Manage(ManageMessage::Builtin(5)),
                     ),
-                    (Icon::Heart, "收藏夹", favorites, Message::Favorites),
+                    (
+                        Icon::Heart,
+                        tr!(language, "收藏夹" => "Favorites"),
+                        favorites,
+                        Message::Favorites,
+                    ),
                     (
                         Icon::Raw,
-                        "RAW 文件",
+                        tr!(language, "RAW 文件" => "RAW files"),
                         self.manager.organizer.raw_count,
                         Message::Manage(ManageMessage::Builtin(6)),
                     ),
                     (
                         Icon::Tag,
-                        "标签",
+                        tr!(language, "标签" => "Tags"),
                         self.manager.organizer.tags.len() as u64,
                         Message::Manage(ManageMessage::Tags),
                     ),
                     (
                         Icon::Collection,
-                        "智能集合",
+                        tr!(language, "智能集合" => "Smart collections"),
                         self.manager.organizer.collections.len() as u64,
                         Message::Manage(ManageMessage::Collections),
                     ),
                     (
                         Icon::Person,
-                        "人脸识别",
+                        tr!(language, "人脸识别" => "Face recognition"),
                         self.manager
                             .organizer
                             .people
@@ -961,13 +1048,13 @@ impl App {
                     ),
                     (
                         Icon::Video,
-                        "视频",
+                        tr!(language, "视频" => "Video"),
                         self.manager.organizer.video_count,
                         Message::Manage(ManageMessage::Builtin(7)),
                     ),
                     (
                         Icon::Unsorted,
-                        "未归类项目",
+                        tr!(language, "未归类项目" => "Without project"),
                         self.manager.organizer.unassigned_count,
                         Message::Manage(ManageMessage::Builtin(4)),
                     ),
@@ -998,52 +1085,66 @@ impl App {
                     );
                 }
             }
-            for (kind, label, count, message) in rows {
-                let displayed = if label == "全部素材"
-                    || label == "收藏夹"
-                    || [
-                        "最近添加",
-                        "最近导入",
-                        "高评分",
-                        "标签",
-                        "智能集合",
-                        "未分类",
-                        "未归类项目",
-                        "RAW 文件",
-                        "未加标签",
-                        "视频",
-                        "人脸识别",
-                    ]
-                    .contains(&label)
-                    || matches!(&message, Message::Ai(AiMessage::Category(_)))
-                {
-                    count
-                } else {
-                    0
+            let row_count = rows.len();
+            let mut navigation = column![].spacing(4);
+            let mut active_row = None;
+            for (index, (kind, label, count, message)) in rows.into_iter().enumerate() {
+                let displayed = count;
+                let active = match &message {
+                    Message::AllAssets => self.query == Query::default(),
+                    Message::Favorites => self.query.favorites_only,
+                    Message::Manage(ManageMessage::Builtin(0)) => self.query.since > 0,
+                    Message::Manage(ManageMessage::Builtin(1)) => self.query.untagged,
+                    Message::Manage(ManageMessage::Builtin(2)) => self.query.min_rating >= 4,
+                    Message::Manage(ManageMessage::Builtin(4)) => self.query.unassigned,
+                    Message::Manage(ManageMessage::Builtin(5)) => self.query.edited_since > 0,
+                    Message::Manage(ManageMessage::Builtin(6)) => {
+                        self.query.media_kind == MediaKind::Raw
+                    }
+                    Message::Manage(ManageMessage::Builtin(7)) => {
+                        self.query.media_kind == MediaKind::Video
+                    }
+                    Message::Ai(AiMessage::People) => {
+                        self.manager.panel == Some(manage::Panel::People)
+                    }
+                    Message::Ai(AiMessage::Category(category)) => self.query.category == *category,
+                    _ => false,
                 };
-                let active = (label == "全部素材" && self.query == Query::default())
-                    || (label == "收藏夹" && self.query.favorites_only)
-                    || (label == "RAW 文件" && self.query.media_kind == MediaKind::Raw)
-                    || (label == "视频" && self.query.media_kind == MediaKind::Video)
-                    || (label == "人脸识别" && self.manager.panel == Some(manage::Panel::People))
-                    || matches!(&message, Message::Ai(AiMessage::Category(category)) if self.query.category == *category);
-                content = content.push(self.nav_row(
+                let label = if matches!(&message, Message::Ai(AiMessage::Category(_))) {
+                    crate::i18n::category(language, label)
+                } else {
+                    label
+                };
+                let active = active && self.screen == Screen::Assets;
+                if active {
+                    active_row = Some(index);
+                }
+                navigation = navigation.push(self.nav_row(
                     kind,
                     label,
                     Some(number(displayed)),
                     message,
-                    active && self.screen == Screen::Assets,
+                    active,
                 ));
             }
             if self.screen == Screen::Assets {
-                content = content.push(separator()).push(self.nav_row(
+                if self.query.trash {
+                    active_row = Some(row_count + 1);
+                }
+                navigation = navigation.push(separator()).push(self.nav_row(
                     Icon::Trash,
-                    "回收站",
+                    tr!(language, "回收站" => "Trash"),
                     Some(number(self.manager.organizer.trash_count)),
                     Message::Manage(ManageMessage::Builtin(3)),
-                    false,
+                    self.query.trash,
                 ));
             }
+            content = content.push(crate::liquid::selection(
+                navigation,
+                active_row,
+                crate::liquid::Treatment::Selection,
+                self.preferences.reduced_motion,
+            ));
         }
         let mut bottom = Column::new().spacing(8);
         if self.screen == Screen::Models && self.library.is_some() {
@@ -1061,15 +1162,13 @@ impl App {
                     .girth(4)
                     .style(theme::progress),
                 )
-                .push(muted(
-                    self.storage
+                .push(muted(self.storage
                         .volume
                         .map(|(total, available)| {
-                            format!("所在卷 · 可用 {} / {}", size(available), size(total))
+                            trf!(language, "所在卷 · 可用 {} / {}" => "Volume · {} / {} available", size(available), size(total))
                         })
-                        .unwrap_or_else(|| "正在查询卷容量…".into()),
-                ))
-                .push(action("空间明细", Message::Storage(StorageMessage::Open)));
+                        .unwrap_or_else(|| tr!(language, "正在查询卷容量…" => "Checking volume capacity…").into())))
+                .push(action(tr!(language, "空间明细" => "Storage details"), Message::Storage(StorageMessage::Open)));
         }
 
         container(

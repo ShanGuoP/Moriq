@@ -118,26 +118,27 @@ impl App {
         )
     }
     pub(super) fn folders_panel(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let mut view = column![
             form_heading(
                 crate::icons::Icon::Folder,
-                "收藏分组与虚拟文件夹",
-                "分组只保存素材引用，不复制原片。每个素材可以加入多个分组。"
+                tr!(language, "收藏分组与虚拟文件夹" => "Favorite groups and virtual folders"),
+                tr!(language, "分组只保存素材引用，不复制原片。每个素材可以加入多个分组。" => "Groups store asset references without copying originals. Each asset can belong to multiple groups.")
             ),
-            text_input("分组名称 / 新名称", &self.folders.name)
+            text_input(tr!(language, "分组名称 / 新名称" => "Group name / new name"), &self.folders.name)
                 .style(crate::theme::input)
                 .padding(10)
                 .on_input(|v| Message::Folder(FolderMessage::Name(v))),
             row![
                 form_action(
                     crate::icons::Icon::Plus,
-                    "新建收藏分组",
+                    tr!(language, "新建收藏分组" => "New favorite group"),
                     Message::Folder(FolderMessage::Create(true)),
                     false
                 ),
                 form_action(
                     crate::icons::Icon::Folder,
-                    "新建虚拟文件夹",
+                    tr!(language, "新建虚拟文件夹" => "New virtual folder"),
                     Message::Folder(FolderMessage::Create(false)),
                     false
                 )
@@ -158,9 +159,9 @@ impl App {
                                 folder.name,
                                 folder.count,
                                 if folder.favorite_group {
-                                    "收藏"
+                                    tr!(language, "收藏" => "Favorite")
                                 } else {
-                                    "文件夹"
+                                    tr!(language, "文件夹" => "Folder")
                                 }
                             ),
                             Message::Folder(FolderMessage::Open(id.clone()))
@@ -171,15 +172,15 @@ impl App {
                 .push(
                     row![
                         action(
-                            "加入所选图片",
+                            tr!(language, "加入所选图片" => "Add selected images"),
                             Message::Folder(FolderMessage::Members(id.clone(), true))
                         ),
                         action(
-                            "移出所选图片",
+                            tr!(language, "移出所选图片" => "Remove selected images"),
                             Message::Folder(FolderMessage::Members(id.clone(), false))
                         ),
                         action(
-                            "以当前图片为封面",
+                            tr!(language, "以当前图片为封面" => "Use current image as cover"),
                             Message::Folder(FolderMessage::Cover(id.clone()))
                         )
                     ]
@@ -187,9 +188,12 @@ impl App {
                 )
                 .push(
                     row![
-                        action("重命名", Message::Folder(FolderMessage::Rename(id.clone()))),
                         action(
-                            "删除分组",
+                            tr!(language, "重命名" => "Rename"),
+                            Message::Folder(FolderMessage::Rename(id.clone()))
+                        ),
+                        action(
+                            tr!(language, "删除分组" => "Delete group"),
                             Message::Folder(FolderMessage::Delete(id.clone()))
                         )
                     ]

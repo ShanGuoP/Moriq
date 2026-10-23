@@ -31,16 +31,15 @@ pub struct PersonChoice {
     label: String,
 }
 impl PersonChoice {
-    fn person(p: &Person) -> Self {
+    fn person(language: Language, p: &Person) -> Self {
         let name = p.name.clone();
         let label = if name.is_empty() || name == "未命名人物" {
-            format!(
-                "未命名人物 · {} · {} 张",
+            trf!(language, "未命名人物 · {} · {} 张" => "Unnamed person · {} · {} photos",
                 &p.id[..p.id.len().min(8)],
                 p.count
             )
         } else {
-            format!("{} · {} 张", name, p.count)
+            trf!(language, "{} · {} 张" => "{} · {} photos", name, p.count)
         };
         Self {
             id: p.id.clone(),
@@ -122,6 +121,7 @@ impl App {
         entries
     }
     pub(super) fn ai_message(&mut self, event: AiMessage) -> Task<Message> {
+        let language = self.preferences.language;
         let service = self.service.clone();
         match event {
             AiMessage::PortraitLoaded(owner, request, person, result)
@@ -272,12 +272,19 @@ impl App {
                 self.ai.request = self.ai.request.wrapping_add(1);
                 let request = self.ai.request;
                 self.ai.search_generation = self.generation;
-                self.status = "正在本机计算相似度…".into();
+                self.status =
+                    tr!(language, "正在本机计算相似度…" => "Calculating similarity locally…")
+                        .into();
                 return Task::perform(
                     async move {
                         if image {
                             service
-                                .search_by_image(owner, selected.ok_or("请选择图片")?)
+                                .search_by_image(
+                                    owner,
+                                    selected.ok_or(
+                                        tr!(language, "请选择图片" => "Please select an image"),
+                                    )?,
+                                )
                                 .await
                         } else {
                             service.semantic_search(owner, text).await
@@ -298,7 +305,9 @@ impl App {
                         self.query.text.clear();
                         self.screen = Screen::Assets;
                         self.manager.panel = None;
-                        self.status = "按语义相似度排序".into();
+                        self.status =
+                            tr!(language, "按语义相似度排序" => "Sorted by semantic similarity")
+                                .into();
                         return self.reset_query();
                     }
                     Err(e) => self.error = Some(e),
@@ -366,7 +375,7 @@ impl App {
                     async move {
                         if merge {
                             service
-                                .merge_people(id, source, target.ok_or("请选择合并目标")?)
+                                .merge_people(id, source, target.ok_or(tr!(language, "请选择合并目标" => "Please select a person to merge into"))?)
                                 .await
                         } else {
                             service.rename_person(id, source, name).await
@@ -402,19 +411,20 @@ impl App {
         Task::none()
     }
     pub(super) fn refresh_people_choices(&mut self) {
+        let language = self.preferences.language;
         let people = &self.manager.organizer.people;
         self.ai.person = self
             .ai
             .person
             .as_ref()
             .and_then(|old| people.iter().find(|p| p.id == old.id))
-            .map(PersonChoice::person);
+            .map(|person| PersonChoice::person(language, person));
         self.ai.target = self
             .ai
             .target
             .as_ref()
             .and_then(|old| people.iter().find(|p| p.id == old.id))
-            .map(PersonChoice::person);
+            .map(|person| PersonChoice::person(language, person));
     }
     pub(super) fn sidebar_categories(&self) -> Vec<(String, u64)> {
         self.manager
@@ -485,6 +495,7 @@ impl App {
         }
     }
     pub(super) fn people_panel(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         use crate::{
             icons::{Icon, icon},
             theme::*,
@@ -496,7 +507,7 @@ impl App {
             .organizer
             .people
             .iter()
-            .map(PersonChoice::person)
+            .map(|person| PersonChoice::person(language, person))
             .collect();
         let can_rename = self.ai.person.is_some() && !self.ai.person_name.trim().is_empty();
         let can_merge = self
@@ -510,21 +521,21 @@ impl App {
                 column![
                     form_heading(
                         Icon::Person,
-                        "修改人物名称",
-                        "选择一个已识别的人物并设置新的名称。"
+                        tr!(language, "修改人物名称" => "Rename person"),
+                        tr!(language, "选择一个已识别的人物并设置新的名称。" => "Select a recognized person and enter a new name.")
                     ),
                     choice(choices.clone(), self.ai.person.clone(), |p| Message::Ai(
                         AiMessage::Person(p)
                     ))
-                    .placeholder("选择人物")
+                    .placeholder(tr!(language, "选择人物" => "Select person"))
                     .width(Length::Fill),
                     row![
-                        text_input("人物名称", &self.ai.person_name)
+                        text_input(tr!(language, "人物名称" => "Person name"), &self.ai.person_name)
                             .padding(11)
                             .style(input)
                             .on_input(|v| Message::Ai(AiMessage::Name(v)))
                             .width(Length::Fill),
-                        form_action(Icon::Save, "保存名称", Message::Ai(AiMessage::Rename), true)
+                        form_action(Icon::Save, tr!(language, "保存名称" => "Save name"), Message::Ai(AiMessage::Rename), true)
                             .on_press_maybe(can_rename.then_some(Message::Ai(AiMessage::Rename)))
                     ]
                     .spacing(12)
@@ -536,18 +547,18 @@ impl App {
                 column![
                     form_heading(
                         Icon::Network,
-                        "合并人物",
-                        "将当前选中的人物合并到另一个人物下，统一其所有照片。"
+                        tr!(language, "合并人物" => "Merge people"),
+                        tr!(language, "将当前选中的人物合并到另一个人物下，统一其所有照片。" => "Merge the selected person into another person to group their photos together.")
                     ),
                     row![
                         choice(choices, self.ai.target.clone(), |p| Message::Ai(
                             AiMessage::Target(p)
                         ))
-                        .placeholder("合并到人物")
+                        .placeholder(tr!(language, "合并到人物" => "Merge into"))
                         .width(Length::Fill),
                         form_action(
                             Icon::Network,
-                            "合并到所选人物",
+                            tr!(language, "合并到所选人物" => "Merge into selected person"),
                             Message::Ai(AiMessage::Merge),
                             false
                         )
@@ -560,7 +571,7 @@ impl App {
             ),
             row![
                 icon(Icon::Person, 20.0, MUTED),
-                heading("已识别的人物", 15),
+                heading(tr!(language, "已识别的人物" => "Recognized people"), 15),
                 chip(self.manager.organizer.people.len().to_string(), ICON),
                 Space::new().width(Length::Fill)
             ]
@@ -570,7 +581,7 @@ impl App {
         .spacing(18);
         if self.manager.organizer.people.is_empty() {
             view = view.push(muted(
-                "尚未识别到人物。请先在 AI 模型页安装人脸模型，并运行人脸分析。",
+                tr!(language, "尚未识别到人物。请先在 AI 模型页安装人脸模型，并运行人脸分析。" => "No people recognized yet. Install the face model on the AI Models page and run face analysis."),
             ));
         }
         for person in &self.manager.organizer.people {
@@ -595,7 +606,7 @@ impl App {
                         column![
                             heading(
                                 if person.name.is_empty() || person.name == "未命名人物" {
-                                    format!("未命名人物 · {}", &person.id[..person.id.len().min(8)])
+                                    trf!(language, "未命名人物 · {}" => "Unnamed person · {}", &person.id[..person.id.len().min(8)])
                                 } else {
                                     person.name.clone()
                                 },
@@ -603,7 +614,7 @@ impl App {
                             ),
                             row![
                                 icon(Icon::Image, 14.0, MUTED),
-                                muted(format!("{} 张", person.count))
+                                muted(trf!(language, "{} 张" => "{} photos", person.count))
                             ]
                             .spacing(8)
                         ]
@@ -629,13 +640,18 @@ impl App {
         view.into()
     }
     pub(super) fn ai_details(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         use crate::icons::Icon;
         use iced::Length;
         let video = self
             .selected
             .as_ref()
             .is_some_and(|a| moriq_app::is_video_format(&a.format));
-        let mut view = column![detail_heading(Icon::Sparkles, "AI 分析与整理")].spacing(12);
+        let mut view = column![detail_heading(
+            Icon::Sparkles,
+            tr!(language, "AI 分析与整理" => "AI analysis and organization")
+        )]
+        .spacing(12);
         if !self.manager.details.ai_caption.is_empty() {
             view = view.push(muted(self.manager.details.ai_caption.clone()));
         }
@@ -644,14 +660,14 @@ impl App {
         }
         if self.manager.details.ai_caption.is_empty() && self.manager.details.ocr.is_empty() {
             view = view.push(muted(if video {
-                "视频支持人工分类，图片识别与相似搜索适用于照片。"
+                tr!(language, "视频支持人工分类，图片识别与相似搜索适用于照片。" => "Videos support manual categories. Image recognition and similarity search apply to photos.")
             } else {
-                "暂无识别描述，可在 AI 模型页运行分析。"
+                tr!(language, "暂无识别描述，可在 AI 模型页运行分析。" => "No description yet. Run analysis on the AI Models page.")
             }));
         }
         view = view
             .push(
-                text_input("人工分类（可批量修改）", &self.ai.category)
+                text_input(tr!(language, "人工分类（可批量修改）" => "Manual category (supports batch editing)"), &self.ai.category)
                     .style(crate::theme::input)
                     .padding(10)
                     .size(12)
@@ -660,7 +676,7 @@ impl App {
             .push(
                 form_action(
                     Icon::Save,
-                    "保存分类",
+                    tr!(language, "保存分类" => "Save category"),
                     Message::Ai(AiMessage::SaveCategory),
                     true,
                 )
@@ -671,7 +687,7 @@ impl App {
                 .push(
                     form_action(
                         Icon::Search,
-                        "以此图搜索相似图片",
+                        tr!(language, "以此图搜索相似图片" => "Find similar images"),
                         Message::Ai(AiMessage::ImageSearch),
                         false,
                     )
@@ -680,7 +696,7 @@ impl App {
                 .push(
                     form_action(
                         Icon::Person,
-                        "管理人物",
+                        tr!(language, "管理人物" => "Manage people"),
                         Message::Ai(AiMessage::People),
                         false,
                     )
@@ -692,15 +708,14 @@ impl App {
             .organizer
             .people
             .iter()
-            .map(PersonChoice::person)
+            .map(|person| PersonChoice::person(language, person))
             .collect();
         for face in &self.manager.details.faces {
             let face_id = face.id.clone();
             view = view
-                .push(muted(format!(
-                    "人脸：{}",
+                .push(muted(trf!(language, "人脸：{}" => "Face: {}",
                     if face.name.is_empty() {
-                        "未命名"
+                        tr!(language, "未命名" => "Unnamed")
                     } else {
                         &face.name
                     }
@@ -714,31 +729,32 @@ impl App {
                     move |p| Message::Ai(AiMessage::Assign(face_id.clone(), Some(p.id))),
                 ))
                 .push(action(
-                    "此人脸单独分组",
+                    tr!(language, "此人脸单独分组" => "Group this face separately"),
                     Message::Ai(AiMessage::Assign(face.id.clone(), None)),
                 ));
         }
         view.into()
     }
     pub(super) fn ai_recommendations(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         if self
             .selected
             .as_ref()
             .is_some_and(|a| moriq_app::is_video_format(&a.format))
         {
             return column![
-                detail_heading(crate::icons::Icon::Search, "内容相似推荐"),
-                muted("相似图片推荐适用于照片，当前素材为视频。")
+                detail_heading(crate::icons::Icon::Search, tr!(language, "内容相似推荐" => "Similar content")),
+                muted(tr!(language, "相似图片推荐适用于照片，当前素材为视频。" => "Similar image recommendations apply to photos. This asset is a video."))
             ]
             .spacing(12)
             .into();
         }
         let mut view = column![
-            heading("内容相似推荐", 14),
-            muted("根据已建立的图片内容索引推荐。"),
-            action("以此图搜索更多", Message::Ai(AiMessage::ImageSearch)),
+            heading(tr!(language, "内容相似推荐" => "Similar content"), 14),
+            muted(tr!(language, "根据已建立的图片内容索引推荐。" => "Recommendations use the existing image content index.")),
+            action(tr!(language, "以此图搜索更多" => "Find more like this"), Message::Ai(AiMessage::ImageSearch)),
             action(
-                "查找构图 / 尺寸近似",
+                tr!(language, "查找构图 / 尺寸近似" => "Find similar composition / dimensions"),
                 Message::Manage(ManageMessage::Similar)
             )
         ]
@@ -762,7 +778,7 @@ impl App {
 
         if !found {
             view = view.push(muted(
-                "暂无推荐。可在本地 AI 中安装并运行中文图片检索模型，为图库建立内容索引。",
+                tr!(language, "暂无推荐。可在本地 AI 中安装并运行中文图片检索模型，为图库建立内容索引。" => "No recommendations yet. Install and run the Chinese image search model in Local AI to index this library."),
             ));
         }
         view.into()

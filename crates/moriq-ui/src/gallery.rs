@@ -25,34 +25,35 @@ impl std::fmt::Display for TagChoice {
 }
 impl App {
     pub(super) fn assets(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         if self.preview_expanded && self.selected.is_some() {
             return self.large_preview();
         }
         let title = if self.query.media_kind == MediaKind::Raw {
-            "RAW 素材".into()
+            tr!(language, "RAW 素材" => "RAW assets").into()
         } else if self.query.media_kind == MediaKind::Video {
-            "视频素材".into()
+            tr!(language, "视频素材" => "Video assets").into()
         } else if self.query.trash {
-            "回收站".into()
+            tr!(language, "回收站" => "Trash").into()
         } else if self.query.favorites_only {
-            "收藏夹".into()
+            tr!(language, "收藏夹" => "Favorites").into()
         } else if !self.query.category.is_empty() {
-            self.query.category.clone()
+            crate::i18n::category(language, &self.query.category).to_owned()
         } else if self.query.person.is_some() {
-            "人物素材".into()
+            tr!(language, "人物素材" => "People assets").into()
         } else if let Some(project) = self.query.project {
             self.library
                 .as_ref()
                 .and_then(|library| library.info.projects.iter().find(|p| p.id == project))
                 .map(|p| p.name.clone())
-                .unwrap_or_else(|| "全部素材".into())
+                .unwrap_or_else(|| tr!(language, "全部素材" => "All assets").into())
         } else {
-            "全部素材".into()
+            tr!(language, "全部素材" => "All assets").into()
         };
         let titlebar = row![
             column![
                 heading(title, 25),
-                muted(format!("{} 张素材", number(self.total)))
+                muted(trf!(language, "{} 张素材" => "{} assets", number(self.total)))
             ]
             .spacing(4),
             Space::new().width(Length::Fill),
@@ -101,9 +102,20 @@ impl App {
                 }
                 values.push(TagChoice::More);
                 filters = filters.push(
-                    choice(values, Some(selected), Message::TagFilter)
-                        .width(112)
-                        .text_size(12),
+                    choice_labels(
+                        values,
+                        Some(selected),
+                        move |value| match value {
+                            TagChoice::All => tr!(language, "全部标签" => "All tags").into(),
+                            TagChoice::More => {
+                                tr!(language, "管理 / 更多标签…" => "Manage / more tags…").into()
+                            }
+                            TagChoice::Tag(tag) => tag.clone(),
+                        },
+                        Message::TagFilter,
+                    )
+                    .width(112)
+                    .text_size(12),
                 );
                 continue;
             }
@@ -111,20 +123,28 @@ impl App {
                 "全部类型" if self.query.media_kind == MediaKind::Raw => "RAW".into(),
                 "全部类型" if !self.query.format.is_empty() => self.query.format.to_uppercase(),
                 "全部时间" if self.query.since > 0 || self.query.before > 0 => {
-                    "已选时间".into()
+                    tr!(language, "已选时间" => "Date selected").into()
                 }
-                "评分" if self.query.min_rating > 0 => format!("≥ {} 星", self.query.min_rating),
+                "评分" if self.query.min_rating > 0 => {
+                    trf!(language, "≥ {} 星" => "≥ {} stars", self.query.min_rating)
+                }
                 "文件大小" if self.query.min_bytes > 0 || self.query.max_bytes > 0 => {
-                    "已设大小".into()
+                    tr!(language, "已设大小" => "Size selected").into()
                 }
-                "添加方式" if self.query.storage == 1 => "托管导入".into(),
-                "添加方式" if self.query.storage == 2 => "外部引用".into(),
-                _ => label.to_string(),
+                "添加方式" if self.query.storage == 1 => {
+                    tr!(language, "托管导入" => "Managed import").into()
+                }
+                "添加方式" if self.query.storage == 2 => {
+                    tr!(language, "外部引用" => "External reference").into()
+                }
+                _ => crate::i18n::option_label(language, label).to_owned(),
             };
             filters = filters.push(
                 button(
                     row![
-                        text(displayed).size(12).color(ICON),
+                        text(displayed)
+                            .size(12)
+                            .style(crate::theme::text_color(ICON)),
                         icon(Icon::Down, 12.0, ICON)
                     ]
                     .spacing(10)
@@ -139,13 +159,13 @@ impl App {
             container(
                 column![
                     icon(Icon::Image, 48.0, MUTED),
-                    heading("让灵感，在这里相遇。", 22),
+                    heading(tr!(language, "让灵感，在这里相遇。" => "A place for inspiration."), 22),
                     muted(if self.query == Query::default() {
-                        "导入一些图片，开始整理你的素材。"
+                        tr!(language, "导入一些图片，开始整理你的素材。" => "Import images to start organizing your assets.")
                     } else {
-                        "没有找到匹配的素材，试试其他关键词。"
+                        tr!(language, "没有找到匹配的素材，试试其他关键词。" => "No matching assets. Try other keywords.")
                     }),
-                    action("导入图片", Message::Import)
+                    action(tr!(language, "导入图片" => "Import images"), Message::Import)
                 ]
                 .spacing(16)
                 .align_x(Alignment::Center),
@@ -162,15 +182,14 @@ impl App {
             row![
                 action(
                     if self.manager.multiselect {
-                        "退出多选"
+                        tr!(language, "退出多选" => "Exit selection")
                     } else {
-                        "多选"
+                        tr!(language, "多选" => "Select")
                     },
                     Message::Manage(ManageMessage::ToggleMulti)
                 ),
                 action(
-                    &format!(
-                        "整理 {} 张",
+                    &trf!(language, "整理 {} 张" => "Organize {}",
                         if self.manager.multiselect {
                             self.manager.selection.len()
                         } else {
@@ -179,8 +198,14 @@ impl App {
                     ),
                     Message::Manage(ManageMessage::Organize)
                 ),
-                action("筛选与排序", Message::Manage(ManageMessage::Filters)),
-                action("保存智能集合", Message::Manage(ManageMessage::Collections)),
+                action(
+                    tr!(language, "筛选与排序" => "Filter and sort"),
+                    Message::Manage(ManageMessage::Filters)
+                ),
+                action(
+                    tr!(language, "保存智能集合" => "Save smart collection"),
+                    Message::Manage(ManageMessage::Collections)
+                ),
             ]
             .spacing(8),
         );
@@ -202,10 +227,12 @@ impl App {
                 .padding([16, 16])
                 .width(self.details_width())
                 .height(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(Color::from_rgb8(252, 253, 255).into()),
+                .style(|theme| container::Style {
+                    background: Some(
+                        crate::theme::adaptive(theme, Color::from_rgb8(252, 253, 255)).into()
+                    ),
                     border: Border {
-                        color: LINE,
+                        color: crate::theme::adaptive(theme, LINE),
                         width: 1.0,
                         radius: 0.0.into()
                     },
@@ -375,15 +402,15 @@ impl App {
                 .padding(2)
                 .height(height)
                 .width(Length::Fill)
-                .style(move |_| container::Style {
+                .style(move |theme| container::Style {
                     background: Some(Color::TRANSPARENT.into()),
                     border: Border {
                         color: if selected {
-                            BLUE
+                            crate::theme::adaptive(theme, BLUE)
                         } else {
                             Color {
                                 a: hover * 0.55,
-                                ..CONTROL_LINE
+                                ..crate::theme::adaptive(theme, CONTROL_LINE)
                             }
                         },
                         width: if selected { 1.5 } else { hover },
@@ -447,17 +474,24 @@ impl App {
             )
             .padding(6)
             .width(Length::Fill)
-            .style(move |_| container::Style {
+            .style(move |theme| container::Style {
                 background: Some(
                     if selected {
-                        PALE
+                        crate::theme::adaptive(theme, PALE)
                     } else {
-                        Color::from_rgb(1.0 - hover * 0.018, 1.0 - hover * 0.012, 1.0)
+                        crate::theme::adaptive(
+                            theme,
+                            Color::from_rgb(1.0 - hover * 0.018, 1.0 - hover * 0.012, 1.0),
+                        )
                     }
                     .into(),
                 ),
                 border: Border {
-                    color: if selected { BLUE } else { LINE },
+                    color: if selected {
+                        crate::theme::adaptive(theme, BLUE)
+                    } else {
+                        crate::theme::adaptive(theme, LINE)
+                    },
                     width: 1.0,
                     radius: 7.0.into(),
                 },
@@ -476,13 +510,14 @@ impl App {
         .into()
     }
     pub(super) fn details(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let Some(asset) = &self.selected else {
             return column![
-                heading("素材详情", 16),
+                heading(tr!(language, "素材详情" => "Asset details"), 16),
                 container(
                     column![
                         icon(Icon::Image, 36.0, MUTED),
-                        muted("选择一张图片，查看详细信息")
+                        muted(tr!(language, "选择一张图片，查看详细信息" => "Select an image to view its details"))
                     ]
                     .spacing(14)
                     .align_x(Alignment::Center)
@@ -528,7 +563,7 @@ impl App {
                     button(
                         row![
                             icon(Icon::Play, 20.0, Color::WHITE),
-                            text("播放视频").size(13)
+                            text(tr!(language, "播放视频" => "Play video")).size(13)
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center)
@@ -550,10 +585,10 @@ impl App {
             strip = strip.push(
                 button(photo(tile.handle.as_ref(), Length::Fixed(28.0), 28.0))
                     .padding(2)
-                    .style(move |_, _| button::Style {
+                    .style(move |theme, _| button::Style {
                         border: Border {
                             color: if tile.asset.id == asset.id {
-                                BLUE
+                                crate::theme::adaptive(theme, BLUE)
                             } else {
                                 Color::TRANSPARENT
                             },
@@ -566,9 +601,14 @@ impl App {
             );
         }
         let mut tabs = Row::new().spacing(8);
-        for (tab, label) in ["基本信息", "EXIF 信息", "AI 识别", "相似推荐"]
-            .iter()
-            .enumerate()
+        for (tab, label) in [
+            tr!(language, "基本信息" => "General"),
+            tr!(language, "EXIF 信息" => "EXIF"),
+            tr!(language, "AI 识别" => "AI recognition"),
+            tr!(language, "相似推荐" => "Similar images"),
+        ]
+        .iter()
+        .enumerate()
         {
             let active = self.detail_tab == tab as u8;
             tabs = tabs.push(
@@ -576,15 +616,8 @@ impl App {
                     column![
                         text(*label)
                             .size(11)
-                            .color(if active { TEXT } else { MUTED }),
-                        container(Space::new().height(2))
-                            .width(Length::Fill)
-                            .style(move |_| container::Style {
-                                background: Some(
-                                    if active { BLUE } else { Color::TRANSPARENT }.into()
-                                ),
-                                ..Default::default()
-                            })
+                            .style(crate::theme::text_color(if active { TEXT } else { MUTED })),
+                        Space::new().height(2).width(Length::Fill)
                     ]
                     .spacing(9),
                 )
@@ -594,20 +627,35 @@ impl App {
                 .on_press(Message::DetailTab(tab as u8)),
             );
         }
+        let tabs = crate::liquid::selection(
+            tabs,
+            Some(usize::from(self.detail_tab)),
+            crate::liquid::Treatment::Underline,
+            self.preferences.reduced_motion,
+        );
         let mut info = Column::new().spacing(12);
         if self.detail_tab <= 1 {
             for (label, value) in [
-                ("文件类型", asset.format.to_uppercase()),
-                ("文件大小", size(asset.bytes)),
-                ("分辨率", format!("{} × {}", asset.width, asset.height)),
-                ("导入时间", date(asset.imported_at)),
+                (
+                    tr!(language, "文件类型" => "File type"),
+                    asset.format.to_uppercase(),
+                ),
+                (tr!(language, "文件大小" => "File size"), size(asset.bytes)),
+                (
+                    tr!(language, "分辨率" => "Resolution"),
+                    format!("{} × {}", asset.width, asset.height),
+                ),
+                (
+                    tr!(language, "导入时间" => "Date imported"),
+                    date(asset.imported_at),
+                ),
             ] {
                 info = info.push(metadata(Icon::Image, label, value));
             }
             if self.detail_tab == 1 {
                 info = Column::new().spacing(12);
                 if self.manager.details.exif.is_empty() {
-                    info = info.push(muted("此版本没有可读取的 EXIF 信息"));
+                    info = info.push(muted(tr!(language, "此版本没有可读取的 EXIF 信息" => "No readable EXIF data in this version")));
                 }
                 for (label, value) in &self.manager.details.exif {
                     info = info.push(metadata(Icon::Camera, label, value.clone()));
@@ -643,14 +691,14 @@ impl App {
         }
         let mut tag_section = column![
             row![
-                detail_heading(Icon::Tag, "标签"),
+                detail_heading(Icon::Tag, tr!(language, "标签" => "Tags")),
                 Space::new().width(Length::Fill),
                 icon_button(Icon::Plus, Message::ToggleTagEditor),
                 button(
                     text(if self.manager.tags_collapsed {
-                        "展开"
+                        tr!(language, "展开" => "Expand")
                     } else {
-                        "折叠"
+                        tr!(language, "折叠" => "Collapse")
                     })
                     .size(11)
                 )
@@ -663,7 +711,7 @@ impl App {
         ]
         .spacing(10);
         if asset.tags.is_empty() {
-            tag_section = tag_section.push(muted("尚未添加标签"));
+            tag_section = tag_section.push(muted(tr!(language, "尚未添加标签" => "No tags yet")));
         }
         for tag in asset.tags.iter().filter(|_| !self.manager.tags_collapsed) {
             tag_section = tag_section.push(
@@ -676,21 +724,29 @@ impl App {
         if self.editing_tags {
             tag_section = tag_section
                 .push(
-                    text_input("用逗号分隔标签", &self.tag_input)
-                        .on_input(Message::Tags)
-                        .on_submit(Message::SaveTags)
-                        .padding(10)
-                        .size(12)
-                        .style(input),
+                    text_input(
+                        tr!(language, "用逗号分隔标签" => "Separate tags with commas"),
+                        &self.tag_input,
+                    )
+                    .on_input(Message::Tags)
+                    .on_submit(Message::SaveTags)
+                    .padding(10)
+                    .size(12)
+                    .style(input),
                 )
                 .push(
-                    form_action(Icon::Save, "保存标签", Message::SaveTags, true)
-                        .width(Length::Fill),
+                    form_action(
+                        Icon::Save,
+                        tr!(language, "保存标签" => "Save tags"),
+                        Message::SaveTags,
+                        true,
+                    )
+                    .width(Length::Fill),
                 );
         }
         let mut location_section = column![
             row![
-                detail_heading(Icon::Pin, "地点"),
+                detail_heading(Icon::Pin, tr!(language, "地点" => "Location")),
                 Space::new().width(Length::Fill),
                 icon_button(Icon::Plus, Message::Manage(ManageMessage::Location))
             ]
@@ -705,9 +761,9 @@ impl App {
         {
             location_section = location_section
                 .push(muted(if self.manager.details.manual_location.is_some() {
-                    "用户补充地点"
+                    tr!(language, "用户补充地点" => "Custom location")
                 } else {
-                    "原片 GPS"
+                    tr!(language, "原片 GPS" => "Original GPS")
                 }))
                 .push(
                     text(if location.label.is_empty() {
@@ -723,23 +779,27 @@ impl App {
                 .push(
                     form_action(
                         Icon::External,
-                        "打开地图",
+                        tr!(language, "打开地图" => "Open map"),
                         Message::Manage(ManageMessage::OpenMap),
                         false,
                     )
                     .width(Length::Fill),
                 );
         } else {
-            location_section = location_section.push(muted("未读取到 GPS，可补充地点。"));
+            location_section = location_section.push(muted(tr!(language, "未读取到 GPS，可补充地点。" => "No GPS found. You can add a location.")));
         }
         let mut projects = column![
             row![
-                detail_heading(Icon::Folder, "项目"),
+                detail_heading(Icon::Folder, tr!(language, "项目" => "Projects")),
                 Space::new().width(Length::Fill),
-                button(text("管理").size(12).color(BLUE))
-                    .padding([5, 6])
-                    .style(flat)
-                    .on_press(Message::Manage(ManageMessage::AssetProjects))
+                button(
+                    text(tr!(language, "管理" => "Manage"))
+                        .size(12)
+                        .style(crate::theme::text_color(BLUE))
+                )
+                .padding([5, 6])
+                .style(flat)
+                .on_press(Message::Manage(ManageMessage::AssetProjects))
             ]
             .align_y(Alignment::Center)
         ]
@@ -761,9 +821,12 @@ impl App {
                             Length::Fixed(40.0),
                             36.0
                         ),
-                        column![heading(&project.name, 12), muted("查看项目素材")]
-                            .spacing(4)
-                            .width(Length::Fill),
+                        column![
+                            heading(&project.name, 12),
+                            muted(tr!(language, "查看项目素材" => "View project assets"))
+                        ]
+                        .spacing(4)
+                        .width(Length::Fill),
                         icon(Icon::Right, 14.0, ICON)
                     ]
                     .spacing(10)
@@ -776,7 +839,9 @@ impl App {
             );
         }
         if project_count == 0 {
-            projects = projects.push(muted("尚未加入项目"));
+            projects = projects.push(muted(
+                tr!(language, "尚未加入项目" => "No project membership yet"),
+            ));
         }
         let mut details = column![
             cover,
@@ -787,12 +852,12 @@ impl App {
             .spacing(8)
             .align_y(Alignment::Center),
             row![
-                chip(if video { "视频" } else { "照片" }, BLUE),
+                chip(if video { tr!(language, "视频" => "Video") } else { tr!(language, "照片" => "Photo") }, BLUE),
                 chip(
                     if self.manager.details.referenced {
-                        "外部引用 · 备份不含原片"
+                        tr!(language, "外部引用 · 备份不含原片" => "External reference · originals excluded from backup")
                     } else {
-                        "托管原片"
+                        tr!(language, "托管原片" => "Managed original")
                     },
                     MUTED
                 )
@@ -805,7 +870,7 @@ impl App {
             )),
             strip,
             row![
-                button(text("上一个").size(11))
+                button(text(tr!(language, "上一个" => "Previous")).size(11))
                     .padding(5)
                     .style(flat)
                     .on_press_maybe(
@@ -820,7 +885,7 @@ impl App {
                         .unwrap_or_default()
                 ),
                 Space::new().width(Length::Fill),
-                button(text("下一个").size(11))
+                button(text(tr!(language, "下一个" => "Next")).size(11))
                     .padding(5)
                     .style(flat)
                     .on_press_maybe(
@@ -838,7 +903,11 @@ impl App {
         ]
         .spacing(14);
 
-        let mut versions = column![detail_heading(Icon::Collection, "版本")].spacing(10);
+        let mut versions = column![detail_heading(
+            Icon::Collection,
+            tr!(language, "版本" => "Versions")
+        )]
+        .spacing(10);
         for (index, version) in self.manager.details.versions.iter().enumerate() {
             versions = versions.push(
                 action(
@@ -861,7 +930,7 @@ impl App {
             versions = versions.push(
                 form_action(
                     Icon::Network,
-                    "发送到 Synco 精修",
+                    tr!(language, "发送到 Synco 精修" => "Send to Synco for editing"),
                     Message::Manage(ManageMessage::SendSynco),
                     false,
                 )
@@ -869,55 +938,55 @@ impl App {
             );
         }
         details = details
-            .push(detail_card(versions))
-            .push(detail_card(
-                column![
-                    detail_heading(Icon::Text, "备注"),
-                    text_input("记录用途、地点或拍摄说明", &self.manager.notes)
-                        .on_input(|s| Message::Manage(ManageMessage::Notes(s)))
-                        .padding(10)
-                        .size(12)
-                        .style(input),
-                    form_action(
-                        Icon::Save,
-                        "保存备注",
-                        Message::Manage(ManageMessage::SaveNotes),
-                        true
-                    )
-                    .width(Length::Fill)
-                    .on_press_maybe(
-                        self.manager
-                            .notes_dirty
-                            .then_some(Message::Manage(ManageMessage::SaveNotes))
-                    )
-                ]
-                .spacing(12),
-            ))
-            .push(detail_card(
-                column![
-                    detail_heading(Icon::Settings, "素材操作"),
-                    form_action(
-                        Icon::Folder,
-                        "编辑归属项目",
-                        Message::Manage(ManageMessage::Organize),
-                        false
-                    )
-                    .width(Length::Fill),
-                    form_action(
-                        Icon::Download,
-                        "导出素材",
-                        Message::Manage(ManageMessage::ExportMenu),
-                        false
-                    )
-                    .width(Length::Fill),
-                ]
-                .spacing(10),
-            ));
+                .push(detail_card(versions))
+                .push(detail_card(
+                    column![
+                        detail_heading(Icon::Text, tr!(language, "备注" => "Notes")),
+                        text_input(tr!(language, "记录用途、地点或拍摄说明" => "Add usage, location or shooting notes"), &self.manager.notes)
+                            .on_input(|s| Message::Manage(ManageMessage::Notes(s)))
+                            .padding(10)
+                            .size(12)
+                            .style(input),
+                        form_action(
+                            Icon::Save,
+                            tr!(language, "保存备注" => "Save notes"),
+                            Message::Manage(ManageMessage::SaveNotes),
+                            true
+                        )
+                        .width(Length::Fill)
+                        .on_press_maybe(
+                            self.manager
+                                .notes_dirty
+                                .then_some(Message::Manage(ManageMessage::SaveNotes))
+                        )
+                    ]
+                    .spacing(12),
+                ))
+                .push(detail_card(
+                    column![
+                        detail_heading(Icon::Settings, tr!(language, "素材操作" => "Asset actions")),
+                        form_action(
+                            Icon::Folder,
+                            tr!(language, "编辑归属项目" => "Edit project membership"),
+                            Message::Manage(ManageMessage::Organize),
+                            false
+                        )
+                        .width(Length::Fill),
+                        form_action(
+                            Icon::Download,
+                            tr!(language, "导出素材" => "Export assets"),
+                            Message::Manage(ManageMessage::ExportMenu),
+                            false
+                        )
+                        .width(Length::Fill),
+                    ]
+                    .spacing(10),
+                ));
         if !video {
             details = details.push(
                 form_action(
                     Icon::Search,
-                    "查找视觉近似",
+                    tr!(language, "查找视觉近似" => "Find visually similar images"),
                     Message::Manage(ManageMessage::Similar),
                     false,
                 )
@@ -928,9 +997,9 @@ impl App {
             form_action(
                 Icon::Trash,
                 if self.query.trash {
-                    "恢复素材"
+                    tr!(language, "恢复素材" => "Restore assets")
                 } else {
-                    "移入回收站"
+                    tr!(language, "移入回收站" => "Move to Trash")
                 },
                 Message::Manage(ManageMessage::Edit(Edit::Trash(!self.query.trash))),
                 false,
@@ -940,16 +1009,19 @@ impl App {
 
         if self.query.trash {
             details = details.push(
-                action("永久删除素材…", Message::Manage(ManageMessage::Purge))
-                    .style(destructive)
-                    .width(Length::Fill),
+                action(
+                    tr!(language, "永久删除素材…" => "Delete assets permanently…"),
+                    Message::Manage(ManageMessage::Purge),
+                )
+                .style(destructive)
+                .width(Length::Fill),
             );
         }
         if self.manager.details.referenced {
             details = details.push(
                 form_action(
                     Icon::Folder,
-                    "重新定位外部原片",
+                    tr!(language, "重新定位外部原片" => "Relocate external original"),
                     Message::Manage(ManageMessage::RelocateReference),
                     false,
                 )
@@ -959,6 +1031,7 @@ impl App {
         details.width(Length::Fill).into()
     }
     fn large_preview(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
         let video = self
             .selected
             .as_ref()
@@ -1020,8 +1093,14 @@ impl App {
                 container(Space::new())
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .style(|_| container::Style {
-                        background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.60).into()),
+                    .style(|theme: &Theme| container::Style {
+                        background: Some(
+                            Color {
+                                a: 0.60,
+                                ..theme.palette().background
+                            }
+                            .into()
+                        ),
                         ..Default::default()
                     }),
                 art
@@ -1038,7 +1117,7 @@ impl App {
                     17
                 ))
                 .width(Length::Fill),
-                form_action(Icon::Left, "上一张", Message::Browse(-1), false).on_press_maybe(
+                form_action(Icon::Left, tr!(language, "上一张" => "Previous image"), Message::Browse(-1), false).on_press_maybe(
                     self.neighbor_position
                         .filter(|(p, _)| *p > 0)
                         .map(|_| Message::Browse(-1))
@@ -1048,12 +1127,12 @@ impl App {
                         .map(|(p, total)| format!("{} / {}", p + 1, total))
                         .unwrap_or_default()
                 ),
-                form_action(Icon::Right, "下一张", Message::Browse(1), false).on_press_maybe(
+                form_action(Icon::Right, tr!(language, "下一张" => "Next image"), Message::Browse(1), false).on_press_maybe(
                     self.neighbor_position
                         .filter(|(p, total)| (*p as u64) + 1 < *total)
                         .map(|_| Message::Browse(1))
                 ),
-                action("返回图库 · Esc", Message::ExpandPreview)
+                action(tr!(language, "返回图库 · Esc" => "Back to gallery · Esc"), Message::ExpandPreview)
             ]
             .spacing(20)
             .align_y(Alignment::Center),
@@ -1063,15 +1142,15 @@ impl App {
                         .original_size
                         .or_else(|| self.selected.as_ref().map(|a| (a.width, a.height)))
                     {
-                        Some((w, h)) if video => format!("视频 {w} × {h}"),
-                        Some((w, h)) => format!("原尺寸 {w} × {h} · 滚轮缩放 · 拖动平移"),
-                        None => "预览".into(),
+                        Some((w, h)) if video => trf!(language, "视频 {w} × {h}" => "Video {w} × {h}"),
+                        Some((w, h)) => trf!(language, "原尺寸 {w} × {h} · 滚轮缩放 · 拖动平移" => "Original {w} × {h} · Scroll to zoom · Drag to pan"),
+                        None => tr!(language, "预览" => "Preview").into(),
                     }
                 ),
                 muted(if self.regions.is_loading() {
-                    "正在读取原尺寸区域…"
+                    tr!(language, "正在读取原尺寸区域…" => "Loading full resolution region…")
                 } else if self.preview_task.is_some() {
-                    "正在读取清晰预览…"
+                    tr!(language, "正在读取清晰预览…" => "Loading clear preview…")
                 } else {
                     ""
                 }),
@@ -1080,7 +1159,7 @@ impl App {
                     .padding([8, 14])
                     .style(secondary)
                     .on_press_maybe((!video).then_some(Message::Regions(RegionMessage::Actual))),
-                button(text("适应窗口").size(13))
+                button(text(tr!(language, "适应窗口" => "Fit to window")).size(13))
                     .padding([8, 14])
                     .style(secondary)
                     .on_press_maybe((!video).then_some(Message::Regions(RegionMessage::Fit)))
@@ -1104,18 +1183,18 @@ impl App {
                 row![
                     action(
                         if self.video_paused {
-                            "播放"
+                            tr!(language, "播放" => "Play")
                         } else {
-                            "暂停"
+                            tr!(language, "暂停" => "Pause")
                         },
                         Message::VideoPause
                     )
                     .on_press_maybe(self.playback.as_ref().map(|_| Message::VideoPause)),
                     action(
                         if self.video_muted {
-                            "取消静音"
+                            tr!(language, "取消静音" => "Unmute")
                         } else {
-                            "静音"
+                            tr!(language, "静音" => "Mute")
                         },
                         Message::VideoMute
                     )

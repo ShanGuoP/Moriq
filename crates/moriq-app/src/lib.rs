@@ -155,6 +155,18 @@ impl ImportControl {
     }
 }
 impl Service {
+    pub async fn interface_preferences(
+        &self,
+        language: Language,
+        appearance: Appearance,
+    ) -> Result<()> {
+        self.call(move |_| {
+            moriq_library::settings::interface(language, appearance)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
     pub async fn reduced_motion(&self, enabled: bool) -> Result<UserSettings> {
         self.call(move |_| {
             moriq_library::settings::reduced_motion(enabled).map_err(|e| e.to_string())
