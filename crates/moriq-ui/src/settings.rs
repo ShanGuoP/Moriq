@@ -258,7 +258,7 @@ impl App {
             preference_card(
                 Icon::Grid,
                 tr!(language, "减少动态效果" => "Reduce motion"),
-                tr!(language, "关闭页面转场和卡片过渡，保留清晰的选中反馈。" => "Disable page and card transitions while keeping selection feedback."),
+                tr!(language, "关闭页面、卡片、按钮及预览缩放动效，保留清晰反馈。" => "Disable page, card, button and preview zoom animations while keeping clear feedback."),
                 checkbox(self.preferences.reduced_motion).on_toggle(Message::ReducedMotion)
             ),
             form_card(self.import_settings()),

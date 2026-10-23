@@ -530,18 +530,22 @@ impl App {
         ] {
             tools = tools.push(
                 iced::widget::tooltip(
-                    button(icon(kind, 18.0, if active { Color::WHITE } else { ICON }))
-                        .width(36)
-                        .height(36)
-                        .padding(9)
-                        .style(move |theme, status| {
-                            if active {
-                                primary(theme, status)
-                            } else {
-                                flat(theme, status)
-                            }
-                        })
-                        .on_press(message),
+                    crate::motion::feedback(
+                        button(icon(kind, 18.0, if active { Color::WHITE } else { ICON }))
+                            .width(36)
+                            .height(36)
+                            .padding(9)
+                            .style(move |theme, status| {
+                                if active {
+                                    primary(theme, status)
+                                } else {
+                                    flat(theme, status)
+                                }
+                            })
+                            .on_press(message),
+                        true,
+                        self.preferences.reduced_motion,
+                    ),
                     container(text(label).size(12))
                         .padding([6, 10])
                         .style(panel),
@@ -575,30 +579,34 @@ impl App {
                     }),
             );
         }
+        let back_enabled = self.library.is_some() && !self.switching && self.can_go_back();
+        let forward_enabled = self.library.is_some()
+            && !self.switching
+            && !self.surface_open()
+            && !self.viewer.preview_expanded
+            && self.history.can_forward();
         let back = container(
             row![
-                button(icon(Icon::Left, 18.0, ICON))
-                    .style(flat)
-                    .padding(9)
-                    .on_press_maybe(
-                        (self.library.is_some() && !self.switching && self.can_go_back())
-                            .then_some(Message::Back)
-                    )
-                    .width(36)
-                    .height(36),
-                button(icon(Icon::Right, 18.0, ICON))
-                    .style(flat)
-                    .padding(9)
-                    .on_press_maybe(
-                        (self.library.is_some()
-                            && !self.switching
-                            && !self.surface_open()
-                            && !self.viewer.preview_expanded
-                            && self.history.can_forward())
-                        .then_some(Message::Forward)
-                    )
-                    .width(36)
-                    .height(36)
+                crate::motion::feedback(
+                    button(icon(Icon::Left, 18.0, ICON))
+                        .style(flat)
+                        .padding(9)
+                        .on_press_maybe(back_enabled.then_some(Message::Back))
+                        .width(36)
+                        .height(36),
+                    back_enabled,
+                    self.preferences.reduced_motion
+                ),
+                crate::motion::feedback(
+                    button(icon(Icon::Right, 18.0, ICON))
+                        .style(flat)
+                        .padding(9)
+                        .on_press_maybe(forward_enabled.then_some(Message::Forward))
+                        .width(36)
+                        .height(36),
+                    forward_enabled,
+                    self.preferences.reduced_motion
+                ),
             ]
             .spacing(4),
         )

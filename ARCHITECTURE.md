@@ -51,9 +51,18 @@ tools and the app worker share one checking and repair engine.
 
 Shared colors, borders and control states live in `moriq-ui/src/theme.rs`.
 Navigation transitions preserve the persistent shell and input/scroll state.
-Hover feedback owns one transient asset ID, reverses from its current value and
-stops requesting animation frames when settled. Reduced motion is a persisted
-preference that commits navigation immediately and retains static state feedback.
+Card hover feedback retains only the current and departing asset, reverses from
+sampled values and stops requesting frames when settled. Toolbar and favorite
+buttons animate their drawn appearance while preserving hit targets, focus and
+tooltip coordinates. Recycled asset buttons reset held gestures on identity changes.
+Nested surfaces preserve the current backdrop and offset.
+
+The image viewer eases wheel/fit/actual-size camera changes, anchors wheel zoom at
+the pointer and lets dragging interrupt at the visible position. Decoder requests
+follow the destination viewport; intermediate frames reuse existing GPU images.
+Resizing, changing assets, losing focus and reduced motion cancel or settle the
+corresponding transient state. Reduced motion is persisted, commits navigation
+immediately and retains static feedback without animation redraws.
 
 ## Local validation
 
@@ -75,6 +84,11 @@ Screenshot automation is opt-in, and excluded from ordinary desktop builds:
 ```powershell
 cargo run -p moriq-desktop --features capture -- --library PATH --screen assets --capture OUTPUT.png --exit-after-capture
 ```
+
+The capture-only `--panel motion-proof --select-first --screen assets` scenario
+records the normal fit/actual-size actions and nested surfaces using an isolated
+test library. Camera-frame and viewport-request traces distinguish redraws from
+decoder admission; screenshots must be visually checked as well.
 
 It is diagnostic tooling, not a format/capacity acceptance test. Public releases
 still require the signature, source inventory and clean exact tag in SECURITY.md.

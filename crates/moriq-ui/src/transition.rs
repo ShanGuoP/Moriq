@@ -6,13 +6,23 @@ pub(super) const FADE_IN: Duration = Duration::from_millis(130);
 pub(super) struct Entrance {
     pub started: Instant,
     sampled: Instant,
+    offset_from: f32,
+    dim_from: f32,
 }
 impl Entrance {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, offset_from: f32, dim_from: f32) -> Self {
         Self {
             started: now,
             sampled: now,
+            offset_from,
+            dim_from,
         }
+    }
+    fn offset(&self) -> f32 {
+        self.offset_from * self.remaining()
+    }
+    fn dim(&self) -> f32 {
+        0.22 + (self.dim_from - 0.22) * self.remaining()
     }
     pub fn remaining(&self) -> f32 {
         let t = (self
@@ -77,17 +87,12 @@ impl PageTransition {
 }
 impl App {
     pub(super) fn surface_offset(&self) -> f32 {
-        self.surface_motion
-            .as_ref()
-            .map_or(0.0, |motion| 10.0 * motion.remaining())
+        self.surface_motion.as_ref().map_or(0.0, Entrance::offset)
     }
     pub(super) fn backdrop_alpha(&self) -> f32 {
-        0.22 * (1.0
-            - self
-                .surface_motion
-                .as_ref()
-                .map_or(0.0, Entrance::remaining))
+        self.surface_motion.as_ref().map_or(0.22, Entrance::dim)
     }
+
     fn is_page_navigation(message: &Message) -> bool {
         matches!(
             message,
@@ -195,6 +200,17 @@ impl App {
             self.gallery_feedback.clear();
         }
         let surface = self.surface();
+        let was_open = self.surface_open();
+        let dim = if was_open && !self.compact_panel() {
+            self.backdrop_alpha()
+        } else {
+            0.0
+        };
+        let offset = if was_open && self.surface_motion.is_none() {
+            6.0
+        } else {
+            self.surface_offset()
+        };
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.commit_navigation(message);
         if self.preferences.reduced_motion {
@@ -204,7 +220,7 @@ impl App {
         if surface != self.surface() {
             self.gallery_feedback.clear();
             self.surface_motion = (self.surface_open() && !self.preferences.reduced_motion)
-                .then(|| Entrance::new(Instant::now()));
+                .then(|| Entrance::new(Instant::now(), if was_open { offset } else { 10.0 }, dim));
             if self.surface_open() {
                 // A newly opened form owns input immediately; never leave it via an older click.
                 self.transition = None;
@@ -289,5 +305,25 @@ mod tests {
         assert!(cancelled.pending.is_none());
         assert_eq!(cancelled.alpha(), alpha);
         assert_eq!(cancelled.offset(), offset);
+    }
+    #[test]
+    fn nested_surfaces_keep_backdrop_and_rapid_changes_keep_the_current_offset() {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Assets;
+        drop(app.update(Message::Manage(ManageMessage::Filters)));
+        let start = app.surface_motion.as_ref().unwrap().started;
+        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(60))));
+        let dim = app.backdrop_alpha();
+        let offset = app.surface_offset();
+        drop(app.update(Message::ShowSettings));
+        assert!((app.backdrop_alpha() - dim).abs() < 0.00001);
+        assert!((app.surface_offset() - offset).abs() < 0.00001);
+        let start = app.surface_motion.as_ref().unwrap().started;
+        drop(app.update(Message::TransitionFrame(start + Duration::from_millis(200))));
+        assert!((app.backdrop_alpha() - 0.22).abs() < 0.00001);
+        drop(app.update(Message::Back));
+        assert_eq!(app.manager.panel, Some(manage::Panel::Filters));
+        assert!((app.backdrop_alpha() - 0.22).abs() < 0.00001);
+        assert_eq!(app.surface_offset(), 6.0);
     }
 }

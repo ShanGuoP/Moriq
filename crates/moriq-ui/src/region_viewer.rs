@@ -10,13 +10,13 @@ use iced::{Event, Length, Point, Radians, Rectangle, Vector};
 struct State {
     command: u64,
     key: Option<AssetVersionId>,
-    zoom: f32,
-    offset: Vector,
+    camera: viewer_motion::Camera,
     grab: Option<Point>,
     start: Vector,
     last: Option<regions::Viewport>,
 }
 pub(super) struct Viewer {
+    pub reduced_motion: bool,
     pub zoom_request: u64,
     pub target_scale: Option<f32>,
     pub key: AssetVersionId,
@@ -25,34 +25,12 @@ pub(super) struct Viewer {
     pub height: u32,
     pub tiles: Vec<(ImageRegion, image::Handle)>,
 }
-impl Viewer {
-    fn geometry(&self, state: &State, bounds: Rectangle) -> (f32, Point) {
-        let fit = (bounds.width / self.width.max(1) as f32)
-            .min(bounds.height / self.height.max(1) as f32);
-        let scale = (fit * state.zoom.max(0.1)).max(0.000001);
-        let origin = Point::new(
-            bounds.center_x() - self.width as f32 * scale / 2. + state.offset.x,
-            bounds.center_y() - self.height as f32 * scale / 2. + state.offset.y,
-        );
-        (scale, origin)
-    }
-    fn clamp(&self, state: &mut State, bounds: Rectangle) {
-        let (scale, _) = self.geometry(state, bounds);
-        let x = ((self.width as f32 * scale - bounds.width) / 2.).max(0.);
-        let y = ((self.height as f32 * scale - bounds.height) / 2.).max(0.);
-        state.offset.x = state.offset.x.clamp(-x, x);
-        state.offset.y = state.offset.y.clamp(-y, y);
-    }
-}
 impl Widget<Message, Theme, iced::Renderer> for Viewer {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
     }
     fn state(&self) -> tree::State {
-        tree::State::new(State {
-            zoom: 1.,
-            ..Default::default()
-        })
+        tree::State::new(State::default())
     }
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
@@ -81,76 +59,86 @@ impl Widget<Message, Theme, iced::Renderer> for Viewer {
         if state.key != Some(self.key) {
             *state = State {
                 key: Some(self.key),
-                zoom: 1.,
                 ..Default::default()
             }
         }
+        let now = match event {
+            Event::Window(iced::window::Event::RedrawRequested(now)) => *now,
+            _ => std::time::Instant::now(),
+        };
+        if state.camera.configure(self.width, self.height, bounds, now) {
+            state.grab = None;
+        }
+        #[cfg(feature = "capture")]
+        let was_active = state.camera.active();
+        state.camera.sample(now, self.reduced_motion);
         if state.command != self.zoom_request {
-            let (scale, _) = self.geometry(state, bounds);
-            let fit = scale / state.zoom;
-            state.zoom = self
-                .target_scale
-                .map(|target| target / fit)
-                .unwrap_or(1.0)
-                .clamp(0.1, (32.0 / fit).max(1.0));
-            state.offset = Vector::ZERO;
+            state
+                .camera
+                .command(self.target_scale, now, self.reduced_motion);
             state.command = self.zoom_request;
-            self.clamp(state, bounds);
+            state.grab = None;
             shell.request_redraw();
         }
         match event {
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 if let Some(position) = cursor.position_over(bounds) {
-                    let y = match delta {
-                        mouse::ScrollDelta::Lines { y, .. }
-                        | mouse::ScrollDelta::Pixels { y, .. } => *y,
+                    let steps = match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => *y,
+                        mouse::ScrollDelta::Pixels { y, .. } => *y / 80.0,
                     };
-                    if y == 0. {
+                    if !steps.is_finite() || steps == 0.0 {
                         return;
                     }
-                    let (scale, origin) = self.geometry(state, bounds);
-                    let image_x = (position.x - origin.x) / scale;
-                    let image_y = (position.y - origin.y) / scale;
-                    let fit = scale / state.zoom;
-                    state.zoom = (if y > 0. {
-                        state.zoom * 1.2
-                    } else {
-                        state.zoom / 1.2
-                    })
-                    .clamp(0.1, (32. / fit).max(1.));
-                    let new_scale = fit * state.zoom;
-                    state.offset = Vector::new(
-                        position.x
-                            - image_x * new_scale
-                            - (bounds.center_x() - self.width as f32 * new_scale / 2.),
-                        position.y
-                            - image_y * new_scale
-                            - (bounds.center_y() - self.height as f32 * new_scale / 2.),
-                    );
-                    self.clamp(state, bounds);
+                    state
+                        .camera
+                        .zoom(steps, position, bounds, now, self.reduced_motion);
+                    state.grab = None;
                     shell.capture_event();
                     shell.request_redraw();
                 }
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(position) = cursor.position_over(bounds) {
+                    state.camera.interrupt(now);
                     state.grab = Some(position);
-                    state.start = state.offset;
+                    state.start = state.camera.pose.offset;
                     shell.capture_event();
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => state.grab = None,
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 if let Some(start) = state.grab {
-                    state.offset = state.start + (*position - start);
-                    self.clamp(state, bounds);
+                    state.camera.pan(state.start + (*position - start));
                     shell.capture_event();
                     shell.request_redraw();
                 }
             }
+            Event::Window(iced::window::Event::Unfocused) => {
+                state.grab = None;
+                state.camera.interrupt(now);
+            }
             _ => {}
         }
-        let (scale, origin) = self.geometry(state, bounds);
+        #[cfg(feature = "capture")]
+        if (was_active || state.camera.active())
+            && matches!(
+                event,
+                Event::Window(iced::window::Event::RedrawRequested(_))
+            )
+        {
+            tracing::info!(
+                zoom = state.camera.pose.zoom,
+                target = state.camera.target.zoom,
+                active = state.camera.active(),
+                "motion-viewer-frame"
+            );
+        }
+        if state.camera.active() {
+            shell.request_redraw_at(now + Duration::from_millis(16));
+        }
+        // Preload the destination once. Intermediate redraws only move existing GPU images.
+        let (scale, origin) = state.camera.geometry(state.camera.target, bounds);
         let x = ((bounds.x - origin.x) / scale)
             .floor()
             .max(0.)
@@ -174,6 +162,15 @@ impl Widget<Message, Theme, iced::Renderer> for Viewer {
         };
         if state.last != Some(viewport) {
             state.last = Some(viewport);
+            #[cfg(feature = "capture")]
+            tracing::info!(
+                scale = viewport.scale,
+                x = viewport.x,
+                y = viewport.y,
+                width = viewport.width,
+                height = viewport.height,
+                "motion-viewer-viewport"
+            );
             shell.publish(Message::Regions(regions::RegionMessage::Viewport(
                 self.key, viewport,
             )));
@@ -207,7 +204,7 @@ impl Widget<Message, Theme, iced::Renderer> for Viewer {
     ) {
         let state = tree.state.downcast_ref::<State>();
         let bounds = layout.bounds();
-        let (scale, origin) = self.geometry(state, bounds);
+        let (scale, origin) = state.camera.geometry(state.camera.pose, bounds);
         renderer.with_layer(bounds, |renderer| {
             let mut draw = |handle: image::Handle, rectangle: Rectangle| {
                 renderer.draw_image(

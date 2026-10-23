@@ -360,7 +360,11 @@ impl App {
             container(column![
                 row![
                     Space::new().width(Length::Fill),
-                    favorite,
+                    crate::motion::asset_feedback(
+                        favorite,
+                        tile.asset.id,
+                        self.preferences.reduced_motion
+                    ),
                     button(icon(Icon::More, 16.0, Color::WHITE))
                         .padding(7)
                         .style(|_, _| button::Style {
@@ -1057,6 +1061,7 @@ impl App {
                     .original_size
                     .unwrap_or((asset.width, asset.height));
                 crate::region_viewer::Viewer {
+                    reduced_motion: self.preferences.reduced_motion,
                     zoom_request: self.viewer.regions.zoom_request,
                     target_scale: self.viewer.regions.target_scale,
                     key: asset.version_id,

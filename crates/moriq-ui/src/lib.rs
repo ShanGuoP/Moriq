@@ -15,6 +15,7 @@ mod regions;
 mod selection;
 mod uploads;
 mod viewer;
+mod viewer_motion;
 pub(crate) use ai::AiMessage;
 pub(crate) use batch::BatchMessage;
 pub(crate) use folders::FolderMessage;
@@ -55,6 +56,8 @@ mod liquid;
 #[cfg(feature = "capture")]
 mod liquid_proof;
 mod motion;
+#[cfg(feature = "capture")]
+mod motion_proof;
 mod overview;
 mod preview;
 mod theme;
@@ -209,6 +212,10 @@ pub(crate) enum Message {
     Captured(iced::window::Screenshot),
     #[cfg(feature = "capture")]
     LiquidProof(u8),
+    #[cfg(feature = "capture")]
+    MotionProof(u8),
+    #[cfg(feature = "capture")]
+    MotionFrame(u8, iced::window::Screenshot),
     #[cfg(feature = "capture")]
     LiquidFrame(u8, iced::window::Screenshot),
     #[cfg(feature = "capture")]
@@ -1628,6 +1635,19 @@ impl App {
                     && !self.switching
                 {
                     self.capture_ticks = self.capture_ticks.saturating_add(1);
+                    if self.launch.panel.as_deref() == Some("motion-proof") {
+                        if self.capture_ticks == 2 {
+                            if self.viewer.selected.is_none() {
+                                self.capture_ticks = 1;
+                                return Task::none();
+                            }
+                            return self.motion_proof_step(0);
+                        }
+                        if self.capture_ticks >= 12 {
+                            self.capture_ticks = 11;
+                            return Task::none();
+                        }
+                    }
                     if self.launch.panel.as_deref() == Some("liquid-proof")
                         && self.capture_ticks == 2
                     {
@@ -1926,6 +1946,10 @@ impl App {
             }
             #[cfg(feature = "capture")]
             Message::LiquidProof(step) => return self.liquid_proof_step(step),
+            #[cfg(feature = "capture")]
+            Message::MotionProof(step) => return self.motion_proof_step(step),
+            #[cfg(feature = "capture")]
+            Message::MotionFrame(step, frame) => return self.motion_proof_frame(step, frame),
             #[cfg(feature = "capture")]
             Message::LiquidFrame(step, screenshot) => {
                 return self.liquid_proof_frame(step, screenshot);
