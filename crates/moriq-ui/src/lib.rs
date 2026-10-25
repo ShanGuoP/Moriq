@@ -3,11 +3,13 @@
 mod i18n;
 mod ai;
 mod batch;
+mod categories;
 mod export;
 mod filters;
 mod folders;
 use export::ExportChange;
 use filters::{Builtin, FilterChange};
+mod libraries;
 mod lifecycle;
 mod metadata;
 mod region_viewer;
@@ -134,8 +136,9 @@ pub(crate) enum Message {
     Manage(ManageMessage),
     Modifiers(iced::keyboard::Modifiers),
     SettingsLoaded(Result<UserSettings, String>),
-    LibraryCardsLoaded(Result<Vec<(PathBuf, Option<moriq_app::Pixels>)>, String>),
+    LibraryCardsLoaded(u64, Result<Vec<(PathBuf, Option<moriq_app::Pixels>)>, String>),
     OpenRecent(PathBuf),
+    Libraries(libraries::LibraryMessage),
     ShowLibraries,
     Name(String),
     Create,
@@ -308,6 +311,7 @@ pub(crate) struct App {
     manager: manage::Manager,
     preferences: UserSettings,
     interface: settings::InterfaceState,
+    libraries: libraries::State,
     library_covers: HashMap<PathBuf, image::Handle>,
     library_picker: bool,
     service: Service,
@@ -340,6 +344,8 @@ pub(crate) struct App {
     projection_request: u64,
     overview_request: u64,
     cover_request: u64,
+    cover_write_request: u64,
+    library_cards_request: u64,
     navigation_request: u64,
     page_task: Option<iced::task::Handle>,
     masonry: Option<std::sync::Arc<moriq_render::MasonryIndex>>,
@@ -439,6 +445,7 @@ impl App {
                 manager: Default::default(),
                 preferences: Default::default(),
                 interface: Default::default(),
+                libraries: Default::default(),
                 library_covers: HashMap::new(),
                 library_picker: false,
                 service,
@@ -488,6 +495,8 @@ impl App {
                 projection_request: 0,
                 overview_request: 0,
                 cover_request: 0,
+                cover_write_request: 0,
+                library_cards_request: 0,
                 navigation_request: 0,
                 page_task: None,
                 masonry: None,
@@ -934,6 +943,7 @@ impl App {
             }
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Manage(event) => return self.manage_message(event),
+            Message::Libraries(event) => return self.library_message(event),
             Message::SettingsLoaded(result) => match result {
                 Ok(prefs) => {
                     self.on_demand_models = prefs.ai.on_demand;
@@ -942,6 +952,8 @@ impl App {
                     let service = self.service.clone();
                     self.apply_settings(prefs);
                     let cards_service = self.service.clone();
+                    self.library_cards_request = self.library_cards_request.wrapping_add(1);
+                    let cards_request = self.library_cards_request;
                     let paths = self
                         .preferences
                         .recent
@@ -957,13 +969,13 @@ impl App {
                         }),
                         Task::perform(
                             async move { cards_service.library_cards(paths).await },
-                            Message::LibraryCardsLoaded,
+                            move |result| Message::LibraryCardsLoaded(cards_request, result),
                         ),
                     ]);
                 }
                 Err(e) => self.error = Some(e),
             },
-            Message::LibraryCardsLoaded(Ok(cards)) => {
+            Message::LibraryCardsLoaded(request, Ok(cards)) if request == self.library_cards_request => {
                 for (path, cover) in cards {
                     if self.preferences.recent.iter().any(|(_, p)| p == &path) {
                         if let Some(pixels) = cover {
@@ -977,7 +989,7 @@ impl App {
                     }
                 }
             }
-            Message::LibraryCardsLoaded(Err(error)) => self.error = Some(error),
+            Message::LibraryCardsLoaded(request, Err(error)) if request == self.library_cards_request => self.error = Some(error),
             Message::ShowLibraries if !self.manager.busy => {
                 self.stop_viewer();
                 self.library_picker = true;
@@ -1015,6 +1027,9 @@ impl App {
             }
             Message::WindowMaximize => {
                 return iced::window::oldest().and_then(iced::window::toggle_maximize);
+            }
+            Message::WindowClose if self.libraries.busy => {
+                return Task::none();
             }
             Message::WindowClose => {
                 if self.interface.saving.is_some()
@@ -1393,7 +1408,6 @@ impl App {
             }
             Message::Search(value) => {
                 self.library_picker = false;
-                self.ai.request = self.ai.request.wrapping_add(1);
                 self.query.semantic_active = false;
                 self.query.semantic_ids.clear();
                 self.query.text = value;
@@ -1746,10 +1760,16 @@ impl App {
                     {
                         return self.commit_navigation(Message::Navigate(2));
                     }
+                    if self.capture_ticks == 6
+                        && self.launch.panel.as_deref() == Some("library-delete")
+                    {
+                        return self.library_message(libraries::LibraryMessage::Next);
+                    }
                     if self.capture_ticks == 8 {
                         let scroll_target = match self.launch.panel.as_deref() {
                             Some("settings-bottom") => Some(("management", 100000.0)),
                             Some("details-ai") => Some(("details", 220.0)),
+                            Some("details-ai-tags") => Some(("details", 620.0)),
                             Some("details-bottom") => Some(("details", 100000.0)),
                             _ => None,
                         };
@@ -1761,7 +1781,10 @@ impl App {
                         }
                     }
                     if self.capture_ticks == 2 {
-                        if self.launch.panel.as_deref() == Some("details-ai") {
+                        if matches!(
+                            self.launch.panel.as_deref(),
+                            Some("details-ai" | "details-ai-tags")
+                        ) {
                             self.detail_tab = 2;
                         }
                         match self.launch.panel.as_deref() {
@@ -1772,8 +1795,39 @@ impl App {
                             }
                             Some("ai-refresh") => {
                                 return self.job_message(tasks::JobMessage::Queue(
-                                    JobKind::Analysis(ModelId::ChineseClip),
+                                    JobKind::QwenClassification,
                                 ));
+                            }
+                            Some("categories" | "categories-compact") => {
+                                if self.manager.organizer.ai_groups.is_empty() {
+                                    self.capture_ticks = 1;
+                                }
+                                let open = self.category_message(categories::CategoryMessage::Open);
+                                if self.launch.panel.as_deref() == Some("categories-compact") {
+                                    return Task::batch([
+                                        open,
+                                        iced::window::oldest().and_then(|id| {
+                                            iced::window::resize(id, Size::new(1180.0, 740.0))
+                                        }),
+                                    ]);
+                                }
+                                return open;
+                            }
+                            Some("projects") => {
+                                if let Some(id) = self
+                                    .library
+                                    .as_ref()
+                                    .and_then(|l| l.info.projects.first())
+                                    .map(|p| p.id)
+                                {
+                                    return self.manage_message(ManageMessage::ProjectMenu(id));
+                                }
+                            }
+                            Some("library-manage" | "library-delete") => {
+                                if let Some(root) = self.library.as_ref().map(|l| l.root.clone()) {
+                                    return self
+                                        .library_message(libraries::LibraryMessage::Open(root));
+                                }
                             }
                             Some("people") => {
                                 return self.ai_message(AiMessage::People);
@@ -1904,7 +1958,7 @@ impl App {
                         }
                         if self.launch.panel.as_deref() == Some("ai-refresh")
                             && (!self.manager.organizer.jobs.iter().any(|job| {
-                                job.kind == JobKind::Analysis(ModelId::ChineseClip)
+                                job.kind == JobKind::QwenClassification
                                     && job.state == JobState::Completed
                             }) || self.manager.organizer.ai_categories.is_empty())
                         {

@@ -110,6 +110,7 @@ now_ms()?])?;
     }
     for tag in patch.remove_tags {
         tx.execute("DELETE FROM asset_tags WHERE asset_id=?1 AND tag_id IN(SELECT id FROM tags WHERE name=?2)",params![asset,tag.trim()])?;
+        tx.execute("INSERT OR IGNORE INTO ai_rejected_tags SELECT display_version_id,?2 FROM assets WHERE id=?1", params![asset, tag.trim()])?;
     }
     for tag in patch.add_tags {
         let tag = tag.trim();

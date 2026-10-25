@@ -58,7 +58,7 @@ pub fn hardware() -> Hardware {
         logical_cpus: std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(2),
-        provider: crate::runtime::provider_name(),
+        provider: "Vulkan · llama.cpp · Qwen3.5-4B".into(),
     }
 }
 pub fn registry() -> Result<Vec<ModelSpec>> {
@@ -77,7 +77,7 @@ pub fn model_root() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")));
-    Ok(base.ok_or("无法定位模型目录")?.join("MORIQ/models"))
+    Ok(base.ok_or("无法定位模型目录")?.join("MORIQ").join("models"))
 }
 fn spec(id: &str) -> Result<ModelSpec> {
     registry()?
@@ -569,7 +569,19 @@ mod source_tests {
     #[test]
     fn mirror_keeps_every_pinned_revision_and_artifact_path() {
         let models = registry().unwrap_or_default();
-        assert_eq!(models.len(), 3);
+        assert_eq!(models.len(), 1);
+        for retired in ["chinese-clip", "florence", "faces"] {
+            assert!(spec(retired).is_err());
+        }
+        let qwen = models
+            .iter()
+            .find(|model| model.id == "qwen35-4b")
+            .unwrap_or_else(|| panic!("Qwen model missing"));
+        assert_eq!(qwen.files.len(), 2);
+        assert_eq!(
+            qwen.files.iter().map(|file| file.bytes).sum::<u64>(),
+            3_413_361_504
+        );
         for file in models.iter().flat_map(|m| &m.files) {
             let suffix = file
                 .url

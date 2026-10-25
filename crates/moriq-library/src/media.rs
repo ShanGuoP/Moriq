@@ -118,17 +118,32 @@ impl Library {
             )
             .optional()?
             .unwrap_or_default();
-        let ai:Option<String>=self.db.query_row("SELECT ar.data FROM ai_results ar JOIN assets a ON a.display_version_id=ar.version_id WHERE a.id=?1 \
-                AND ar.model_id='florence' ORDER BY ar.created_at DESC LIMIT 1",
-[id.to_string()],
-|r|r.get(0)).optional()?;
-
-        if let Some(data) = ai {
-            let data: serde_json::Value =
-                serde_json::from_str(&data).map_err(|e| Error::Invalid(e.to_string()))?;
-            metadata.ai_caption = data["caption"].as_str().unwrap_or("").into();
-            metadata.ocr = data["ocr"].as_str().unwrap_or("").into();
+        let version: String = self.db.query_row(
+            "SELECT display_version_id FROM assets WHERE id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )?;
+        self.content_details(&version, &mut metadata)?;
+        let manual_category: bool = self.db.query_row(
+            "SELECT coalesce((SELECT manual FROM asset_classification WHERE asset_id=?1),0)",
+            [id.to_string()],
+            |r| r.get(0),
+        )?;
+        if !manual_category && !metadata.medium.is_empty() {
+            let id = metadata.themes.first().unwrap_or(&metadata.medium);
+            metadata.category = self
+                .db
+                .query_row("SELECT label FROM ai_vocabulary WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })
+                .optional()?
+                .unwrap_or_default();
         }
+        // Historical OCR stays readable independently of Qwen's current description.
+        metadata.ocr = self.db.query_row(
+            "SELECT coalesce(json_extract(ar.data,'$.ocr'),'') FROM ai_results ar JOIN assets a ON a.display_version_id=ar.version_id WHERE a.id=?1 AND ar.model_id='florence' ORDER BY ar.created_at DESC LIMIT 1",
+            [id.to_string()], |row| row.get(0),
+        ).optional()?.unwrap_or_default();
         let video:Option<String>=self.db.query_row("SELECT m.json FROM video_metadata m JOIN assets a ON a.display_version_id=m.version_id WHERE a.id=?1",
 [id.to_string()],
 |r|r.get(0)).optional()?;

@@ -25,7 +25,7 @@ r.get(2)?)))?;
 
             let imported_at=self.db.query_row("SELECT imported_at FROM assets WHERE id=?1",[id.to_string()],|r|r.get(0))?;
             let notes:String=self.db.query_row("SELECT notes FROM assets WHERE id=?1",[id.to_string()],|r|r.get(0))?;
-            let tags=self.db.prepare("SELECT t.name FROM tags t JOIN asset_tags at ON at.tag_id=t.id WHERE at.asset_id=?1 ORDER BY t.name")?.query_map([id.to_string()],
+            let tags=self.db.prepare("SELECT name FROM effective_asset_tags WHERE asset_id=?1 ORDER BY name")?.query_map([id.to_string()],
 |r|r.get::<_,
 String>(0))?.collect::<std::result::Result<Vec<_>,
 _>>()?;
@@ -37,6 +37,8 @@ _>>()?;
 [id.to_string()],
 |r|r.get(0)).optional()?;
 
+            let mut content = AssetDetails::default();
+            self.content_details(&version, &mut content)?;
             let metadata=serde_json::json!({
 "asset_id":id.to_string(),
 "version_id":version,
@@ -44,6 +46,11 @@ _>>()?;
 "source_name":name,
 "notes":notes,
 "tags":tags,
+"manual_tags":content.manual_tags,
+"ai_tags":content.ai_tags,
+"description":content.ai_caption,
+"medium":content.medium,
+"themes":content.themes,
 "exif":exif,
 "project":project}
 );

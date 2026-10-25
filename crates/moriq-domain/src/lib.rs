@@ -1,5 +1,7 @@
 //! Pure library identities and UI projections. No I/O or renderer dependencies.
+mod ai;
 mod jobs;
+pub use ai::*;
 pub use jobs::{JobKind, JobState, ModelId, TaskError, TaskResult};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -63,6 +65,9 @@ pub struct Asset {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Query {
+    pub legacy_category: String,
+    pub medium: String,
+    pub themes: Vec<String>,
     pub metadata: Vec<MetadataPredicate>,
     pub folder: Option<String>,
     pub category: String,
@@ -167,6 +172,13 @@ pub enum SortOrder {
 }
 #[derive(Debug, Clone, Default)]
 pub struct AssetDetails {
+    pub medium: String,
+    pub themes: Vec<String>,
+    pub ai_tags: Vec<String>,
+    pub manual_tags: Vec<String>,
+    pub manual_medium: bool,
+    pub manual_themes: bool,
+    pub manual_description: bool,
     pub ai_caption: String,
     pub ocr: String,
     pub category: String,
@@ -202,6 +214,9 @@ pub struct Collection {
 }
 #[derive(Debug, Clone, Default)]
 pub struct Organizer {
+    pub ai_profile: AiProfile,
+    pub ai_groups: Vec<AiGroup>,
+    pub ai_outdated: u64,
     pub errors: Vec<(OrganizerSection, String)>,
     pub quarantined_files: u64,
     pub quarantined_bytes: u64,
@@ -299,6 +314,7 @@ pub struct Face {
 
 #[derive(Debug, Clone, Default)]
 pub struct UserSettings {
+    pub category_template: Option<AiProfile>,
     pub synco: SyncoPreferences,
     pub ai: AiPreferences,
     pub recent: Vec<(String, std::path::PathBuf)>,

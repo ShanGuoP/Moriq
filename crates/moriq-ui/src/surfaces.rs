@@ -252,7 +252,8 @@ impl App {
         !self.surfaces.stack.is_empty()
     }
     pub(super) fn can_go_back(&self) -> bool {
-        !(self.manager.panel == Some(manage::Panel::Delete) && self.manager.busy)
+        !self.libraries.busy
+            && !(self.manager.panel == Some(manage::Panel::Delete) && self.manager.busy)
             && (self.surface_open() || self.viewer.preview_expanded || self.history.can_back())
     }
     pub(super) fn sync_surface(
@@ -337,6 +338,9 @@ impl App {
         iced::widget::operation::scroll_to(id, scrollable::AbsoluteOffset { x: 0.0, y })
     }
     pub(super) fn close_surface(&mut self) -> Task<Message> {
+        if self.libraries.busy {
+            return Task::none();
+        }
         if self.dialog.take().is_some() {
             return Task::none();
         }

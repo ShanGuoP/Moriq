@@ -6,6 +6,7 @@ pub enum ModelId {
     ChineseClip,
     Florence,
     Faces,
+    Qwen35_4b,
 }
 impl ModelId {
     pub const fn as_str(self) -> &'static str {
@@ -13,6 +14,7 @@ impl ModelId {
             Self::ChineseClip => "chinese-clip",
             Self::Florence => "florence",
             Self::Faces => "faces",
+            Self::Qwen35_4b => "qwen35-4b",
         }
     }
 }
@@ -23,6 +25,7 @@ impl FromStr for ModelId {
             "chinese-clip" => Ok(Self::ChineseClip),
             "florence" => Ok(Self::Florence),
             "faces" => Ok(Self::Faces),
+            "qwen35-4b" => Ok(Self::Qwen35_4b),
             _ => Err("未登记的分析模型"),
         }
     }
@@ -41,6 +44,8 @@ pub enum JobKind {
     Thumbnails,
     Batch,
     Analysis(ModelId),
+    QwenClassification,
+    QwenDescription,
 }
 impl JobKind {
     pub const fn as_str(self) -> &'static str {
@@ -53,18 +58,23 @@ impl JobKind {
             Self::Analysis(ModelId::ChineseClip) => "analysis:chinese-clip",
             Self::Analysis(ModelId::Florence) => "analysis:florence",
             Self::Analysis(ModelId::Faces) => "analysis:faces",
+            Self::Analysis(ModelId::Qwen35_4b) => "analysis:qwen35-4b",
+            Self::QwenClassification => "analysis:qwen35-4b/classify",
+            Self::QwenDescription => "analysis:qwen35-4b/describe",
         }
     }
     pub const fn model(self) -> Option<ModelId> {
-        if let Self::Analysis(model) = self {
-            Some(model)
-        } else {
-            None
+        match self {
+            Self::Analysis(model) => Some(model),
+            Self::QwenClassification | Self::QwenDescription => Some(ModelId::Qwen35_4b),
+            _ => None,
         }
     }
     pub const fn memory_mib(self) -> u32 {
         match self {
+            Self::Analysis(ModelId::Qwen35_4b) => 3072,
             Self::Analysis(_) => 3072,
+            Self::QwenClassification | Self::QwenDescription => 3072,
             Self::Batch | Self::Metadata | Self::Integrity => 128,
             Self::Fingerprints | Self::Thumbnails => 1024,
         }
@@ -79,6 +89,8 @@ impl FromStr for JobKind {
             "fingerprints" => Ok(Self::Fingerprints),
             "thumbnails" => Ok(Self::Thumbnails),
             "batch" => Ok(Self::Batch),
+            "analysis:qwen35-4b/classify" => Ok(Self::QwenClassification),
+            "analysis:qwen35-4b/describe" => Ok(Self::QwenDescription),
             value => value
                 .strip_prefix("analysis:")
                 .ok_or("后台任务类型无效")?
@@ -173,9 +185,11 @@ mod tests {
             JobKind::Analysis(ModelId::ChineseClip),
             JobKind::Analysis(ModelId::Florence),
             JobKind::Analysis(ModelId::Faces),
+            JobKind::QwenClassification,
+            JobKind::QwenDescription,
         ] {
             assert_eq!(kind.as_str().parse(), Ok(kind));
-            assert!((1..=4096).contains(&kind.memory_mib()));
+            assert!((1..=8192).contains(&kind.memory_mib()));
         }
         for state in [
             JobState::Queued,

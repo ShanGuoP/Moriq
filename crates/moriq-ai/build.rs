@@ -12,6 +12,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         std::fs::write(output.join("ai-checksums.json"), "{}")?;
     }
+    let llama = runtime.join("llama");
+    let llama_manifest = llama.join("checksums.json");
+    println!("cargo:rerun-if-changed={}", llama_manifest.display());
+    if llama_manifest.is_file() {
+        std::fs::copy(&llama_manifest, output.join("llama-checksums.json"))?;
+    } else if env::var("PROFILE").as_deref() == Ok("release") {
+        return Err("Run scripts/prepare-ai-runtime.ps1 before a release build".into());
+    } else {
+        std::fs::write(output.join("llama-checksums.json"), "{}")?;
+    }
+    let llama_runtime =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ai-runtime/llama");
+    println!(
+        "cargo:rustc-env=MORIQ_DEV_LLAMA_ROOT={}",
+        llama_runtime.display()
+    );
     println!("cargo:rerun-if-changed=../moriq-library/native/codec-runner.cpp");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return Ok(());

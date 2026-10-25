@@ -54,8 +54,11 @@ try {
     if(-not(Test-Path -LiteralPath $binary -PathType Leaf)){throw "Missing executable: $binary"}
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
     $stagingRoot=Join-Path $packageRoot ([Guid]::NewGuid().ToString('N'))
-    $archive=Join-Path $packageRoot 'Moriq-Space-Windows.zip'
-    $pending=Join-Path $packageRoot 'Moriq-Space-Windows.pending.zip'
+    $version=[string]$buildInfo.version
+    if($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'){throw 'Invalid package version'}
+    $archiveName="Moriq-Space-Windows-v$version.zip"
+    $archive=Join-Path $packageRoot $archiveName
+    $pending=Join-Path $packageRoot "Moriq-Space-Windows-v$version.pending.zip"
     New-Item -ItemType Directory -Path $stagingRoot | Out-Null
     try {
         Copy-Item -LiteralPath $binary -Destination (Join-Path $stagingRoot 'Moriq Space.exe')
@@ -125,8 +128,8 @@ try {
         [IO.Compression.ZipFile]::CreateFromDirectory($stagingRoot,$pending,[IO.Compression.CompressionLevel]::Optimal,$false)
         Move-Item -LiteralPath $pending -Destination $archive -Force
         $hash=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-        ($hash+'  Moriq-Space-Windows.zip') | Set-Content -LiteralPath (Join-Path $packageRoot 'SHA256SUMS.txt') -Encoding ascii
-        @{Archive='Moriq-Space-Windows.zip';Sha256=$hash;Bytes=(Get-Item -LiteralPath $archive).Length;BuildId=$buildInfo.build_id;Commit=$buildInfo.commit;SourceSha256=$buildInfo.source_sha256;Dirty=$buildInfo.dirty;PublicRelease=[bool]$PublicRelease;Validation=$validation;BinarySha256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $packageRoot 'verification.json') -Encoding utf8
+        ($hash+'  '+$archiveName) | Set-Content -LiteralPath (Join-Path $packageRoot 'SHA256SUMS.txt') -Encoding ascii
+        @{Archive=$archiveName;Version=$version;Sha256=$hash;Bytes=(Get-Item -LiteralPath $archive).Length;BuildId=$buildInfo.build_id;Commit=$buildInfo.commit;SourceSha256=$buildInfo.source_sha256;Dirty=$buildInfo.dirty;PublicRelease=[bool]$PublicRelease;Validation=$validation;BinarySha256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $packageRoot 'verification.json') -Encoding utf8
         Write-Output "Portable package: $archive"
     } finally {
         $resolvedStage=[IO.Path]::GetFullPath($stagingRoot)

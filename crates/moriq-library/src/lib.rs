@@ -13,7 +13,15 @@ use std::{
 };
 use uuid::Uuid;
 
-const SCHEMA: u32 = 22;
+const SCHEMA: u32 = 24;
+mod ai_content;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod ai_content_tests;
+pub mod ai_profile;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod ai_profile_tests;
 pub mod analysis;
 pub mod backup;
 mod batch;
@@ -28,6 +36,8 @@ pub mod import;
 pub mod ingest;
 pub mod jobs;
 mod journal;
+pub mod library_cover;
+pub mod library_removal;
 pub mod lifecycle;
 mod location;
 pub mod maintenance;
@@ -262,6 +272,11 @@ impl Library {
             .write(true)
             .open(safe_path(&root, "library.lock")?)?;
         lock.try_lock_exclusive().map_err(|_| Error::Locked)?;
+        if safe_path(&root, "metadata/library-deletion.pending")?.exists() {
+            return Err(Error::Invalid(
+                "此资源库正在删除或删除曾中断，请从资源库管理中检查并重试删除".into(),
+            ));
+        }
         require_hardlinks(&root)?;
         let db_path = safe_path(&root, "catalog.db")?;
         safe_path(&root, "catalog.db-wal")?;
@@ -391,6 +406,22 @@ impl Library {
             if version <= 21 {
                 let tx = db.transaction()?;
                 tx.execute_batch(include_str!("migration_22.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 22 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_23.sql"))?;
+                tx.commit()?;
+            }
+            if version <= 23 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("migration_24.sql"))?;
+                for category in AiProfile::default().categories {
+                    tx.execute(
+                        "UPDATE ai_vocabulary SET definition=?2 WHERE id=?1",
+                        params![category.id, category.definition],
+                    )?;
+                }
                 tx.commit()?;
             }
             Ok(())
@@ -543,11 +574,8 @@ impl Library {
         let project = query.project.map(|id| id.to_string());
         // instr makes %, _ and quotes literal. All user input stays parameterized.
         const WHERE_HEAD: &str = "WHERE (?1='' OR instr(lower(a.name),lower(?1))>0 OR instr(lower(a.notes),lower(?1))>0 OR \
-                EXISTS(SELECT 1 FROM ai_results ar WHERE ar.version_id=v.id AND \
-                (instr(lower(coalesce(json_extract(ar.data,'$.caption'),'')),lower(?1))>0 OR \
-                instr(lower(coalesce(json_extract(ar.data,'$.ocr'),'')),lower(?1))>0)) OR EXISTS(SELECT 1 FROM \
-                asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND \
-                instr(lower(t.name),lower(?1))>0))";
+                EXISTS(SELECT 1 FROM ai_search_source ar WHERE ar.version_id=v.id AND instr(lower(ar.body),lower(?1))>0) OR \
+                EXISTS(SELECT 1 FROM effective_asset_tags t WHERE t.asset_id=a.id AND instr(lower(t.name),lower(?1))>0))";
 
         const WHERE_TAIL: &str = "
           AND (?2=0 OR a.favorite=1) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM project_assets pa WHERE pa.asset_id=a.id AND pa.project_id IN(WITH RECURSIVE descendants(id) AS(SELECT ?3 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT id FROM descendants)))
@@ -555,9 +583,9 @@ impl Library {
           AND v.bytes>=?7 AND (?8=0 OR v.bytes<=?8) AND a.imported_at>=?9 AND v.width>=?10
           AND (?18=0 OR a.imported_at<?18)
           AND (?11=0 OR (?11=1 AND v.width>v.height) OR (?11=2 AND v.height>v.width) OR (?11=3 AND v.width=v.height))
-          AND (?12=0 OR NOT EXISTS(SELECT 1 FROM asset_tags WHERE asset_id=a.id))
+          AND (?12=0 OR NOT EXISTS(SELECT 1 FROM effective_asset_tags WHERE asset_id=a.id))
           AND (?13=0 OR NOT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=a.id))
-          AND (?14='' OR EXISTS(SELECT 1 FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND t.name=?14)) AND (?15='' OR v.dominant_color=?15) AND a.edited_at>=?16 AND (?17=0 OR (?17=1 AND NOT EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)) OR (?17=2 AND EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)))";
+          AND (?14='' OR EXISTS(SELECT 1 FROM effective_asset_tags t WHERE t.asset_id=a.id AND t.name=?14)) AND (?15='' OR v.dominant_color=?15) AND a.edited_at>=?16 AND (?17=0 OR (?17=1 AND NOT EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)) OR (?17=2 AND EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)))";
 
         let indexed_text = if query.text.chars().count() >= 3 {
             Some(format!("\"{}\"", query.text.replace('"', "\"\"")))
@@ -572,11 +600,11 @@ impl Library {
         };
         let media_condition = format!(
             "{where_head}{WHERE_TAIL} AND (?19=0 OR (?19=1 AND v.format IN({})) OR (?19=2 AND v.format IN({}))) \
-                AND (?20='' OR EXISTS(SELECT 1 FROM asset_classification ac WHERE ac.asset_id=a.id AND \
-                ac.category=?20) OR (?20='未分类' AND NOT EXISTS(SELECT 1 FROM asset_classification ac WHERE \
+                AND (?20='' OR EXISTS(SELECT 1 FROM asset_ai_categories ac WHERE ac.asset_id=a.id AND \
+                ac.category=?20) OR (?20='未分类' AND NOT EXISTS(SELECT 1 FROM asset_ai_categories ac WHERE \
                 ac.asset_id=a.id))) AND (?21='' OR EXISTS(SELECT 1 FROM detected_faces df WHERE df.version_id=v.id \
                 AND df.person_id=?21)) AND (?23=0 OR a.id IN(SELECT value FROM json_each(?22))) AND (?24='' OR \
-                EXISTS(SELECT 1 FROM virtual_folder_assets fa WHERE fa.folder_id=?24 AND fa.asset_id=a.id))",
+                EXISTS(SELECT 1 FROM virtual_folder_assets fa WHERE fa.folder_id=?24 AND fa.asset_id=a.id)) AND (?25='' OR EXISTS(SELECT 1 FROM ai_effective_content e WHERE e.version_id=v.id AND e.medium=?25)) AND NOT EXISTS(SELECT 1 FROM json_each(?26) q WHERE NOT EXISTS(SELECT 1 FROM ai_effective_content e,json_each(e.themes) t WHERE e.version_id=v.id AND t.value=q.value)) AND (?27='' OR EXISTS(SELECT 1 FROM asset_classification lc WHERE lc.asset_id=a.id AND lc.category=?27 AND (lc.manual=1 OR NOT EXISTS(SELECT 1 FROM ai_effective_content e WHERE e.version_id=v.id AND e.medium<>''))))",
             native::raw_sql(),
             video::sql_formats()
         );
@@ -610,7 +638,10 @@ impl Library {
             serde_json::to_string(&query.semantic_ids)
                 .map_err(|e| Error::Invalid(e.to_string()))?,
             query.semantic_active,
-            query.folder.as_deref().unwrap_or("")
+            query.folder.as_deref().unwrap_or(""),
+            query.medium,
+            serde_json::to_string(&query.themes).map_err(|e| Error::Invalid(e.to_string()))?,
+            query.legacy_category
         ]
         .iter()
         .map(|p| {
@@ -720,7 +751,9 @@ rusqlite::params_from_iter(values))?;
         for row in rows {
             let (id, version, name, format, width, height, bytes, favorite, rating, imported_at) =
                 row?;
-            let mut tags = self.db.prepare("SELECT t.name FROM tags t JOIN asset_tags at ON at.tag_id=t.id WHERE at.asset_id=?1 ORDER BY t.name")?;
+            let mut tags = self
+                .db
+                .prepare("SELECT name FROM effective_asset_tags WHERE asset_id=?1 ORDER BY name")?;
             let tags = tags
                 .query_map([&id], |r| r.get(0))?
                 .collect::<std::result::Result<Vec<String>, _>>()?;
@@ -1078,8 +1111,31 @@ rusqlite::params_from_iter(values))?;
             return Err(Error::Invalid("最多 64 个标签，每个最多 128 字节".into()));
         }
         let tx = self.db.transaction()?;
+        let version: String = tx.query_row(
+            "SELECT display_version_id FROM assets WHERE id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )?;
+        let automatic = tx
+            .prepare("SELECT name FROM ai_visible_tags WHERE version_id=?1")?
+            .query_map([&version], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let manual = tx
+            .prepare(
+                "SELECT t.name FROM tags t JOIN asset_tags x ON x.tag_id=t.id WHERE x.asset_id=?1",
+            )?
+            .query_map([id.to_string()], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for tag in &automatic {
+            if !tags.iter().any(|s| s.trim() == tag) {
+                ai_content::reject_tag(&tx, &version, tag)?;
+            }
+        }
         tx.execute("DELETE FROM asset_tags WHERE asset_id=?1", [id.to_string()])?;
         for tag in tags.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if automatic.iter().any(|s| s == tag) && !manual.iter().any(|s| s == tag) {
+                continue;
+            }
             tx.execute("INSERT OR IGNORE INTO tags(name) VALUES(?1)", [tag])?;
             tx.execute(
                 "INSERT OR IGNORE INTO asset_tags SELECT ?1,id FROM tags WHERE name=?2",

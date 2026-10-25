@@ -2022,7 +2022,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "fs2",
- "image",
+ "moriq-domain",
  "moriq-runtime",
  "reqwest",
  "serde",

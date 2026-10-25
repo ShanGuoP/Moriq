@@ -1,4 +1,4 @@
-use iced::widget::{button, container, scrollable, slider, text_input};
+use iced::widget::{button, container, scrollable, slider, text_editor, text_input};
 use iced::{Background, Border, Color, Theme};
 use moriq_domain::Appearance;
 pub const BLUE: Color = Color::from_rgb8(36, 105, 230);
@@ -338,6 +338,23 @@ pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
         placeholder: adaptive(theme, MUTED),
         value: adaptive(theme, TEXT),
         selection: adaptive(theme, PALE),
+    }
+}
+pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let field = input(
+        theme,
+        if matches!(status, text_editor::Status::Focused { .. }) {
+            text_input::Status::Focused { is_hovered: false }
+        } else {
+            text_input::Status::Active
+        },
+    );
+    text_editor::Style {
+        background: field.background,
+        border: field.border,
+        placeholder: field.placeholder,
+        value: field.value,
+        selection: field.selection,
     }
 }
 pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {

@@ -1,5 +1,72 @@
 use super::*;
 #[test]
+fn asset_cover_persists_to_the_card_and_switching_library_during_budget_wait_rejects_commit() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("cover.png");
+        image::RgbImage::from_pixel(200, 100, image::Rgb([40, 80, 120]))
+            .save(&input)
+            .unwrap();
+        let mut lib = Library::create(dir.path(), "cover").unwrap();
+        lib.import(&input, None).unwrap();
+        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
+        let root = lib.root().to_owned();
+        drop(lib);
+        let service = Service::start().unwrap();
+        let owner = service.open(root.clone()).await.unwrap().info.id;
+        service
+            .set_asset_cover(owner, asset.id, asset.version_id)
+            .await
+            .unwrap();
+        let previous = std::fs::read(root.join("metadata/cover.png")).unwrap();
+        assert!(
+            service.library_cards(vec![root.clone()]).await.unwrap()[0]
+                .1
+                .is_some()
+        );
+        assert!(
+            service
+                .set_asset_cover(owner, asset.id, AssetVersionId::default())
+                .await
+                .is_err()
+        );
+        let occupied = service
+            .import_memory
+            .clone()
+            .acquire_many_owned(4096)
+            .await
+            .unwrap();
+        let clone = service.clone();
+        let mut saving = tokio::spawn(async move {
+            clone
+                .set_asset_cover(owner, asset.id, asset.version_id)
+                .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut saving)
+                .await
+                .is_err()
+        );
+        let other = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            service.create(dir.path().into(), "other".into()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(occupied);
+        assert!(saving.await.unwrap().is_err());
+        assert!(service.cover(other.info.id).await.unwrap().is_none());
+        assert_eq!(
+            std::fs::read(root.join("metadata/cover.png")).unwrap(),
+            previous
+        );
+        service.open(root).await.unwrap();
+        assert_eq!(service.cover(owner).await.unwrap().unwrap().width, 200);
+        service.close().await.unwrap();
+    });
+}
+#[test]
 fn cached_original_tiles_fit_the_small_interactive_budget() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -176,8 +243,8 @@ fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library
         assert!(overview.projects.iter().all(|(_, p)| p.is_some()));
         for (label, pixels) in overview.categories {
             match label.as_str() {
-                "风景" => assert_eq!(&pixels.unwrap().rgba[..4], &[20, 80, 140, 255]),
-                "未分类" => assert_eq!(&pixels.unwrap().rgba[..4], &[190, 70, 60, 255]),
+                "legacy:风景" => assert_eq!(&pixels.unwrap().rgba[..4], &[20, 80, 140, 255]),
+                "_unclassified" => assert_eq!(&pixels.unwrap().rgba[..4], &[190, 70, 60, 255]),
                 _ => assert!(pixels.is_none()),
             }
         }
@@ -192,7 +259,7 @@ fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library
                 .unwrap()
                 .categories
                 .iter()
-                .any(|(label, p)| label == "风景" && p.is_none())
+                .all(|(label, p)| label != "legacy:风景" || p.is_none())
         );
         let next = service
             .create(dir.path().into(), "empty".into())

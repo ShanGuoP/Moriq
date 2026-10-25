@@ -1,24 +1,30 @@
 use super::*;
 use crate::components::*;
 use iced::futures::{StreamExt, stream};
-use iced::widget::{column, text_input};
+use iced::widget::{column, text_editor, text_input};
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub(super) struct AiState {
+    pub categories: crate::categories::State,
     pub loaded: bool,
     pub loading: bool,
     pub models: Vec<moriq_app::ModelInfo>,
     pub hardware: Option<moriq_app::Hardware>,
     pub downloads: HashMap<String, moriq_app::DownloadControl>,
-    pub request: u64,
-    pub search_generation: u64,
     pub category: String,
     pub category_version: Option<AssetVersionId>,
+    pub medium: String,
+    pub themes: Vec<String>,
+    pub description: String,
+    pub description_editor: text_editor::Content,
+    pub classification_dirty: bool,
+    pub description_dirty: bool,
+    pub content_saving: bool,
+    pub content_request: u64,
     pub person_name: String,
     pub person: Option<PersonChoice>,
     pub target: Option<PersonChoice>,
-    pub recommendations: Option<(AssetVersionId, Vec<(AssetId, String)>)>,
     pub portraits: HashMap<String, image::Handle>,
     pub portrait_request: u64,
     pub portrait_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -55,6 +61,8 @@ impl std::fmt::Display for PersonChoice {
 }
 #[derive(Debug, Clone)]
 pub enum AiMessage {
+    Categories(crate::categories::CategoryMessage),
+    Group(String),
     SwitchLibrary(PathBuf),
     LibraryOpened(Result<Opened, String>),
     Organize,
@@ -64,12 +72,23 @@ pub enum AiMessage {
     Pause(String),
     Uninstall(String),
     Installed(String, Result<(), String>),
-    Semantic,
-    ImageSearch,
-    SearchLoaded(LibraryId, u64, Result<Vec<AssetId>, String>),
     Category(String),
     CategoryInput(String),
     SaveCategory,
+    Medium(String),
+    Theme(String),
+    DescriptionAction(text_editor::Action),
+    SaveClassification,
+    SaveDescription,
+    EditContent(AiEdit),
+    ContentStored(
+        LibraryId,
+        AssetId,
+        AssetVersionId,
+        u64,
+        u8,
+        Result<(), String>,
+    ),
     People,
     Person(PersonChoice),
     Target(PersonChoice),
@@ -85,12 +104,6 @@ pub enum AiMessage {
         Result<Option<moriq_app::Pixels>, String>,
     ),
     Stored(LibraryId, Result<(), String>),
-    Recommended(
-        LibraryId,
-        AssetId,
-        AssetVersionId,
-        Result<Vec<(AssetId, String)>, String>,
-    ),
 }
 impl App {
     pub(super) fn model_libraries(&self) -> Vec<(String, PathBuf, bool)> {
@@ -123,7 +136,116 @@ impl App {
     pub(super) fn ai_message(&mut self, event: AiMessage) -> Task<Message> {
         let language = self.preferences.language;
         let service = self.service.clone();
+        let content_ready = !self.switching
+            && self
+                .viewer
+                .selected
+                .as_ref()
+                .is_some_and(|a| self.ai.category_version == Some(a.version_id));
         match event {
+            AiMessage::Categories(event) => return self.category_message(event),
+            AiMessage::Group(id) => {
+                let Some(group) = self.manager.organizer.ai_groups.iter().find(|g| g.id == id)
+                else {
+                    return Task::none();
+                };
+                self.query = group.query.clone();
+                self.screen = Screen::Assets;
+                return self.reset_query();
+            }
+            AiMessage::Medium(value) if !self.ai.content_saving && content_ready => {
+                self.ai.medium = value;
+                self.ai.classification_dirty = true;
+            }
+            AiMessage::Theme(value) if !self.ai.content_saving && content_ready => {
+                if self.ai.themes.contains(&value) {
+                    self.ai.themes.retain(|s| s != &value);
+                } else {
+                    self.ai.themes.push(value);
+                }
+                self.ai.classification_dirty = true;
+            }
+            AiMessage::DescriptionAction(action) if !self.ai.content_saving && content_ready => {
+                let changed = action.is_edit();
+                self.ai.description_editor.perform(action);
+                if changed {
+                    self.ai.description = self.ai.description_editor.text();
+                    self.ai.description_dirty = true;
+                }
+            }
+            AiMessage::SaveClassification
+            | AiMessage::SaveDescription
+            | AiMessage::EditContent(_)
+                if !self.ai.content_saving && content_ready =>
+            {
+                let Some(owner) = self.library.as_ref().map(|l| l.info.id) else {
+                    return Task::none();
+                };
+                let Some(asset) = self.viewer.selected.as_ref() else {
+                    return Task::none();
+                };
+                let asset_id = asset.id;
+                let version = asset.version_id;
+                let (edit, fields) = match event {
+                    AiMessage::EditContent(edit) => {
+                        let fields = match &edit {
+                            AiEdit::Medium(_) | AiEdit::Themes(_) => 1,
+                            AiEdit::Description(_) => 2,
+                            _ => 0,
+                        };
+                        (edit, fields)
+                    }
+                    AiMessage::SaveClassification => (
+                        AiEdit::Classification(self.ai.medium.clone(), self.ai.themes.clone()),
+                        1,
+                    ),
+                    _ => (AiEdit::Description(Some(self.ai.description.clone())), 2),
+                };
+                self.ai.content_saving = true;
+                self.ai.content_request = self.ai.content_request.wrapping_add(1);
+                let request = self.ai.content_request;
+                return Task::perform(
+                    async move {
+                        service
+                            .edit_ai_content(owner, asset_id, version, edit)
+                            .await
+                    },
+                    move |r| {
+                        Message::Ai(AiMessage::ContentStored(
+                            owner, asset_id, version, request, fields, r,
+                        ))
+                    },
+                );
+            }
+            AiMessage::ContentStored(owner, asset, version, request, fields, result)
+                if self.library.as_ref().is_some_and(|l| l.info.id == owner) =>
+            {
+                if self.ai.content_request == request
+                    && self
+                        .viewer
+                        .selected
+                        .as_ref()
+                        .is_some_and(|a| a.id == asset && a.version_id == version)
+                {
+                    self.ai.content_saving = false;
+                    if result.is_ok() {
+                        if fields == 1 {
+                            self.ai.classification_dirty = false;
+                        }
+                        if fields == 2 {
+                            self.ai.description_dirty = false;
+                        }
+                    }
+                }
+                if let Err(error) = result {
+                    self.error = Some(error);
+                }
+                return Task::batch([
+                    self.refresh_catalog(),
+                    self.refresh(),
+                    self.refresh_details(),
+                ]);
+            }
             AiMessage::PortraitLoaded(owner, request, person, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == owner)
                     && request == self.ai.portrait_request
@@ -175,31 +297,32 @@ impl App {
                     if !model.installed {
                         return None;
                     }
-                    let model: ModelId = model.spec.id.parse().ok()?;
-                    let service = service.clone();
-                    Some(Task::perform(
-                        async move {
-                            service
-                                .queue_media_job(owner, JobKind::Analysis(model))
-                                .await
-                                .map_err(|e| e.to_string())
-                        },
-                        move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
-                    ))
+                    if model.spec.id == "qwen35-4b" {
+                        let classification = service.clone();
+                        let description = service.clone();
+                        return Some(Task::batch([
+                            Task::perform(
+                                async move {
+                                    classification
+                                        .queue_media_job(owner, JobKind::QwenClassification)
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                },
+                                move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
+                            ),
+                            Task::perform(
+                                async move {
+                                    description
+                                        .queue_media_job(owner, JobKind::QwenDescription)
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                },
+                                move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
+                            ),
+                        ]));
+                    }
+                    None
                 }));
-            }
-            AiMessage::Recommended(owner, asset, version, result)
-                if self.library.as_ref().is_some_and(|l| l.info.id == owner)
-                    && self
-                        .viewer
-                        .selected
-                        .as_ref()
-                        .is_some_and(|a| a.id == asset && a.version_id == version) =>
-            {
-                match result {
-                    Ok(items) => self.ai.recommendations = Some((version, items)),
-                    Err(e) => tracing::warn!(%e,"recommendation lookup deferred"),
-                }
             }
             AiMessage::Refresh => {
                 self.ai.loading = true;
@@ -264,61 +387,6 @@ impl App {
                     self.error = Some(e)
                 }
                 return self.ai_message(AiMessage::Refresh);
-            }
-            AiMessage::Semantic | AiMessage::ImageSearch => {
-                let Some(library) = &self.library else {
-                    return Task::none();
-                };
-                let owner = library.info.id;
-                let image = matches!(event, AiMessage::ImageSearch);
-                let selected = self.viewer.selected.as_ref().map(|a| a.id);
-                if image && selected.is_none() {
-                    return Task::none();
-                }
-                let text = self.query.text.clone();
-                self.ai.request = self.ai.request.wrapping_add(1);
-                let request = self.ai.request;
-                self.ai.search_generation = self.generation;
-                self.status =
-                    tr!(language, "正在本机计算相似度…" => "Calculating similarity locally…")
-                        .into();
-                return Task::perform(
-                    async move {
-                        if image {
-                            service
-                                .search_by_image(
-                                    owner,
-                                    selected.ok_or(
-                                        tr!(language, "请选择图片" => "Please select an image"),
-                                    )?,
-                                )
-                                .await
-                        } else {
-                            service.semantic_search(owner, text).await
-                        }
-                    },
-                    move |r| Message::Ai(AiMessage::SearchLoaded(owner, request, r)),
-                );
-            }
-            AiMessage::SearchLoaded(owner, request, result)
-                if self.library.as_ref().is_some_and(|l| l.info.id == owner)
-                    && request == self.ai.request
-                    && self.generation == self.ai.search_generation =>
-            {
-                match result {
-                    Ok(ids) => {
-                        self.query.semantic_ids = ids;
-                        self.query.semantic_active = true;
-                        self.query.text.clear();
-                        self.screen = Screen::Assets;
-                        self.manager.panel = None;
-                        self.status =
-                            tr!(language, "按语义相似度排序" => "Sorted by semantic similarity")
-                                .into();
-                        return self.reset_query();
-                    }
-                    Err(e) => self.error = Some(e),
-                }
             }
             AiMessage::Category(category) => {
                 if self.library.is_none() {
@@ -434,6 +502,15 @@ impl App {
             .map(|person| PersonChoice::person(language, person));
     }
     pub(super) fn sidebar_categories(&self) -> Vec<(String, u64)> {
+        if !self.manager.organizer.ai_groups.is_empty() {
+            return self
+                .manager
+                .organizer
+                .ai_groups
+                .iter()
+                .map(|g| (self.group_label(g), g.count))
+                .collect();
+        }
         self.manager
             .organizer
             .ai_categories
@@ -588,7 +665,7 @@ impl App {
         .spacing(18);
         if self.manager.organizer.people.is_empty() {
             view = view.push(muted(
-                tr!(language, "尚未识别到人物。请先在 AI 模型页安装人脸模型，并运行人脸分析。" => "No people recognized yet. Install the face model on the AI Models page and run face analysis."),
+                tr!(language, "暂无历史人物分组。" => "No historical people groups."),
             ));
         }
         for person in &self.manager.organizer.people {
@@ -649,7 +726,9 @@ impl App {
     pub(super) fn ai_details(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         use crate::icons::Icon;
-        use iced::Length;
+        use crate::theme::{BLUE, MUTED, TEXT};
+        use iced::widget::{Space, row};
+        use iced::{Alignment, Length};
         let video = self
             .viewer
             .selected
@@ -660,20 +739,239 @@ impl App {
             tr!(language, "AI 分析与整理" => "AI analysis and organization")
         )]
         .spacing(12);
-        if !self.manager.details.ai_caption.is_empty() {
-            view = view.push(muted(self.manager.details.ai_caption.clone()));
+        if self
+            .viewer
+            .selected
+            .as_ref()
+            .is_none_or(|a| self.ai.category_version != Some(a.version_id))
+        {
+            return view.push(muted(tr!(language, "正在读取当前版本的分析内容…" => "Loading analysis for the current version..."))).into();
         }
+        let details = &self.manager.details;
+        let profile = &self.manager.organizer.ai_profile;
+        let editable = !self.ai.content_saving;
+        let mut classification = column![
+            row![
+                heading(tr!(language,"分类"=>"Classification"), 13),
+                Space::new().width(Length::Fill),
+                chip(
+                    if details.manual_medium || details.manual_themes {
+                        tr!(language,"人工"=>"Manual")
+                    } else {
+                        "AI"
+                    },
+                    BLUE
+                )
+            ]
+            .align_y(Alignment::Center),
+            muted(tr!(language,"媒介"=>"Medium")),
+            choice_labels(
+                profile
+                    .categories
+                    .iter()
+                    .filter(|c| c.kind == AiCategoryKind::Medium)
+                    .map(|c| c.id.clone())
+                    .collect(),
+                Some(self.ai.medium.clone()),
+                move |id| profile.categories.iter().find(|c| &c.id == id).map_or_else(
+                    || id.clone(),
+                    |c| crate::categories::category_label(language, c)
+                ),
+                |id| Message::Ai(AiMessage::Medium(id)),
+            )
+            .width(Length::Fill),
+            muted(tr!(language,"主题 · 可多选"=>"Themes · multiple selection"))
+        ]
+        .spacing(9);
+        let mut themes = iced::widget::Row::new().spacing(6);
+        for category in profile
+            .categories
+            .iter()
+            .filter(|c| c.kind == AiCategoryKind::Theme && c.enabled)
+        {
+            let selected = self.ai.themes.contains(&category.id);
+            themes = themes.push(
+                iced::widget::button(
+                    iced::widget::text(crate::categories::category_label(language, category))
+                        .size(12),
+                )
+                .padding([6, 10])
+                .style(if selected {
+                    crate::theme::selected_row
+                } else {
+                    crate::theme::secondary
+                })
+                .on_press_maybe(
+                    editable.then(|| Message::Ai(AiMessage::Theme(category.id.clone()))),
+                ),
+            );
+        }
+        classification = classification.push(themes.wrap());
+        classification = classification.push(
+            action(
+                tr!(language,"保存分类"=>"Save classification"),
+                Message::Ai(AiMessage::SaveClassification),
+            )
+            .width(Length::Fill)
+            .on_press_maybe(
+                (self.ai.classification_dirty && editable)
+                    .then_some(Message::Ai(AiMessage::SaveClassification)),
+            ),
+        );
+        let mut restore = iced::widget::Row::new().spacing(6);
+        if details.manual_medium {
+            restore = restore.push(
+                action(
+                    tr!(language,"重置媒介"=>"Reset medium"),
+                    Message::Ai(AiMessage::EditContent(AiEdit::Medium(None))),
+                )
+                .padding([5, 8])
+                .style(crate::theme::flat)
+                .on_press_maybe(
+                    editable.then_some(Message::Ai(AiMessage::EditContent(AiEdit::Medium(None)))),
+                ),
+            );
+        }
+        if details.manual_themes {
+            restore = restore.push(
+                action(
+                    tr!(language,"重置主题"=>"Reset themes"),
+                    Message::Ai(AiMessage::EditContent(AiEdit::Themes(None))),
+                )
+                .padding([5, 8])
+                .style(crate::theme::flat)
+                .on_press_maybe(
+                    editable.then_some(Message::Ai(AiMessage::EditContent(AiEdit::Themes(None)))),
+                ),
+            );
+        }
+        if details.manual_medium || details.manual_themes {
+            classification = classification.push(restore.wrap());
+        }
+        view = view.push(classification).push(separator());
+        let mut editor = text_editor(&self.ai.description_editor).size(13).padding(10).height(132)
+            .placeholder(tr!(language,"补充画面描述，不会覆盖备注…"=>"Describe this image; notes stay unchanged...")).style(crate::theme::editor);
+        if editable {
+            editor = editor.on_action(|a| Message::Ai(AiMessage::DescriptionAction(a)));
+        }
+        view = view
+            .push(
+                row![
+                    heading(tr!(language,"画面描述"=>"Description"), 13),
+                    Space::new().width(Length::Fill),
+                    chip(
+                        if details.manual_description {
+                            tr!(language,"人工"=>"Manual")
+                        } else {
+                            "AI"
+                        },
+                        BLUE
+                    )
+                ]
+                .align_y(Alignment::Center),
+            )
+            .push(editor)
+            .push(
+                action(
+                    tr!(language,"保存描述"=>"Save description"),
+                    Message::Ai(AiMessage::SaveDescription),
+                )
+                .width(Length::Fill)
+                .on_press_maybe(
+                    (self.ai.description_dirty && editable)
+                        .then_some(Message::Ai(AiMessage::SaveDescription)),
+                ),
+            );
+        if details.manual_description {
+            view = view.push(
+                action(
+                    tr!(language,"恢复 AI 原文"=>"Restore AI description"),
+                    Message::Ai(AiMessage::EditContent(AiEdit::Description(None))),
+                )
+                .style(crate::theme::flat)
+                .on_press_maybe(editable.then_some(Message::Ai(AiMessage::EditContent(
+                    AiEdit::Description(None),
+                )))),
+            );
+        }
+        let ai_tags: Vec<_> = details
+            .ai_tags
+            .iter()
+            .filter(|t| !details.manual_tags.contains(t))
+            .collect();
+        view = view.push(separator()).push(
+            row![
+                heading(tr!(language,"识别标签"=>"AI tags"), 13),
+                Space::new().width(Length::Fill),
+                chip(ai_tags.len().to_string(), MUTED)
+            ]
+            .align_y(Alignment::Center),
+        );
+        if ai_tags.is_empty() {
+            view = view.push(muted(
+                tr!(language,"暂无待整理的 AI 标签"=>"No AI tags to organize"),
+            ));
+        } else {
+            view = view.push(muted(tr!(language,"标签图标保留为人工，叉号移除。"=>"Tag icon keeps a manual tag; × removes it.")));
+        }
+        for tag in ai_tags {
+            let promote = Message::Ai(AiMessage::EditContent(AiEdit::PromoteTag(tag.clone())));
+            let reject = Message::Ai(AiMessage::EditContent(AiEdit::RejectTag(tag.clone())));
+            let compact = |kind, event| {
+                iced::widget::button(crate::icons::icon(kind, 15.0, MUTED))
+                    .padding(6)
+                    .style(crate::theme::flat)
+                    .on_press_maybe(editable.then_some(event))
+            };
+            view = view.push(
+                iced::widget::container(
+                    row![
+                        iced::widget::text(tag.as_str())
+                            .size(13)
+                            .width(Length::Fill)
+                            .style(crate::theme::text_color(TEXT)),
+                        iced::widget::tooltip(
+                            compact(Icon::Tag, promote),
+                            muted(tr!(language,"保留为人工标签"=>"Keep as manual tag")),
+                            iced::widget::tooltip::Position::Left
+                        ),
+                        iced::widget::tooltip(
+                            compact(Icon::Close, reject),
+                            muted(tr!(language,"移除 AI 标签"=>"Remove AI tag")),
+                            iced::widget::tooltip::Position::Left
+                        )
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([5, 8])
+                .width(Length::Fill)
+                .style(crate::theme::pale),
+            );
+        }
+        view = view.push(
+            action(
+                tr!(language,"恢复已移除的 AI 标签"=>"Restore removed AI tags"),
+                Message::Ai(AiMessage::EditContent(AiEdit::ResetRejectedTags)),
+            )
+            .style(crate::theme::flat)
+            .on_press_maybe(editable.then_some(Message::Ai(AiMessage::EditContent(
+                AiEdit::ResetRejectedTags,
+            )))),
+        );
         if !self.manager.details.ocr.is_empty() {
             view = view.push(muted(self.manager.details.ocr.clone()));
         }
         if self.manager.details.ai_caption.is_empty() && self.manager.details.ocr.is_empty() {
             view = view.push(muted(if video {
-                tr!(language, "视频支持人工分类，图片识别与相似搜索适用于照片。" => "Videos support manual categories. Image recognition and similarity search apply to photos.")
+                tr!(language, "视频支持人工分类，Qwen 图片分析适用于照片。" => "Videos support manual categories. Qwen image analysis applies to photos.")
             } else {
                 tr!(language, "暂无识别描述，可在 AI 模型页运行分析。" => "No description yet. Run analysis on the AI Models page.")
             }));
         }
         view = view
+            .push(separator())
+            .push(heading(tr!(language,"传统分类 · 批量编辑"=>"Legacy category · batch edit"),12))
             .push(
                 text_input(tr!(language, "人工分类（可批量修改）" => "Manual category (supports batch editing)"), &self.ai.category)
                     .style(crate::theme::input)
@@ -690,26 +988,16 @@ impl App {
                 )
                 .width(Length::Fill),
             );
-        if !video {
-            view = view
-                .push(
-                    form_action(
-                        Icon::Search,
-                        tr!(language, "以此图搜索相似图片" => "Find similar images"),
-                        Message::Ai(AiMessage::ImageSearch),
-                        false,
-                    )
-                    .width(Length::Fill),
+        if !self.manager.details.faces.is_empty() {
+            view = view.push(
+                form_action(
+                    Icon::Person,
+                    tr!(language, "管理历史人物分组" => "Manage historical people groups"),
+                    Message::Ai(AiMessage::People),
+                    false,
                 )
-                .push(
-                    form_action(
-                        Icon::Person,
-                        tr!(language, "管理人物" => "Manage people"),
-                        Message::Ai(AiMessage::People),
-                        false,
-                    )
-                    .width(Length::Fill),
-                );
+                .width(Length::Fill),
+            );
         }
         let choices: Vec<_> = self
             .manager
@@ -745,52 +1033,13 @@ impl App {
     }
     pub(super) fn ai_recommendations(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
-        if self
-            .viewer
-            .selected
-            .as_ref()
-            .is_some_and(|a| moriq_app::is_video_format(&a.format))
-        {
-            return column![
-                detail_heading(crate::icons::Icon::Search, tr!(language, "内容相似推荐" => "Similar content")),
-                muted(tr!(language, "相似图片推荐适用于照片，当前素材为视频。" => "Similar image recommendations apply to photos. This asset is a video."))
-            ]
-            .spacing(12)
-            .into();
-        }
-        let mut view = column![
-            heading(tr!(language, "内容相似推荐" => "Similar content"), 14),
-            muted(tr!(language, "根据已建立的图片内容索引推荐。" => "Recommendations use the existing image content index.")),
-            action(tr!(language, "以此图搜索更多" => "Find more like this"), Message::Ai(AiMessage::ImageSearch)),
+        column![
+            heading(tr!(language, "图片近似查找" => "Image similarity"), 14),
+            muted(tr!(language, "根据构图与尺寸查找近似图片。" => "Find similar images by composition and dimensions.")),
             action(
                 tr!(language, "查找构图 / 尺寸近似" => "Find similar composition / dimensions"),
                 Message::Manage(ManageMessage::Similar)
             )
-        ]
-        .spacing(8);
-        let mut found = false;
-        if let Some((version, items)) = &self.ai.recommendations
-            && self
-                .viewer
-                .selected
-                .as_ref()
-                .is_some_and(|a| a.version_id == *version)
-            && !items.is_empty()
-        {
-            found = true;
-            for (id, name) in items {
-                view = view.push(action(
-                    name,
-                    Message::Journal(journal::JournalMessage::OpenAsset(*id)),
-                ));
-            }
-        }
-
-        if !found {
-            view = view.push(muted(
-                tr!(language, "暂无推荐。可在本地 AI 中安装并运行中文图片检索模型，为图库建立内容索引。" => "No recommendations yet. Install and run the Chinese image search model in Local AI to index this library."),
-            ));
-        }
-        view.into()
+        ].spacing(8).into()
     }
 }

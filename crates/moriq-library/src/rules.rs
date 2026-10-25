@@ -38,7 +38,7 @@ pub(super) fn compile(rule: &Rule, values: &mut Vec<Value>) -> Result<String> {
                     Rule::Name(_) => format!("instr(lower(a.name),lower(?{p}))>0"),
                     Rule::Notes(_) => format!("instr(lower(a.notes),lower(?{p}))>0"),
                     Rule::Tag(_) => format!(
-                        "EXISTS(SELECT 1 FROM asset_tags at JOIN tags t ON t.id=at.tag_id WHERE at.asset_id=a.id AND t.name=?{p})"
+                        "EXISTS(SELECT 1 FROM effective_asset_tags t WHERE t.asset_id=a.id AND t.name=?{p})"
                     ),
                     Rule::Format(_) => format!("v.format=?{p}"),
                     Rule::Rating(_) => format!("a.rating>=?{p}"),

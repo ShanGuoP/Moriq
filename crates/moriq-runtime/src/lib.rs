@@ -27,11 +27,6 @@ pub fn verify_runtime(root: &Path, manifest: &str, replaceable: &[&str]) -> Resu
                 .map_err(|e| e.to_string())?
                 .to_string_lossy()
                 .replace('\\', "/");
-            #[cfg(debug_assertions)]
-            if relative == "node-unpacked" || relative == "node.zip" {
-                // Preparation scratch space is never packaged or used to launch Node.
-                continue;
-            }
             reject_link(&path)?;
             if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
                 pending.push(path);
@@ -116,7 +111,7 @@ mod tests {
         let digest = format!("{:x}", Sha256::digest(b"trusted"));
         let manifest = serde_json::json!({"worker.mjs":digest}).to_string();
         assert!(verify_runtime(dir.path(), &manifest, &[]).is_ok());
-        for name in ["node", "injected.json", "shadow.js"] {
+        for name in ["node", "node.zip", "injected.json", "shadow.js"] {
             fs::write(dir.path().join(name), b"injected").unwrap();
             assert!(verify_runtime(dir.path(), &manifest, &[]).is_err());
             fs::remove_file(dir.path().join(name)).unwrap();

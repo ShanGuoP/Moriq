@@ -248,12 +248,14 @@ _>>()?;
         result.folders = section(&mut errors, Folders, self.virtual_folders());
         result.jobs = section(&mut errors, Jobs, self.background_jobs());
         result.people = section(&mut errors, People, self.people());
+        result.ai_profile = section(&mut errors, Categories, self.ai_profile());
+        result.ai_groups = section(&mut errors, Categories, self.ai_groups());
+        result.ai_outdated = section(&mut errors, Categories, self.outdated_ai_count());
         result.ai_categories = section(
             &mut errors,
             Categories,
             (|| {
-                Ok(self.db.prepare("SELECT c.category,count(*) FROM asset_classification c JOIN assets a ON a.id=c.asset_id WHERE \
-                a.deleted_at IS NULL GROUP BY c.category ORDER BY c.category")?.query_map([],
+                Ok(self.db.prepare("SELECT category,sum(n) FROM (SELECT c.category,count(*) n FROM asset_ai_categories c JOIN assets a ON a.id=c.asset_id WHERE a.deleted_at IS NULL GROUP BY c.category UNION ALL SELECT '未分类',count(*) FROM assets a WHERE a.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM asset_ai_categories c WHERE c.asset_id=a.id) HAVING count(*)>0) GROUP BY category ORDER BY category")?.query_map([],
 |r|Ok((r.get(0)?,
 r.get(1)?)))?.collect::<std::result::Result<Vec<_>,
 _>>()?)
@@ -274,8 +276,8 @@ crate::video::sql_formats()),
             &mut errors,
             Tags,
             (|| {
-                Ok(self.db.prepare("SELECT t.name,count(*) FROM tags t JOIN asset_tags at ON at.tag_id=t.id JOIN assets a ON \
-                a.id=at.asset_id WHERE a.deleted_at IS NULL GROUP BY t.id ORDER BY t.name LIMIT 2000")?
+                Ok(self.db.prepare("SELECT t.name,count(*) FROM effective_asset_tags t JOIN assets a ON \
+                a.id=t.asset_id WHERE a.deleted_at IS NULL GROUP BY t.name ORDER BY t.name LIMIT 2000")?
             .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?)
             })(),
         );
@@ -301,7 +303,7 @@ crate::video::sql_formats()),
             &mut errors,
             Statistics,
             (|| {
-                Ok(self.db.query_row("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM asset_tags WHERE \
+                Ok(self.db.query_row("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM effective_asset_tags WHERE \
                 asset_id=a.id)),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM project_assets WHERE \
                 asset_id=a.id)),0),coalesce(sum(rating>=4),0) FROM assets a WHERE deleted_at IS NULL",
 [week],
@@ -481,6 +483,7 @@ native::raw_sql()),
                 Edit::RemoveTags(tags) => {
                     for tag in tags {
                         tx.execute("DELETE FROM asset_tags WHERE asset_id=?1 AND tag_id IN(SELECT id FROM tags WHERE name=?2)",params![id.to_string(),tag.trim()])?;
+                        tx.execute("INSERT OR IGNORE INTO ai_rejected_tags SELECT display_version_id,?2 FROM assets WHERE id=?1", params![id.to_string(), tag.trim()])?;
                     }
                 }
                 Edit::AddTags(tags) => {

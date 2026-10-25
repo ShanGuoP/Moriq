@@ -35,6 +35,21 @@ impl Service {
         })
         .await
     }
+    pub async fn control_model_jobs(&self, id: LibraryId, command: JobCommand) -> TaskResult<()> {
+        let cancellation = self.job_cancel.clone();
+        self.call_task(move |active| {
+            let jobs = check_task(active, id)?
+                .control_model_jobs(command)
+                .map_err(storage_error)?;
+            if matches!(command, JobCommand::Pause | JobCommand::Cancel) {
+                for job in jobs {
+                    cancellation.stop(Some((id, &job)));
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
     pub async fn job_failures(&self, id: LibraryId, job: String) -> Result<Vec<JobFailure>> {
         self.call(move |active| {
             check(active, id)?

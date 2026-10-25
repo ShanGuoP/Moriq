@@ -25,6 +25,12 @@ pub(super) fn option_label(language: Language, value: &str) -> &str {
     }
     match value {
         "全部类型" => "All types",
+        "媒介" => "Medium",
+        "全部媒介" => "All media",
+        "摄影" => "Photography",
+        "三维渲染" => "3D render",
+        "界面截图" => "Screenshot",
+        "不确定" => "Uncertain",
         "视频" => "Video",
         "全部时间" => "All time",
         "近 7 天" => "Last 7 days",
@@ -116,8 +122,14 @@ pub(super) fn category(language: Language, value: &str) -> &str {
         "截图" => "Screenshots",
         "动物" => "Animals",
         "美食" => "Food",
+        "摄影" => "Photography",
+        "三维渲染" => "3D rendering",
+        "界面截图" => "Interface screenshot",
+        "界面与文档" => "Interface and documents",
+        "角色扮演" => "Cosplay",
         "夜景" => "Night scenes",
         "未分类" => "Uncategorized",
+        "不确定" => "Uncertain",
         _ => value,
     }
 }

@@ -15,26 +15,11 @@ impl Library {
              ORDER BY a.imported_at DESC,a.id DESC LIMIT 4",
             [],
         )?;
-        let mut statement = self.db.prepare(
-            "SELECT a.display_version_id FROM assets a WHERE a.deleted_at IS NULL AND \
-             (EXISTS(SELECT 1 FROM asset_classification c WHERE c.asset_id=a.id AND c.category=?1) \
-             OR (?1='未分类' AND NOT EXISTS(SELECT 1 FROM asset_classification c WHERE c.asset_id=a.id))) \
-             ORDER BY a.imported_at DESC,a.id DESC LIMIT 1",
-        )?;
-        let categories = ["人像", "风景", "建筑", "插画", "截图", "未分类"]
+        let categories = self
+            .ai_groups()?
             .into_iter()
-            .map(|category| {
-                let version: Option<String> = statement
-                    .query_row([category], |row| row.get(0))
-                    .optional()?;
-                Ok((
-                    category.to_owned(),
-                    version
-                        .map(|id| parse_id(&id).map(AssetVersionId))
-                        .transpose()?,
-                ))
-            })
-            .collect::<Result<_>>()?;
+            .map(|g| (g.id, g.cover))
+            .collect();
         Ok(Assets {
             favorites,
             categories,
@@ -85,9 +70,25 @@ mod tests {
         assert_eq!(overview.favorites.len(), 4);
         assert_eq!(overview.favorites[0].id, assets[6].id);
         assert_eq!(overview.favorites[0].tags, vec!["保留标签"]);
-        assert_eq!(overview.categories[1].1, Some(assets[6].version_id));
+        assert_eq!(
+            overview
+                .categories
+                .iter()
+                .find(|(id, _)| id == "legacy:风景")
+                .unwrap()
+                .1,
+            Some(assets[6].version_id)
+        );
         assert!(overview.categories[0].1.is_none());
-        assert_eq!(overview.categories[5].1, Some(assets[5].version_id));
+        assert_eq!(
+            overview
+                .categories
+                .iter()
+                .find(|(id, _)| id == "_unclassified")
+                .unwrap()
+                .1,
+            Some(assets[5].version_id)
+        );
         let page = lib.page(&query, 0, 3).unwrap();
         assert_eq!(page.total, gallery.total);
         assert_eq!(

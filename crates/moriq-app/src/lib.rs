@@ -25,6 +25,7 @@ use moriq_domain::*;
 use moriq_library::Library;
 pub use moriq_library::Pixels;
 pub use moriq_library::backup::Control as BackupControl;
+pub use moriq_library::library_removal::Plan as LibraryRemovalPlan;
 pub use moriq_library::maintenance::Control as MaintenanceControl;
 pub use moriq_library::native::IMPORT_EXTENSIONS;
 pub use moriq_library::storage::Control as StorageControl;
@@ -46,7 +47,9 @@ pub async fn open_models_directory() -> Result<()> {
     let directory = tokio::task::spawn_blocking(|| {
         let directory = model_directory()?;
         std::fs::create_dir_all(&directory).map_err(|e| format!("无法创建模型文件夹：{e}"))?;
-        Ok::<_, String>(directory)
+        directory
+            .canonicalize()
+            .map_err(|e| format!("无法读取模型下载目录：{e}"))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -177,7 +180,19 @@ impl Service {
             *active = None;
             Ok(())
         })
+        .await?;
+        // Wait for the owned inference process before allowing the desktop to exit.
+        tokio::task::spawn_blocking(|| {
+            for _ in 0..200 {
+                if moriq_ai::unload_llama().is_ok() {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err("模型仍在停止，请稍后再次关闭应用".to_string())
+        })
         .await
+        .map_err(|e| e.to_string())?
     }
     pub fn start() -> std::io::Result<Self> {
         Self::start_with_inference(Arc::new(inference::LocalInference))
@@ -276,7 +291,20 @@ impl Service {
     pub async fn create(&self, parent: PathBuf, name: String) -> Result<Opened> {
         let cancellation = self.job_cancel.clone();
         self.call(move |active| {
-            let library = Library::create(&parent, &name).map_err(|e| e.to_string())?;
+            let template = moriq_library::settings::load()
+                .map_err(|e| e.to_string())?
+                .category_template;
+            let mut library = Library::create(&parent, &name).map_err(|e| e.to_string())?;
+            if let Some(template) = template {
+                let profile = library
+                    .ai_profile()
+                    .map_err(|e| e.to_string())?
+                    .with_template(&template)
+                    .map_err(str::to_owned)?;
+                library
+                    .save_ai_profile(profile)
+                    .map_err(|e| e.to_string())?;
+            }
             let opened = Opened {
                 info: library.info().map_err(|e| e.to_string())?,
                 root: library.root().into(),

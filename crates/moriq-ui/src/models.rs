@@ -7,28 +7,24 @@ use iced::widget::{
     Column, Row, Space, button, column, container, progress_bar, row, stack, text, text_input,
 };
 use iced::{Alignment, Border, Color, Length};
+pub(super) const MODEL_FILTER_ORDER: [u8; 3] = [2, 1, 0];
 impl App {
     pub(super) fn models(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let can_organize = self.library.is_some()
             && !self.switching
             && self.ai.models.iter().any(|model| model.installed);
-        let categories = [
-            ("人像", Icon::Person),
-            ("风景", Icon::Landscape),
-            ("建筑", Icon::Building),
-            ("插画", Icon::Sparkles),
-            ("截图", Icon::Raw),
-            ("未分类", Icon::More),
-        ];
+        let categories = self.manager.organizer.ai_groups.iter().collect::<Vec<_>>();
         let mut category_rows = Column::new().spacing(13);
         for chunk in categories.chunks(3) {
             let mut cards = Row::new().spacing(16);
-            for &(label, kind) in chunk {
-                let count = self.category_count(label);
+            for group in chunk {
+                let label = self.group_label(group);
+                let kind = crate::categories::category_icon(&group.id);
+                let count = group.count;
                 let cover = stack![
                     container(photo(
-                        self.manager.category_covers.get(label),
+                        self.manager.category_covers.get(&group.id),
                         Length::Fill,
                         96.0
                     ))
@@ -64,7 +60,7 @@ impl App {
                             container(
                                 row![
                                     column![
-                                        heading(crate::i18n::category(language, label), 14),
+                                        heading(label.clone(), 14),
                                         muted(if self.library.is_some() {
                                             trf!(language, "{} 张素材" => "{} assets", number(count))
                                         } else {
@@ -87,25 +83,11 @@ impl App {
                     .on_press_maybe(
                         self.library
                             .as_ref()
-                            .map(|_| Message::Ai(AiMessage::Category(label.into()))),
+                            .map(|_| Message::Ai(AiMessage::Group(group.id.clone()))),
                     ),
                 );
             }
             category_rows = category_rows.push(cards);
-        }
-        let mut more_categories = Row::new().spacing(8);
-        let mut has_more_categories = false;
-        for (label, count) in &self.manager.organizer.ai_categories {
-            if !categories.iter().any(|(name, _)| name == label) {
-                has_more_categories = true;
-                more_categories = more_categories.push(action(
-                    &format!("{label} · {count}"),
-                    Message::Ai(AiMessage::Category(label.clone())),
-                ));
-            }
-        }
-        if has_more_categories {
-            category_rows = category_rows.push(more_categories.wrap());
         }
         if self
             .manager
@@ -135,7 +117,7 @@ impl App {
                         ]
                         .spacing(12)
                         .align_y(Alignment::Center),
-                        muted(tr!(language, "在本机理解照片内容，自动分类、识别文字并建立相似搜索索引。" => "Understand photos locally: categorize content, recognize text and build similarity indexes."))
+                        muted(tr!(language, "使用 Qwen3.5-4B 在本机生成图片分类、中文标签与描述。" => "Generate image categories, Chinese tags and descriptions locally with Qwen3.5-4B."))
                     ]
                     .spacing(6)
                     .width(Length::Fill),
@@ -150,10 +132,14 @@ impl App {
                     .padding([10, 14])
                     .style(secondary)
                     .on_press_maybe(can_organize.then_some(Message::Ai(AiMessage::Organize))),
+                    action(tr!(language,"自定义分类"=>"Customize categories"),Message::Ai(AiMessage::Categories(crate::categories::CategoryMessage::Open)))
+                        .on_press_maybe(self.library.as_ref().map(|_|Message::Ai(AiMessage::Categories(crate::categories::CategoryMessage::Open)))),
                     self.model_grouping()
                 ]
                 .spacing(15)
                 .align_y(Alignment::Center),
+                muted(if self.manager.organizer.ai_outdated>0 {trf!(language,"{} 项旧分类使用了不同的识别定义，可重新整理更新。"=>"{} classifications use older definitions. Organize again to update.",self.manager.organizer.ai_outdated)} else {String::new()}),
+                self.model_job_controls(),
                 category_rows
             ]
             .spacing(24),
@@ -206,30 +192,27 @@ impl App {
             .filter(|model| model.installed)
             .count();
         let mut tabs = Row::new().spacing(6);
-        for (index, (label, count)) in [
-            (tr!(language, "已安装模型" => "Installed models"), installed),
-            (
-                tr!(language, "可用模型" => "Available models"),
-                self.ai.models.len() - installed,
-            ),
-            (
-                tr!(language, "全部模型" => "All models"),
-                self.ai.models.len(),
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for index in MODEL_FILTER_ORDER {
+            let (label, count) = match index {
+                0 => (tr!(language,"已安装模型"=>"Installed models"), installed),
+                1 => (
+                    tr!(language,"可用模型"=>"Available models"),
+                    self.ai.models.len() - installed,
+                ),
+                _ => (tr!(language,"全部模型"=>"All models"), self.ai.models.len()),
+            };
             tabs = tabs.push(
                 button(text(format!("{label} {count}")).size(12))
                     .padding([7, 10])
-                    .style(liquid_nav(self.model_filter == index as u8))
-                    .on_press(Message::ModelFilter(index as u8)),
+                    .style(liquid_nav(self.model_filter == index))
+                    .on_press(Message::ModelFilter(index)),
             );
         }
         let tabs = crate::liquid::selection(
             tabs.wrap(),
-            Some(usize::from(self.model_filter)),
+            MODEL_FILTER_ORDER
+                .iter()
+                .position(|id| *id == self.model_filter),
             crate::liquid::Treatment::Selection,
             self.preferences.reduced_motion,
         );
@@ -270,7 +253,7 @@ impl App {
                     column![
                         heading(tr!(language, "AI 模型管理" => "AI model management"), 21),
                         muted(
-                            tr!(language, "管理本地 AI 模型，按需安装，支持图像识别、相似搜索、文字识别等能力。" => "Manage local AI models. Install image recognition, similarity search and OCR capabilities as needed.")
+                            tr!(language, "按需安装 Qwen3.5-4B，使用本地图片分类、标签与描述功能。" => "Install Qwen3.5-4B on demand for local image classification, tags and descriptions.")
                         )
                     ]
                     .spacing(6)
@@ -324,6 +307,8 @@ impl App {
             .padding([8, 12])
             .style(secondary)
             .into()
+        } else if self.manager.organizer.people.is_empty() {
+            muted(tr!(language, "按图片内容分类" => "Group by image content")).into()
         } else {
             crate::components::localized_choice(
                 language,
@@ -338,24 +323,6 @@ impl App {
                 },
             )
             .into()
-        }
-    }
-    pub(super) fn category_count(&self, label: &str) -> u64 {
-        let categories = &self.manager.organizer.ai_categories;
-        if label == "未分类" {
-            let classified: u64 = categories
-                .iter()
-                .filter(|(name, _)| name != "未分类")
-                .map(|(_, count)| *count)
-                .sum();
-            self.library
-                .as_ref()
-                .map_or(0, |library| library.info.count.saturating_sub(classified))
-        } else {
-            categories
-                .iter()
-                .find(|(name, _)| name == label)
-                .map_or(0, |(_, count)| *count)
         }
     }
     fn model_visible(&self, model: &moriq_app::ModelInfo) -> bool {
@@ -377,12 +344,8 @@ impl App {
         let language = self.preferences.language;
         let id = &model.spec.id;
         let downloading = self.ai.downloads.get(id);
-        let kind = match id.as_str() {
-            "florence" => Icon::Text,
-            "faces" => Icon::Person,
-            _ => Icon::Settings,
-        };
-        let color = if id == "florence" { PURPLE } else { BLUE };
+        let kind = Icon::Sparkles;
+        let color = BLUE;
         let badge = if downloading.is_some() {
             chip(tr!(language, "下载中" => "Downloading"), BLUE)
         } else if model.installed {
@@ -482,14 +445,7 @@ impl App {
                     button(text(tr!(language, "重新分析" => "Analyze again")).size(13))
                         .padding([8, 12])
                         .style(secondary)
-                        .on_press_maybe(
-                            self.library
-                                .as_ref()
-                                .and_then(|_| id.parse::<ModelId>().ok())
-                                .map(|model| Message::Jobs(tasks::JobMessage::Queue(
-                                    JobKind::Analysis(model)
-                                )))
-                        ),
+                        .on_press_maybe(self.library.as_ref().and_then(|_| qwen_queue_message(id))),
                     action(
                         tr!(language, "卸载" => "Uninstall"),
                         Message::Ai(AiMessage::Uninstall(id.clone()))
@@ -728,16 +684,17 @@ impl App {
 
 fn model_description(language: Language, id: &str) -> &'static str {
     match id {
-        "chinese-clip" => {
-            tr!(language, "图像内容分类、中文语义检索与相似搜索。" => "Image categorization, Chinese semantic search and similarity search.")
-        }
-        "florence" => {
-            tr!(language, "识别照片中的文字，并生成图像描述。" => "Recognize text in photos and generate image descriptions.")
-        }
-        "faces" => {
-            tr!(language, "人脸检测、特征提取与人物聚类。" => "Face detection, feature extraction and people clustering.")
+        "qwen35-4b" => {
+            tr!(language, "本地生成图片媒介、主题分类与中文标签描述。" => "Generate image medium, themes, Chinese tags and descriptions locally.")
         }
         _ => tr!(language, "在本机分析图片内容。" => "Analyze image content locally."),
+    }
+}
+fn qwen_queue_message(id: &str) -> Option<Message> {
+    if id == "qwen35-4b" {
+        Some(Message::Ai(AiMessage::Organize))
+    } else {
+        None
     }
 }
 fn job_title(language: Language, kind: JobKind) -> &'static str {
@@ -750,6 +707,12 @@ fn job_title(language: Language, kind: JobKind) -> &'static str {
         }
         JobKind::Analysis(ModelId::Faces) => {
             tr!(language, "人物识别与聚类" => "People recognition and clustering")
+        }
+        JobKind::QwenClassification => {
+            tr!(language, "Qwen 媒介与主题分类" => "Qwen medium and theme classification")
+        }
+        JobKind::QwenDescription => {
+            tr!(language, "Qwen 中文标签与描述" => "Qwen Chinese tags and descriptions")
         }
         JobKind::Fingerprints => tr!(language, "近似图片索引" => "Image similarity index"),
         JobKind::Thumbnails => tr!(language, "重建图片缩略图" => "Rebuild image thumbnails"),

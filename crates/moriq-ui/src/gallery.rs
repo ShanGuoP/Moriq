@@ -39,6 +39,14 @@ impl App {
             tr!(language, "收藏夹" => "Favorites").into()
         } else if !self.query.category.is_empty() {
             crate::i18n::category(language, &self.query.category).to_owned()
+        } else if let Some(group) = self
+            .manager
+            .organizer
+            .ai_groups
+            .iter()
+            .find(|g| g.query == self.query)
+        {
+            self.group_label(group)
         } else if self.query.person.is_some() {
             tr!(language, "人物素材" => "People assets").into()
         } else if let Some(project) = self.query.project {
@@ -619,13 +627,15 @@ impl App {
             let active = self.detail_tab == tab as u8;
             tabs = tabs.push(
                 button(
-                    column![
+                    container(
                         text(*label)
                             .size(11)
+                            .width(Length::Fill)
+                            .align_x(Alignment::Center)
                             .style(crate::theme::text_color(if active { TEXT } else { MUTED })),
-                        Space::new().height(2).width(Length::Fill)
-                    ]
-                    .spacing(9),
+                    )
+                    .center_y(38)
+                    .width(Length::Fill),
                 )
                 .padding(0)
                 .width(Length::Fill)
@@ -720,8 +730,16 @@ impl App {
             tag_section = tag_section.push(muted(tr!(language, "尚未添加标签" => "No tags yet")));
         }
         for tag in asset.tags.iter().filter(|_| !self.manager.tags_collapsed) {
+            let automatic = self.ai.category_version == Some(asset.version_id)
+                && self.manager.details.ai_tags.contains(tag)
+                && !self.manager.details.manual_tags.contains(tag);
+            let label = if automatic {
+                format!("{tag} · AI")
+            } else {
+                tag.clone()
+            };
             tag_section = tag_section.push(
-                button(chip(tag, BLUE))
+                button(chip(&label, BLUE))
                     .padding(0)
                     .style(flat)
                     .on_press(Message::Manage(ManageMessage::Tag(tag.clone()))),

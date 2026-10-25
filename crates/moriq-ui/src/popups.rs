@@ -75,6 +75,15 @@ impl App {
                             true,
                         ),
                         (
+                            Icon::Image,
+                            tr!(language, "设为资源库封面" => "Set as library cover"),
+                            Message::Manage(AssetCover),
+                            false,
+                            !self.query.trash
+                                && !self.switching
+                                && self.manager.cover_saving.is_none(),
+                        ),
+                        (
                             Icon::Collection,
                             tr!(language, "版本与对比…" => "Versions and comparison…"),
                             Message::Manage(Versions),
@@ -177,7 +186,7 @@ impl App {
                     tr!(language, "更换资源库封面…" => "Change library cover…"),
                     Message::Manage(Cover),
                     false,
-                    true,
+                    self.manager.cover_saving.is_none(),
                 ),
                 (
                     Icon::Folder,

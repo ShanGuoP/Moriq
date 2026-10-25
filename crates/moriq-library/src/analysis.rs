@@ -143,6 +143,106 @@ pub fn prepare_image(source: media::Source) -> Result<PreparedImage> {
     )?;
     Ok(PreparedImage(temp))
 }
+pub fn qwen_payload(
+    task: &'static str,
+    output: serde_json::Value,
+) -> TaskResult<serde_json::Value> {
+    qwen_payload_for_profile(task, output, &AiProfile::default())
+}
+pub fn qwen_payload_for_profile(
+    task: &'static str,
+    output: serde_json::Value,
+    profile: &AiProfile,
+) -> TaskResult<serde_json::Value> {
+    let valid = match task {
+        "qwen_classification" => {
+            output["medium"].as_str().is_some_and(|v| {
+                v.is_empty()
+                    || profile
+                        .categories
+                        .iter()
+                        .any(|c| c.kind == AiCategoryKind::Medium && c.enabled && c.id == v)
+            }) && output["themes"].as_array().is_some_and(|v| {
+                v.len() <= usize::from(profile.max_themes)
+                    && v.iter().all(|t| {
+                        t.as_str().is_some_and(|t| {
+                            profile
+                                .categories
+                                .iter()
+                                .any(|c| c.kind == AiCategoryKind::Theme && c.enabled && c.id == t)
+                        })
+                    })
+            })
+        }
+        "qwen_description" => {
+            output["description"]
+                .as_str()
+                .is_some_and(|v| v.chars().count() <= 300)
+                && output["tags"].as_array().is_some_and(|v| {
+                    v.len() <= 12
+                        && v.iter()
+                            .all(|t| t.as_str().is_some_and(|t| t.chars().count() <= 24))
+                })
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(TaskError::InvalidInput(
+            "Qwen 返回的字段、词表或长度不符合分析协议".into(),
+        ));
+    }
+    let mut result = serde_json::json!({"task": task});
+    if task == "qwen_classification" {
+        let medium = output["medium"].as_str().unwrap_or_default();
+        let mut themes = output["themes"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .filter_map(|id| {
+                        profile
+                            .categories
+                            .iter()
+                            .find(|c| c.id == id && c.kind == AiCategoryKind::Theme && c.enabled)
+                    })
+                    .map(|c| c.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        themes.sort_by_key(|id| profile.categories.iter().position(|c| c.id == *id));
+        themes.dedup();
+        result["medium"] = serde_json::Value::String(medium.into());
+        result["themes"] = serde_json::json!(themes);
+        result["profile_hash"] = serde_json::json!(
+            crate::ai_profile::classification_hash(profile)
+                .map_err(|e| TaskError::Storage(e.to_string()))?
+        );
+    } else {
+        if let Some(description) = output["description"].as_str() {
+            result["description"] = serde_json::Value::String(description.into());
+        }
+        if let Some(tags) = output["tags"].as_array() {
+            let mut normalized = Vec::<String>::new();
+            for tag in tags.iter().filter_map(|s| s.as_str()) {
+                let tag = tag.split_whitespace().collect::<Vec<_>>().join(" ");
+                let tag = if tag.eq_ignore_ascii_case("cosplay") {
+                    "角色扮演".into()
+                } else {
+                    tag
+                };
+                if !tag.is_empty() && !normalized.contains(&tag) {
+                    normalized.push(tag);
+                }
+            }
+            result["tags"] = serde_json::json!(normalized);
+        }
+    }
+    if let Some(uncertainties) = output["uncertainties"].as_array() {
+        result["uncertainties"] = serde_json::json!(uncertainties);
+    }
+    Ok(result)
+}
 pub(crate) fn store(
     tx: &Connection,
     version: &str,
@@ -153,6 +253,29 @@ pub(crate) fn store(
     if revision.is_empty() || revision.len() > 256 {
         return Err(Error::Invalid("AI 结果缺少有效模型修订".into()));
     }
+    // Each Qwen task replaces only its own fields; the other successful task survives.
+    let incoming_task = result["task"].as_str().unwrap_or_default().to_string();
+    let mut merged = result.clone();
+    if model == "qwen35-4b" {
+        let previous: Option<String> = tx.query_row(
+            "SELECT data FROM ai_results WHERE version_id=?1 AND model_id=?2 AND revision=?3 AND preprocessing=?4",
+            params![version, model, revision, PREPROCESSING], |row| row.get(0),
+        ).optional()?;
+        if let Some(previous) = previous {
+            let mut previous: serde_json::Value = serde_json::from_str(&previous)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if let (Some(previous), Some(incoming)) = (previous.as_object_mut(), result.as_object())
+            {
+                previous.extend(
+                    incoming
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone())),
+                );
+            }
+            merged = previous;
+        }
+    }
+    let result = &merged;
     let data = serde_json::to_string(result).map_err(|e| Error::Invalid(e.to_string()))?;
     if data.len() > 1024 * 1024 {
         return Err(Error::Invalid("AI 分析回执过大".into()));
@@ -164,7 +287,7 @@ pub(crate) fn store(
             |r| r.get(0),
         )
         .optional()?;
-    let Some(asset) = asset else { return Ok(()) };
+    let Some(_) = asset else { return Ok(()) };
     tx.execute("INSERT INTO ai_results(version_id,model_id,revision,preprocessing,data,created_at) \
                 VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(version_id,model_id,revision,preprocessing) DO UPDATE SET \
                 data=excluded.data,created_at=excluded.created_at",
@@ -184,23 +307,19 @@ model,
 revision,
 vector_bytes(&embedding)])?;
 
-        if let Some(category) = result["labels"]
-            .as_array()
-            .and_then(|l| l.first())
-            .and_then(|l| l["label"].as_str())
-        {
-            tx.execute("INSERT INTO asset_classification(asset_id,category,manual) SELECT id,?2,0 FROM assets WHERE id=?1 AND display_version_id=?3 ON CONFLICT(asset_id) DO \
-                UPDATE SET category=excluded.category WHERE manual=0",
-params![asset,
-category,
-version])?;
-        }
+        // Qwen owns effective categories now; CLIP only refreshes retrieval vectors.
     }
     if model == "faces" {
         store_faces(tx, version, revision, result)?;
     }
+    if model == "qwen35-4b" {
+        let mut task_result = merged.clone();
+        task_result["task"] = serde_json::json!(incoming_task);
+        crate::ai_content::save_run(tx, version, revision, &task_result)?;
+    }
     Ok(())
 }
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return -1.0;
@@ -570,6 +689,9 @@ _>>().map_err(Error::from)
     }
     pub fn clear_ai_indexes(&mut self, model: &str) -> Result<()> {
         let tx = self.db.transaction()?;
+        if model == "qwen35-4b" {
+            tx.execute("DELETE FROM ai_analysis_runs", [])?;
+        }
         tx.execute("DELETE FROM ai_results WHERE model_id=?1", [model])?;
         tx.execute("DELETE FROM ai_embeddings WHERE model_id=?1", [model])?;
         if model == "faces" {
@@ -647,6 +769,111 @@ mod tests {
                 .search(&[1.0, 0.0], None)
                 .unwrap()
                 .is_empty()
+        );
+    }
+    #[test]
+    fn qwen_results_are_persisted_and_clip_no_longer_overwrites_categories() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("cosplay.png");
+        image::RgbImage::from_pixel(4, 4, image::Rgb([220, 90, 140]))
+            .save(&input)
+            .unwrap();
+        let mut library = Library::create(dir.path(), "Qwen边界").unwrap();
+        library.import(&input, None).unwrap();
+        let asset = library
+            .page(&Query::default(), 0, 1)
+            .unwrap()
+            .assets
+            .remove(0);
+        let classification = qwen_payload(
+            "qwen_classification",
+            serde_json::json!({
+                "medium": "photography",
+                "themes": ["portrait", "cosplay"],
+                "uncertainties": []
+            }),
+        )
+        .unwrap();
+        store(
+            &library.db,
+            &asset.version_id.to_string(),
+            "qwen35-4b",
+            "qwen-revision",
+            &classification,
+        )
+        .unwrap();
+        assert_eq!(library.details(asset.id).unwrap().category, "人像");
+        let description = qwen_payload(
+            "qwen_description",
+            serde_json::json!({
+                "description": "人物照片，手持道具。",
+                "tags": ["角色扮演", "灯笼"],
+                "uncertainties": []
+            }),
+        )
+        .unwrap();
+        store(
+            &library.db,
+            &asset.version_id.to_string(),
+            "qwen35-4b",
+            "qwen-revision",
+            &description,
+        )
+        .unwrap();
+        let clip = serde_json::json!({"image_vector":[1.0,0.0],"labels":[{"label":"插画"}]});
+        store(
+            &library.db,
+            &asset.version_id.to_string(),
+            "chinese-clip",
+            "clip-revision",
+            &clip,
+        )
+        .unwrap();
+        assert_eq!(library.details(asset.id).unwrap().category, "人像");
+        assert_eq!(
+            library.details(asset.id).unwrap().ai_caption,
+            "人物照片，手持道具。"
+        );
+        let data: String = library
+            .db
+            .query_row(
+                "SELECT data FROM ai_results WHERE model_id='qwen35-4b' AND version_id=?1",
+                [asset.version_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert_eq!(data["medium"], "photography");
+        assert!(data["themes"].is_array());
+        assert_eq!(data["tags"], serde_json::json!(["角色扮演", "灯笼"]));
+        // Reclassification must preserve the successful description and human category.
+        library.set_category(&[asset.id], "人工分类").unwrap();
+        store(
+            &library.db,
+            &asset.version_id.to_string(),
+            "qwen35-4b",
+            "qwen-revision",
+            &classification,
+        )
+        .unwrap();
+        assert_eq!(
+            library.details(asset.id).unwrap().ai_caption,
+            "人物照片，手持道具。"
+        );
+        assert_eq!(library.details(asset.id).unwrap().category, "人工分类");
+        assert_eq!(
+            library
+                .page(
+                    &Query {
+                        text: "手持道具".into(),
+                        ..Query::default()
+                    },
+                    0,
+                    10
+                )
+                .unwrap()
+                .total,
+            1
         );
     }
 }

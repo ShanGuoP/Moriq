@@ -95,6 +95,7 @@ fn recovery_rejects_partial_copy_and_cleans_successful_staging() {
 fn every_old_schema_gets_a_consistent_snapshot_before_migration() {
     let (_dir, lib, _source, _asset) = fixture();
     let root = lib.root.clone();
+    crate::ai_content_tests::downgrade_to_22(&lib.db);
     lib.db
         .execute_batch("DROP TABLE background_job_errors; PRAGMA user_version=21;")
         .unwrap();

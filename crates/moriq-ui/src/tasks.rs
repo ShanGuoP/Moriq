@@ -4,6 +4,7 @@ use iced::widget::column;
 #[derive(Default)]
 pub(super) struct TaskState {
     pub loading: bool,
+    pub controls_busy: bool,
     pub error: Option<String>,
     pub request: u64,
     pub ticks: u8,
@@ -104,6 +105,8 @@ mod tests {
 pub enum JobMessage {
     Queue(JobKind),
     Control(String, JobCommand),
+    ControlModels(JobCommand),
+    Controlled(LibraryId, Result<(), String>),
     Stored(LibraryId, Result<(), String>),
     Refreshed(LibraryId, u64, Result<Vec<BackgroundJob>, String>),
     Failures(String),
@@ -169,7 +172,28 @@ impl App {
                     move |r| Message::Jobs(JobMessage::Stored(id, r)),
                 );
             }
-            JobMessage::Control(job, command) => {
+            JobMessage::Controlled(owner, result) if owner == id => {
+                self.jobs.controls_busy = false;
+                if let Err(e) = result {
+                    self.error = Some(e);
+                }
+                return self.refresh_organizer();
+            }
+            JobMessage::ControlModels(command) if !self.jobs.controls_busy => {
+                self.jobs.controls_busy = true;
+                let service = self.service.clone();
+                return Task::perform(
+                    async move {
+                        service
+                            .control_model_jobs(id, command)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    move |r| Message::Jobs(JobMessage::Controlled(id, r)),
+                );
+            }
+            JobMessage::Control(job, command) if !self.jobs.controls_busy => {
+                self.jobs.controls_busy = true;
                 let service = self.service.clone();
                 return Task::perform(
                     async move {
@@ -178,7 +202,7 @@ impl App {
                             .await
                             .map_err(|e| e.to_string())
                     },
-                    move |r| Message::Jobs(JobMessage::Stored(id, r)),
+                    move |r| Message::Jobs(JobMessage::Controlled(id, r)),
                 );
             }
             JobMessage::Stored(owner, result) if owner == id => {
@@ -237,6 +261,53 @@ impl App {
         }
         Task::none()
     }
+    pub(super) fn model_job_controls(&self) -> Element<'_, Message> {
+        let language = self.preferences.language;
+        let jobs: Vec<_> = self
+            .manager
+            .organizer
+            .jobs
+            .iter()
+            .filter(|j| j.kind.model().is_some() && j.state.is_active())
+            .collect();
+        if jobs.is_empty() {
+            return iced::widget::Space::new().height(0).into();
+        }
+        let paused = jobs.iter().filter(|j| j.state == JobState::Paused).count();
+        let mut actions = iced::widget::Row::new().spacing(8);
+        for (label, command, enabled) in [
+            (
+                tr!(language,"暂停全部"=>"Pause all"),
+                JobCommand::Pause,
+                paused < jobs.len(),
+            ),
+            (
+                tr!(language,"继续任务"=>"Resume"),
+                JobCommand::Resume,
+                paused > 0,
+            ),
+            (
+                tr!(language,"完全停止"=>"Stop all"),
+                JobCommand::Cancel,
+                true,
+            ),
+        ] {
+            actions = actions.push(
+                action(label, Message::Jobs(JobMessage::ControlModels(command)))
+                    .on_press_maybe(
+                        (enabled && !self.jobs.controls_busy && !self.switching)
+                            .then_some(Message::Jobs(JobMessage::ControlModels(command))),
+                    )
+                    .style(if matches!(command, JobCommand::Cancel) {
+                        crate::theme::destructive
+                    } else {
+                        crate::theme::secondary
+                    }),
+            );
+        }
+        form_card(column![heading(trf!(language,"{} 个模型任务 · {} 个暂停"=>"{} model tasks · {} paused",jobs.len(),paused),14),
+            actions.wrap(),muted(tr!(language,"暂停后可继续未完成素材；完全停止不会自动恢复，已完成的分析结果保留。"=>"Pause to resume unfinished assets later. Stopped tasks never auto-resume; completed results are preserved."))].spacing(10))
+    }
     pub(super) fn tasks_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut view = column![muted(
@@ -262,7 +333,7 @@ impl App {
                 Message::Jobs(JobMessage::Queue(JobKind::Thumbnails)),
             ))
             .push(muted(
-                tr!(language, "索引与缩略图任务按优先级逐项执行；暂停在当前图片完成后生效，重开资源库继续。" => "Indexing and thumbnail tasks run by priority, one image at a time. Pausing takes effect after the current image; reopen the library to resume."),
+                tr!(language, "索引与缩略图任务按优先级逐项执行；普通任务在当前图片完成后暂停；模型任务会中断当前推理，保留已完成进度。" => "Indexing and thumbnail tasks run by priority, one image at a time. Ordinary tasks pause after the current image; model tasks interrupt inference and preserve completed progress."),
             ));
         let mut count = 0;
         for job in &self.manager.organizer.jobs {
@@ -283,6 +354,15 @@ impl App {
                 }
                 JobKind::Analysis(ModelId::Faces) => {
                     tr!(language, "人脸识别与人物聚类" => "Face recognition and people clustering")
+                }
+                JobKind::Analysis(ModelId::Qwen35_4b) => {
+                    tr!(language, "Qwen 图片内容分析" => "Qwen image content analysis")
+                }
+                JobKind::QwenClassification => {
+                    tr!(language, "Qwen 媒介与主题分类" => "Qwen medium and theme classification")
+                }
+                JobKind::QwenDescription => {
+                    tr!(language, "Qwen 中文标签与描述" => "Qwen Chinese tags and descriptions")
                 }
             };
             view = view
@@ -347,7 +427,7 @@ impl App {
                         )),
                     ))
                     .push(crate::components::action(
-                        tr!(language, "取消任务" => "Cancel task"),
+                        tr!(language, "完全停止" => "Stop permanently"),
                         Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::Cancel)),
                     ));
                 view = view.push(action(

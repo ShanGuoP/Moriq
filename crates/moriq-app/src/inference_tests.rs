@@ -20,6 +20,49 @@ impl FakeRunner {
     }
 }
 impl InferenceRunner for FakeRunner {
+    fn qwen_infer(
+        &self,
+        _: &str,
+        image: &std::path::Path,
+        profile: &AiProfile,
+        cancel: &AtomicBool,
+    ) -> TaskResult<InferenceResult> {
+        assert!(image.is_file());
+        if self.mode == 5 {
+            self.entered.store(true, Ordering::Release);
+            let start = Instant::now();
+            while !self.release.load(Ordering::Acquire) {
+                if cancel.load(Ordering::Acquire) {
+                    self.cancelled.store(true, Ordering::Release);
+                }
+                assert!(start.elapsed() < Duration::from_secs(15));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        if self.mode == 4 {
+            let theme = profile
+                .categories
+                .iter()
+                .find(|c| c.id == "theme_stage" && c.enabled)
+                .unwrap();
+            assert!(theme.definition.contains("舞台"));
+            return Ok(InferenceResult {
+                model: ModelId::Qwen35_4b,
+                revision: "test-revision".into(),
+                data: serde_json::json!({"medium":"photography","themes":[theme.id]}),
+            });
+        }
+        Ok(InferenceResult {
+            model: ModelId::Qwen35_4b,
+            revision: "test-revision".into(),
+            data: serde_json::json!({
+                "medium": "photography",
+                "themes": ["portrait", "cosplay"],
+                "description": "人物照片",
+                "tags": ["人像", "角色扮演"]
+            }),
+        })
+    }
     fn revision(&self, _: ModelId) -> TaskResult<String> {
         Ok("test-revision".into())
     }
@@ -117,11 +160,49 @@ fn injected_inference_binds_revision_and_supports_both_search_inputs_without_run
                 .unwrap()
                 .is_empty()
         ); // selected image is excluded
-        assert_eq!(
-            service.details(owner, asset).await.unwrap().category,
-            "测试分类"
-        );
+        assert_eq!(service.details(owner, asset).await.unwrap().category, "");
         assert!(service.semantic_search(owner, String::new()).await.is_err());
+    });
+}
+
+#[test]
+fn custom_profile_reaches_the_application_runner_and_current_group_filter() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let (_dir, root, asset) = seed();
+        let service = Service::start_with_inference(FakeRunner::new(4, true)).unwrap();
+        let owner = service.open(root).await.unwrap().info.id;
+        let mut profile = service.organizer(owner).await.unwrap().ai_profile;
+        profile.categories.push(AiCategory {
+            id: "theme_stage".into(),
+            kind: AiCategoryKind::Theme,
+            label: "舞台表演".into(),
+            definition: "舞台上的表演者为画面主体。".into(),
+            enabled: true,
+        });
+        service.save_ai_profile(owner, profile).await.unwrap();
+        service
+            .queue_media_job(owner, JobKind::QwenClassification)
+            .await
+            .unwrap();
+        assert_eq!(wait_completed(&service, owner).await.failed, 0);
+        assert_eq!(
+            service.details(owner, asset).await.unwrap().themes,
+            vec!["theme_stage"]
+        );
+        let group = service
+            .organizer(owner)
+            .await
+            .unwrap()
+            .ai_groups
+            .into_iter()
+            .find(|g| g.id == "theme_stage")
+            .unwrap();
+        assert_eq!(group.count, 1);
+        assert_eq!(
+            service.page(owner, group.query, 0, 10).await.unwrap().total,
+            1
+        );
+        service.close().await.unwrap();
     });
 }
 #[test]
@@ -220,5 +301,95 @@ fn cancelled_and_old_library_inference_never_publishes_late_results() {
                 Err(TaskError::StaleLibrary)
             );
         }
+    });
+}
+
+#[test]
+fn qwen_pause_resume_and_permanent_stop_reject_late_outputs_without_losing_progress() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let (_dir, root, asset) = seed();
+        let runner = FakeRunner::new(5, false);
+        let service = Service::start_with_inference(runner.clone()).unwrap();
+        let owner = service.open(root).await.unwrap().info.id;
+        service
+            .queue_media_job(owner, JobKind::QwenClassification)
+            .await
+            .unwrap();
+        wait_entered(&runner).await;
+        service
+            .control_model_jobs(owner, JobCommand::Pause)
+            .await
+            .unwrap();
+        let start = Instant::now();
+        while !runner.cancelled.load(Ordering::Acquire) {
+            assert!(start.elapsed() < Duration::from_secs(2));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        runner.release.store(true, Ordering::Release);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let job = service.background_jobs(owner).await.unwrap().remove(0);
+        assert_eq!(job.state, JobState::Paused);
+        assert_eq!(job.completed, 0);
+        assert_eq!(job.failed, 0);
+        assert!(
+            service
+                .details(owner, asset)
+                .await
+                .unwrap()
+                .medium
+                .is_empty()
+        );
+        service
+            .control_model_jobs(owner, JobCommand::Resume)
+            .await
+            .unwrap();
+        assert_eq!(wait_completed(&service, owner).await.completed, 1);
+        runner.release.store(false, Ordering::Release);
+        runner.entered.store(false, Ordering::Release);
+        runner.cancelled.store(false, Ordering::Release);
+        service
+            .queue_media_job(owner, JobKind::QwenDescription)
+            .await
+            .unwrap();
+        wait_entered(&runner).await;
+        service
+            .control_model_jobs(owner, JobCommand::Cancel)
+            .await
+            .unwrap();
+        runner.release.store(true, Ordering::Release);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let job = service
+            .background_jobs(owner)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|j| j.kind == JobKind::QwenDescription)
+            .unwrap();
+        assert_eq!(job.state, JobState::Cancelled);
+        assert_eq!(job.completed, 0);
+        assert!(
+            service
+                .details(owner, asset)
+                .await
+                .unwrap()
+                .ai_caption
+                .is_empty()
+        );
+        service
+            .control_model_jobs(owner, JobCommand::Resume)
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .background_jobs(owner)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|j| j.kind == JobKind::QwenDescription)
+                .unwrap()
+                .state,
+            JobState::Cancelled
+        );
+        service.close().await.unwrap();
     });
 }

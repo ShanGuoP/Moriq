@@ -2,6 +2,7 @@ use super::*;
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Stored {
+    category_template: Option<AiProfile>,
     synco: SyncoPreferences,
     ai: AiPreferences,
     recent: Vec<Recent>,
@@ -56,6 +57,24 @@ pub fn remember(name: String, path: PathBuf) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+pub fn category_template(mut profile: AiProfile) -> Result<AiProfile> {
+    profile.validate().map_err(|e| Error::Invalid(e.into()))?;
+    profile.revision = 0;
+    let folder = location()?;
+    let mut prefs = load_from(&folder)?;
+    prefs.category_template = Some(profile.clone());
+    save_to(&folder, &prefs)?;
+    Ok(profile)
+}
+pub fn forget(path: &Path) -> Result<UserSettings> {
+    forget_from(&location()?, path)
+}
+fn forget_from(folder: &Path, path: &Path) -> Result<UserSettings> {
+    let mut prefs = load_from(folder)?;
+    prefs.recent.retain(|(_, candidate)| candidate != path);
+    save_to(folder, &prefs)?;
+    Ok(prefs)
+}
 pub fn reduced_motion(enabled: bool) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -103,7 +122,11 @@ fn load_from(folder: &Path) -> Result<UserSettings> {
         .into_iter()
         .map(|r| Ok((r.name, organize::decode_path(&r.platform, &r.path)?)))
         .collect::<Result<_>>()?;
+    if let Some(template) = &stored.category_template {
+        template.validate().map_err(|e| Error::Invalid(e.into()))?;
+    }
     Ok(UserSettings {
+        category_template: stored.category_template,
         synco: stored.synco,
         ai: stored.ai,
         recent,
@@ -132,6 +155,7 @@ fn save_to(folder: &Path, prefs: &UserSettings) -> Result<()> {
         })
         .collect::<Result<_>>()?;
     let stored = Stored {
+        category_template: prefs.category_template.clone(),
         synco: prefs.synco.clone(),
         ai: prefs.ai,
         recent,
@@ -280,6 +304,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let prefs = UserSettings {
             synco: Default::default(),
+            category_template: None,
             ai: Default::default(),
             recent: vec![("摄影".into(), dir.path().join("中文 库.moriq"))],
             diagnostic_logging: true,
@@ -304,6 +329,68 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("settings.toml")).unwrap(),
             "[broken"
+        );
+    }
+    #[test]
+    fn forgetting_only_removes_the_selected_registry_entry_and_preserves_files_and_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.moriq");
+        let b = dir.path().join("b.moriq");
+        fs::create_dir(&a).unwrap();
+        fs::write(a.join("keep"), b"original").unwrap();
+        let prefs = UserSettings {
+            recent: vec![("A".into(), a.clone()), ("B".into(), b.clone())],
+            language: Language::English,
+            ..Default::default()
+        };
+        save_to(dir.path(), &prefs).unwrap();
+        let updated = forget_from(dir.path(), &a).unwrap();
+        assert_eq!(updated.recent, vec![("B".into(), b)]);
+        assert_eq!(load_from(dir.path()).unwrap().language, Language::English);
+        assert_eq!(fs::read(a.join("keep")).unwrap(), b"original");
+    }
+    #[test]
+    fn category_template_roundtrips_and_can_merge_without_removing_local_associations() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut profile = AiProfile::default();
+        profile.categories.push(AiCategory {
+            id: "theme_reusable".into(),
+            kind: AiCategoryKind::Theme,
+            label: "可复用主题".into(),
+            definition: "主题说明".into(),
+            enabled: true,
+        });
+        let prefs = UserSettings {
+            category_template: Some(profile.clone()),
+            ..Default::default()
+        };
+        save_to(dir.path(), &prefs).unwrap();
+        let loaded = load_from(dir.path()).unwrap().category_template.unwrap();
+        assert_eq!(profile, loaded);
+        let mut existing = AiProfile {
+            revision: 7,
+            ..AiProfile::default()
+        };
+        existing.categories.push(AiCategory {
+            id: "theme_local".into(),
+            kind: AiCategoryKind::Theme,
+            label: "原有主题".into(),
+            definition: "原有说明".into(),
+            enabled: true,
+        });
+        let merged = existing.with_template(&loaded).unwrap();
+        assert_eq!(merged.revision, 7);
+        assert!(
+            merged
+                .categories
+                .iter()
+                .any(|c| c.id == "theme_reusable" && c.enabled)
+        );
+        assert!(
+            merged
+                .categories
+                .iter()
+                .any(|c| c.id == "theme_local" && !c.enabled)
         );
     }
 }

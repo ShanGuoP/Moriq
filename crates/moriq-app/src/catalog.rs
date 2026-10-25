@@ -2,6 +2,33 @@
 use super::*;
 
 impl Service {
+    pub async fn save_ai_profile(&self, id: LibraryId, profile: AiProfile) -> Result<AiProfile> {
+        let cancellation = self.job_cancel.clone();
+        self.call(move |active| {
+            let (profile, cancelled) = check(active, id)?
+                .save_ai_profile(profile)
+                .map_err(|e| e.to_string())?;
+            for job in cancelled {
+                cancellation.stop(Some((id, &job)));
+            }
+            Ok(profile)
+        })
+        .await
+    }
+    pub async fn edit_ai_content(
+        &self,
+        id: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+        edit: AiEdit,
+    ) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .edit_ai_content(asset, version, edit)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
     pub async fn saved_navigation(&self, id: LibraryId) -> Result<Option<SavedNavigation>> {
         self.call(move |active| {
             check(active, id)?
@@ -195,6 +222,30 @@ impl Service {
         self.call(move |active| {
             check(active, id)?
                 .set_cover(&path)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn set_asset_cover(
+        &self,
+        id: LibraryId,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<()> {
+        let prepared = self
+            .read_plan(
+                1024,
+                move |active| {
+                    check(active, id)?
+                        .asset_cover_plan(asset, version)
+                        .map_err(|e| e.to_string())
+                },
+                |plan| plan.render().map_err(|e| e.to_string()),
+            )
+            .await?;
+        self.call(move |active| {
+            check(active, id)?
+                .commit_asset_cover(prepared)
                 .map_err(|e| e.to_string())
         })
         .await

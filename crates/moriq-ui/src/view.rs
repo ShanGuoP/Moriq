@@ -386,22 +386,11 @@ impl App {
         let search = container(
             row![
                 icon(Icon::Search, 17.0, MUTED),
-                button(text(tr!(language, "语义" => "Semantic")).size(11))
-                    .on_press_maybe(
-                        (self.screen != Screen::Models
-                            && self
-                                .ai
-                                .models
-                                .iter()
-                                .any(|m| m.spec.id == "chinese-clip" && m.installed))
-                        .then_some(Message::Ai(AiMessage::Semantic))
-                    )
-                    .style(flat),
                 text_input(
                     if self.screen == Screen::Models {
                         tr!(language, "搜索模型与功能说明…" => "Search models and capabilities…")
                     } else {
-                        tr!(language, "搜索文件名、标签或备注…" => "Search file names, tags or notes…")
+                        tr!(language, "搜索文件名、标签、描述或备注…" => "Search file names, tags, descriptions or notes…")
                     },
                     if self.screen == Screen::Models {
                         &self.model_search
@@ -1011,12 +1000,6 @@ impl App {
                         Message::Notice(tr!(language, "当前尚不支持视频预览" => "Video preview is currently unavailable").into()),
                     ),
                     (
-                        Icon::Image,
-                        tr!(language, "截图" => "Screenshots"),
-                        self.category_count("截图"),
-                        Message::Ai(AiMessage::Category("截图".into())),
-                    ),
-                    (
                         Icon::Duplicate,
                         tr!(language, "重复文件" => "Duplicate files"),
                         0,
@@ -1112,7 +1095,15 @@ impl App {
                             kind,
                             category.as_str(),
                             *count,
-                            Message::Ai(AiMessage::Category(category.clone())),
+                            self.manager
+                                .organizer
+                                .ai_groups
+                                .iter()
+                                .find(|g| self.group_label(g) == *category)
+                                .map_or_else(
+                                    || Message::Ai(AiMessage::Category(category.clone())),
+                                    |g| Message::Ai(AiMessage::Group(g.id.clone())),
+                                ),
                         ),
                     );
                 }
@@ -1149,7 +1140,22 @@ impl App {
                     Message::Ai(AiMessage::People) => {
                         self.manager.panel == Some(manage::Panel::People)
                     }
-                    Message::Ai(AiMessage::Category(category)) => self.query.category == *category,
+                    Message::Ai(AiMessage::Group(id)) => self
+                        .manager
+                        .organizer
+                        .ai_groups
+                        .iter()
+                        .find(|g| &g.id == id)
+                        .is_some_and(|g| g.query == self.query),
+                    Message::Ai(AiMessage::Category(category)) => {
+                        self.query.category == *category
+                            || AI_MEDIA
+                                .iter()
+                                .any(|(id, label)| *label == category && self.query.medium == *id)
+                            || AI_THEMES.iter().any(|(id, label)| {
+                                *label == category && self.query.themes.iter().any(|s| s == id)
+                            })
+                    }
                     _ => false,
                 };
                 let label = if matches!(&message, Message::Ai(AiMessage::Category(_))) {

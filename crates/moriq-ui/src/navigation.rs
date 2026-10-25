@@ -91,7 +91,7 @@ impl Location {
             },
             model_tab: 0,
             model_search: String::new(),
-            model_filter: 0,
+            model_filter: 2,
             notes: String::new(),
             notes_dirty: false,
         }
@@ -222,11 +222,7 @@ impl App {
                 | Message::Search(_)
                 | Message::Folder(FolderMessage::Open(_))
                 | Message::Metadata(MetadataMessage::Apply | MetadataMessage::Clear)
-                | Message::Ai(
-                    AiMessage::Category(_)
-                        | AiMessage::PersonFilter(_)
-                        | AiMessage::SearchLoaded(_, _, Ok(_))
-                )
+                | Message::Ai(AiMessage::Category(_) | AiMessage::PersonFilter(_))
                 | Message::ModelSearch(_)
                 | Message::ModelFilter(_)
                 | Message::List(_)

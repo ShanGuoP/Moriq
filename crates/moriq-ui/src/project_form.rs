@@ -4,7 +4,7 @@ use crate::{
     manage::{ProjectDestination, project_label},
     theme::*,
 };
-use iced::widget::{button, column, row, text_input};
+use iced::widget::{column, row, text_input};
 impl App {
     pub(super) fn project_form(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
@@ -29,44 +29,32 @@ impl App {
             .iter()
             .find(|c| c.id == self.manager.project_target)
             .cloned();
-        let mut content = column![
-            muted(tr!(language, "管理项目" => "Manage project")),
+        let mut selector = row![
             choice(project_choices, selected, |v| v
                 .id
                 .map(|id| Message::Manage(ProjectMenu(id)))
                 .unwrap_or(Message::Noop))
+            .width(iced::Length::Fill)
         ]
-        .spacing(12);
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
         if let Some(project) = current {
-            content = content
-                .push(muted(
-                    trf!(language, "{} 张素材" => "{} assets", project.count),
-                ))
-                .push(action(
-                    tr!(language, "打开项目" => "Open project"),
+            selector = selector.push(
+                action(
+                    tr!(language,"打开项目"=>"Open"),
                     Message::Project(project.id),
-                ))
-                .push(
-                    text_input(
-                        tr!(language, "项目名称" => "Project name"),
-                        &self.manager.label,
-                    )
-                    .padding(10)
-                    .style(input)
-                    .on_input(|s| Message::Manage(Label(s))),
                 )
-                .push(
-                    button(tr!(language, "保存名称" => "Save name"))
-                        .padding([8, 12])
-                        .style(secondary)
-                        .on_press_maybe(
-                            (!self.manager.busy
-                                && !self.manager.label.trim().is_empty()
-                                && self.manager.label.trim() != project.name)
-                                .then_some(Message::Manage(RenameProject)),
-                        ),
-                );
+                .on_press_maybe((!self.manager.busy).then_some(Message::Project(project.id))),
+            );
         }
+        let mut content = column![
+            column![
+                heading(tr!(language,"选择项目"=>"Select project"), 13),
+                selector
+            ]
+            .spacing(8)
+        ]
+        .spacing(16);
         let mut parents = vec![ProjectDestination {
             id: None,
             name: tr!(language, "顶层" => "Top level").into(),
@@ -97,46 +85,84 @@ impl App {
             .find(|p| p.id == self.manager.parent)
             .cloned();
         let changed = current.is_some_and(|p| p.parent != self.manager.parent);
-        content = content
-            .push(separator())
-            .push(muted(tr!(language, "上级项目" => "Parent project")))
-            .push(
-                row![
-                    choice(parents, selected, |p| Message::Manage(Parent(p.id))),
-                    button(tr!(language, "保存层级" => "Save hierarchy"))
-                        .padding([8, 12])
-                        .style(secondary)
-                        .on_press_maybe(
-                            (changed && !self.manager.busy).then_some(Message::Manage(MoveProject))
-                        )
+        if let Some(project) = current {
+            let name_changed =
+                !self.manager.label.trim().is_empty() && self.manager.label.trim() != project.name;
+            content=content.push(form_card(column![
+                row![heading(tr!(language,"项目设置"=>"Project settings"),16),iced::widget::Space::new().width(iced::Length::Fill),
+                    chip(trf!(language,"{} 项素材"=>"{} assets",project.count),BLUE)].align_y(iced::Alignment::Center),
+                column![heading(tr!(language,"项目名称"=>"Name"),13),row![
+                    text_input(tr!(language,"项目名称"=>"Project name"),&self.manager.label).padding(10).size(14).style(input)
+                        .on_input_maybe((!self.manager.busy).then_some(|s|Message::Manage(Label(s)))).width(iced::Length::Fill),
+                    action(tr!(language,"保存名称"=>"Save name"),Message::Manage(RenameProject))
+                        .on_press_maybe((name_changed && !self.manager.busy).then_some(Message::Manage(RenameProject)))
+                ].spacing(10).align_y(iced::Alignment::Center)].spacing(8),
+                column![heading(tr!(language,"上级项目"=>"Parent project"),13),row![
+                    choice(parents,selected,|p|Message::Manage(Parent(p.id))).width(iced::Length::Fill),
+                    action(tr!(language,"保存层级"=>"Save parent"),Message::Manage(MoveProject))
+                        .on_press_maybe((changed && !self.manager.busy).then_some(Message::Manage(MoveProject)))
+                ].spacing(10).align_y(iced::Alignment::Center)].spacing(8),
+                muted(tr!(language,"修改名称与层级仅调整整理结构，不会搬动或改写原片。"=>"Name and hierarchy changes organize the library without moving or modifying originals."))
+            ].spacing(16)));
+        }
+        let mut destinations = vec![ProjectDestination {
+            id: None,
+            name: tr!(language,"顶层项目"=>"Top level").into(),
+        }];
+        destinations.extend(projects.iter().map(|p| ProjectDestination {
+            id: Some(p.id),
+            name: project_label(projects, p.id),
+        }));
+        let new_parent = destinations
+            .iter()
+            .find(|p| p.id == self.manager.new_project_parent)
+            .cloned();
+        content = content.push(form_card(
+            column![
+                heading(tr!(language,"新建项目"=>"New project"), 16),
+                column![
+                    heading(tr!(language,"创建位置"=>"Create under"), 13),
+                    choice(destinations, new_parent, |p| Message::Manage(NewParent(
+                        p.id
+                    )))
+                    .width(iced::Length::Fill)
                 ]
-                .spacing(10),
-            )
-            .push(muted(tr!(language, "层级调整不会搬动或改写原片。" => "Changing the hierarchy does not move or modify originals.")))
-            .push(separator())
-            .push(muted(tr!(language, "在所选上级下新建项目" => "Create project under selected parent")))
-            .push(
-                text_input(tr!(language, "新项目名称" => "New project name"), &self.manager.new_project_name)
+                .spacing(8),
+                row![
+                    text_input(
+                        tr!(language,"输入新项目名称"=>"New project name"),
+                        &self.manager.new_project_name
+                    )
                     .padding(10)
+                    .size(14)
                     .style(input)
-                    .on_input(|s| Message::Manage(NewProjectName(s))),
-            )
-            .push(
-                button(tr!(language, "新建项目" => "New project"))
-                    .padding([8, 12])
-                    .style(secondary)
+                    .on_input_maybe(
+                        (!self.manager.busy).then_some(|s| Message::Manage(NewProjectName(s)))
+                    )
+                    .width(iced::Length::Fill),
+                    form_action(
+                        crate::icons::Icon::Plus,
+                        tr!(language,"创建项目"=>"Create"),
+                        Message::Manage(NewChildProject),
+                        true
+                    )
                     .on_press_maybe(
                         (!self.manager.busy && !self.manager.new_project_name.trim().is_empty())
-                            .then_some(Message::Manage(NewChildProject)),
-                    ),
-            );
+                            .then_some(Message::Manage(NewChildProject))
+                    )
+                ]
+                .spacing(10)
+                .align_y(iced::Alignment::Center)
+            ]
+            .spacing(14),
+        ));
         if current.is_some() {
-            content = content.push(separator()).push(
-                button(tr!(language, "永久删除项目及内容…" => "Delete project and contents permanently…"))
-                    .padding([8, 12])
-                    .style(destructive)
-                    .on_press_maybe((!self.manager.busy).then_some(Message::Manage(DeleteProject))),
-            );
+            content=content.push(form_card(column![
+                heading(tr!(language,"危险操作"=>"Danger zone"),14),
+                muted(tr!(language,"永久删除会影响项目及其内容。继续后将展示具体范围，并要求再次确认。"=>"Permanent deletion affects this project and its contents. Review the exact scope and confirm again before deletion.")),
+                form_action(crate::icons::Icon::Trash,tr!(language,"删除项目及内容…"=>"Delete project and contents…"),Message::Manage(DeleteProject),true)
+                    .style(destructive).on_press_maybe((!self.manager.busy).then_some(Message::Manage(DeleteProject)))
+            ].spacing(10)));
         }
         content.into()
     }

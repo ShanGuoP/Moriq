@@ -127,10 +127,31 @@ parent.to_string()],
             return Err(Error::Invalid("标签应为 1～128 字节".into()));
         }
         let tx = self.db.transaction()?;
-        let old: i64 = tx.query_row("SELECT id FROM tags WHERE name=?1", [source], |r| r.get(0))?;
+        let old: Option<i64> = tx
+            .query_row("SELECT id FROM tags WHERE name=?1", [source], |r| r.get(0))
+            .optional()?;
+        if source == target {
+            return Ok(());
+        }
+        let automatic = tx.prepare("SELECT t.version_id,v.asset_id FROM ai_visible_tags t JOIN asset_versions v ON v.id=t.version_id WHERE t.name=?1")?
+            .query_map([source], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        if old.is_none() && automatic.is_empty() {
+            return Err(Error::Invalid("标签已不存在".into()));
+        }
         tx.execute("INSERT OR IGNORE INTO tags(name) VALUES(?1)", [target])?;
         let new: i64 = tx.query_row("SELECT id FROM tags WHERE name=?1", [target], |r| r.get(0))?;
-        if old != new {
+        for (version, asset) in automatic {
+            ai_content::reject_tag(&tx, &version, source)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO asset_tags VALUES(?1,?2)",
+                params![asset, new],
+            )?;
+            tx.execute(
+                "UPDATE assets SET edited_at=?2 WHERE id=?1",
+                params![asset, now_ms()?],
+            )?;
+        }
+        if let Some(old) = old {
             tx.execute("UPDATE assets SET edited_at=?1 WHERE id IN(SELECT asset_id FROM asset_tags WHERE tag_id=?2)",params![now_ms()?,old])?;
             tx.execute("INSERT OR IGNORE INTO asset_tags SELECT asset_id,?1 FROM asset_tags WHERE tag_id=?2",params![new,old])?;
             tx.execute("DELETE FROM asset_tags WHERE tag_id=?1", [old])?;
@@ -146,6 +167,14 @@ parent.to_string()],
     }
     pub fn delete_tag(&mut self, name: &str) -> Result<()> {
         let tx = self.db.transaction()?;
+        let versions = tx
+            .prepare("SELECT version_id FROM ai_visible_tags WHERE name=?1")?
+            .query_map([name], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for version in versions {
+            ai_content::reject_tag(&tx, &version, name)?;
+            tx.execute("UPDATE assets SET edited_at=?2 WHERE id IN(SELECT asset_id FROM asset_versions WHERE id=?1)", params![version, now_ms()?])?;
+        }
         tx.execute("UPDATE assets SET edited_at=?1 WHERE id IN(SELECT x.asset_id FROM asset_tags x JOIN tags t ON t.id=x.tag_id WHERE t.name=?2)",params![now_ms()?,name])?;
         tx.execute(
             "DELETE FROM asset_tags WHERE tag_id IN(SELECT id FROM tags WHERE name=?1)",

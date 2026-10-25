@@ -80,6 +80,96 @@ impl Service {
         self.call(move |_| moriq_library::settings::remember(name, path).map_err(|e| e.to_string()))
             .await
     }
+    pub async fn save_category_template(&self, profile: AiProfile) -> Result<AiProfile> {
+        self.call(move |_| {
+            moriq_library::settings::category_template(profile).map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn library_removal_plan(&self, path: PathBuf) -> Result<LibraryRemovalPlan> {
+        self.call(move |_| {
+            if !moriq_library::settings::load()
+                .map_err(|e| e.to_string())?
+                .recent
+                .iter()
+                .any(|(_, p)| p == &path)
+            {
+                return Err("资源库已不在列表中，请刷新后重试".into());
+            }
+            moriq_library::library_removal::inspect(&path).map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn close_library(&self, id: LibraryId) -> Result<()> {
+        let cancel = self.job_cancel.clone();
+        let cache = self.media_cache.clone();
+        self.call(move |active| {
+            check(active, id)?;
+            cancel.stop(None);
+            cache.clear();
+            *active = None;
+            Ok(())
+        })
+        .await
+    }
+    pub async fn remove_library(
+        &self,
+        path: PathBuf,
+        plan: Option<LibraryRemovalPlan>,
+    ) -> Result<UserSettings> {
+        let candidate = path.clone();
+        let plan = self
+            .call(move |active| {
+                if active.as_ref().is_some_and(|lib| {
+                    candidate == lib.root()
+                        || candidate.canonicalize().is_ok_and(|p| p == lib.root())
+                }) {
+                    return Err("请先关闭此资源库，再移除或删除".into());
+                }
+                if !moriq_library::settings::load()
+                    .map_err(|e| e.to_string())?
+                    .recent
+                    .iter()
+                    .any(|(_, p)| p == &candidate)
+                {
+                    return Err("资源库已不在列表中，请刷新后重试".into());
+                }
+                if let Some(plan) = &plan
+                    && candidate.canonicalize().map_err(|e| e.to_string())? != plan.root
+                {
+                    return Err("删除路径已改变".into());
+                }
+                Ok(plan)
+            })
+            .await?;
+        let deleted_files = plan.is_some();
+        if let Some(plan) = plan {
+            tokio::task::spawn_blocking(move || {
+                for attempt in 0..=20 {
+                    match moriq_library::library_removal::execute(&plan) {
+                        Err(moriq_library::Error::Locked) if attempt < 20 => {
+                            std::thread::sleep(std::time::Duration::from_millis(100))
+                        }
+                        result => return result.map_err(|e| e.to_string()),
+                    }
+                }
+                Err("资源库仍在使用中".into())
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+        }
+        self.call(move |_| moriq_library::settings::forget(&path).map_err(|e| e.to_string()))
+            .await
+            .map_err(|error| {
+                if deleted_files {
+                    format!(
+                        "库内文件已删除，但列表更新失败；请重新打开管理并从列表移除此记录：{error}"
+                    )
+                } else {
+                    error
+                }
+            })
+    }
     pub async fn update_profile(
         &self,
         id: LibraryId,

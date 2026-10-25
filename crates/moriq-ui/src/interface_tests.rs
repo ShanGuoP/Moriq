@@ -176,11 +176,25 @@ fn all_pages_and_management_surfaces_build_in_both_languages_and_themes() {
             let mut app = crate::tests::app();
             app.preferences.language = language;
             app.preferences.appearance = appearance;
+            app.ai.categories.selected = Some("portrait".into());
+            app.manager.organizer.ai_groups = vec![AiGroup {
+                id: "theme_custom".into(),
+                label: "自定义舞台".into(),
+                query: Query {
+                    themes: vec!["theme_custom".into()],
+                    ..Query::default()
+                },
+                count: 0,
+                cover: None,
+            }];
             for screen in [Screen::Overview, Screen::Assets, Screen::Models] {
                 app.screen = screen;
                 drop(app.view());
             }
             for panel in [
+                manage::Panel::AiCategories,
+                manage::Panel::Libraries,
+                manage::Panel::Project,
                 manage::Panel::Filters,
                 manage::Panel::ExportOptions,
                 manage::Panel::Tasks,
@@ -190,6 +204,17 @@ fn all_pages_and_management_surfaces_build_in_both_languages_and_themes() {
                 manage::Panel::Menu,
             ] {
                 app.manager.panel = Some(panel);
+                drop(app.view());
+            }
+            app.viewer.selected = Some(crate::tests::selected_asset());
+            app.ai.category_version = app.viewer.selected.as_ref().map(|a| a.version_id);
+            app.detail_tab = 2;
+            app.manager.details.ai_tags = vec!["较长的标签也应在窄侧栏中自然换行".into()];
+            for width in [720.0, 1180.0, 1660.0] {
+                app.viewport.width = width;
+                app.manager.panel = Some(manage::Panel::AiCategories);
+                drop(app.view());
+                app.manager.panel = None;
                 drop(app.view());
             }
             app.manager.panel = None;

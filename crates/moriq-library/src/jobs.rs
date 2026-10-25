@@ -1,6 +1,7 @@
 //! Durable per-library scheduling. A step owns its frozen media and generation token.
 use super::*;
 pub struct Work {
+    profile: Option<AiProfile>,
     readers: std::sync::Arc<read_pool::ReadPool>,
     library: LibraryId,
     root: PathBuf,
@@ -109,6 +110,8 @@ impl Work {
 pub enum Execution {
     Complete(Outcome),
     Inference(InferenceWork),
+    QwenClassification(InferenceWork),
+    QwenDescription(InferenceWork),
 }
 pub struct InferenceWork {
     work: Work,
@@ -116,6 +119,9 @@ pub struct InferenceWork {
     model: ModelId,
 }
 impl InferenceWork {
+    pub fn profile(&self) -> Option<&AiProfile> {
+        self.work.profile.as_ref()
+    }
     pub fn model(&self) -> ModelId {
         self.model
     }
@@ -147,6 +153,29 @@ impl InferenceWork {
             revision,
         }
     }
+    pub fn complete_qwen(
+        self,
+        task: &'static str,
+        result: TaskResult<analysis::InferenceResult>,
+    ) -> Outcome {
+        let mut revision = None;
+        let result = result
+            .and_then(|output| output.checked(ModelId::Qwen35_4b))
+            .and_then(|output| {
+                revision = Some(output.revision);
+                match self.work.profile.as_ref() {
+                    Some(profile) => analysis::qwen_payload_for_profile(task, output.data, profile),
+                    None => analysis::qwen_payload(task, output.data),
+                }
+            })
+            .map_err(|e| e.to_string());
+        Outcome {
+            work: self.work,
+            image: Ok(None),
+            analysis: Some(result),
+            revision,
+        }
+    }
 }
 impl Work {
     pub fn kind(&self) -> JobKind {
@@ -160,6 +189,12 @@ impl Work {
         let Some(model) = self.kind.model() else {
             return Execution::Complete(self.run_controlled(&cancel));
         };
+        if matches!(
+            self.kind,
+            JobKind::QwenClassification | JobKind::QwenDescription
+        ) {
+            return self.execute_qwen();
+        }
         let source = std::mem::replace(&mut self.source, Ok(None));
         match source {
             Ok(Some(source)) => match analysis::prepare_image(source) {
@@ -181,6 +216,34 @@ impl Work {
                 analysis: Some(Ok(serde_json::json!({}))),
                 revision: None,
             }),
+            Err(error) => Execution::Complete(Outcome {
+                work: self,
+                image: Ok(None),
+                analysis: Some(Err(error)),
+                revision: None,
+            }),
+        }
+    }
+    fn execute_qwen(mut self) -> Execution {
+        let source = std::mem::replace(&mut self.source, Ok(None));
+        let image = match source {
+            Ok(Some(source)) => analysis::prepare_image(source).map_err(|e| e.to_string()),
+            Ok(None) => Err("Qwen 任务缺少输入素材".into()),
+            Err(error) => Err(error),
+        };
+        match image {
+            Ok(image) => match self.kind {
+                JobKind::QwenClassification => Execution::QwenClassification(InferenceWork {
+                    work: self,
+                    image,
+                    model: ModelId::Qwen35_4b,
+                }),
+                _ => Execution::QwenDescription(InferenceWork {
+                    work: self,
+                    image,
+                    model: ModelId::Qwen35_4b,
+                }),
+            },
             Err(error) => Execution::Complete(Outcome {
                 work: self,
                 image: Ok(None),
@@ -267,6 +330,11 @@ error.chars().take(2000).collect::<String>()])?;
         Ok(())
     }
     pub fn enqueue_media_job(&mut self, kind: JobKind, priority: i32) -> Result<String> {
+        let profile = if kind == JobKind::QwenClassification {
+            Some(self.ai_profile()?)
+        } else {
+            None
+        };
         if kind == JobKind::Batch || !(-100..=100).contains(&priority) {
             return Err(Error::Invalid("后台任务类型或优先级无效".into()));
         }
@@ -280,6 +348,12 @@ error.chars().take(2000).collect::<String>()])?;
         let id = Uuid::new_v4().to_string();
         let tx = self.db.transaction()?;
         tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind.as_str(),priority,now_ms()?])?;
+        if let Some(profile) = profile {
+            tx.execute(
+                "INSERT INTO background_job_payload VALUES(?1,?2)",
+                params![id, serde_json::json!({"ai_profile":profile}).to_string()],
+            )?;
+        }
         let formats = if kind == JobKind::Integrity {
             "1=1".into()
         } else {
@@ -309,12 +383,31 @@ error:r.get(7)?}
 ))?.collect::<std::result::Result<Vec<_>,
 _>>().map_err(Error::from)
     }
+    pub fn control_model_jobs(&mut self, command: JobCommand) -> Result<Vec<String>> {
+        let sql = match command {
+            JobCommand::Pause => {
+                "UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1 WHERE kind LIKE 'analysis:%' AND state IN('queued','running') RETURNING id"
+            }
+            JobCommand::Resume => {
+                "UPDATE background_jobs SET state='queued',inflight=0,generation=generation+1 WHERE kind LIKE 'analysis:%' AND state='paused' RETURNING id"
+            }
+            JobCommand::Cancel => {
+                "UPDATE background_jobs SET state='cancelled',inflight=0,generation=generation+1 WHERE kind LIKE 'analysis:%' AND state IN('queued','running','paused') RETURNING id"
+            }
+            _ => return Err(Error::Invalid("不支持的批量模型任务操作".into())),
+        };
+        let mut statement = self.db.prepare(sql)?;
+        statement
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Error::from)
+    }
     pub fn control_job(&mut self, id: &str, command: JobCommand) -> Result<()> {
         if matches!(command, JobCommand::RetryFailed) {
             return self.retry_failed_job(id).map(|_| ());
         }
         let changed=match command{
-            JobCommand::Pause=>self.db.execute("UPDATE background_jobs SET state='paused' WHERE id=?1 AND state IN('queued','running')",[id])?,
+            JobCommand::Pause=>self.db.execute("UPDATE background_jobs SET state='paused',inflight=CASE WHEN kind LIKE 'analysis:%' THEN 0 ELSE inflight END,generation=generation+CASE WHEN kind LIKE 'analysis:%' THEN 1 ELSE 0 END WHERE id=?1 AND state IN('queued','running')",[id])?,
             JobCommand::Resume=>self.db.execute("UPDATE background_jobs SET state='queued',inflight=0,generation=generation+1 WHERE id=?1 AND state='paused'",[id])?,
             JobCommand::Cancel=>self.db.execute("UPDATE background_jobs SET state='cancelled',inflight=0,generation=generation+1 WHERE id=?1 AND \
                 state IN('queued','running','paused')",
@@ -403,11 +496,40 @@ r.get(1)?))).optional()?;
                 .transpose()
                 .map_err(|e| e.to_string())
         };
+        let profile = if kind == JobKind::QwenClassification {
+            let stored: Option<String> = self
+                .db
+                .query_row(
+                    "SELECT json FROM background_job_payload WHERE job_id=?1",
+                    [&job],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let profile = if let Some(stored) = stored {
+                let value: serde_json::Value =
+                    serde_json::from_str(&stored).map_err(|e| Error::Invalid(e.to_string()))?;
+                serde_json::from_value::<AiProfile>(value["ai_profile"].clone())
+                    .map_err(|e| Error::Invalid(e.to_string()))?
+            } else {
+                self.ai_profile()?
+            };
+            profile.validate().map_err(|e| Error::Invalid(e.into()))?;
+            if crate::ai_profile::classification_hash(&profile)?
+                != crate::ai_profile::classification_hash(&self.ai_profile()?)?
+            {
+                self.db.execute("UPDATE background_jobs SET state='cancelled',generation=generation+1,inflight=0,error='分类定义已更新，请重新整理' WHERE id=?1",[&job])?;
+                return Ok(None);
+            }
+            Some(profile)
+        } else {
+            None
+        };
         self.db.execute(
             "UPDATE background_jobs SET state='running',inflight=1 WHERE id=?1",
             [&job],
         )?;
         Ok(Some(Work {
+            profile,
             readers: self.readers.clone(),
             library: self.id(),
             root: self.root.clone(),
@@ -445,6 +567,13 @@ work.generation],
 |r|r.get(0)).optional()?;
 
         if state.is_none() {
+            return Ok(());
+        }
+        if let Some(profile) = &work.profile
+            && crate::ai_profile::classification_hash(profile)?
+                != crate::ai_profile::classification_hash(&self.ai_profile()?)?
+        {
+            self.db.execute("UPDATE background_jobs SET state='cancelled',generation=generation+1,inflight=0,error='分类定义已更新，请重新整理' WHERE id=?1",[&work.job])?;
             return Ok(());
         }
         let mut failure = String::new();
@@ -693,5 +822,46 @@ mod tests {
         let result = lib.background_jobs().unwrap().remove(0);
         assert_eq!(result.state, JobState::Completed);
         assert_eq!(result.failed, 1);
+    }
+    #[test]
+    fn bulk_model_controls_preserve_checkpoints_and_leave_other_jobs_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lib = Library::create(dir.path(), "controls").unwrap();
+        let a = lib
+            .enqueue_media_job(JobKind::QwenClassification, 0)
+            .unwrap();
+        let b = lib.enqueue_media_job(JobKind::QwenDescription, 0).unwrap();
+        let ordinary = lib.enqueue_media_job(JobKind::Metadata, 0).unwrap();
+        let paused = lib.control_model_jobs(JobCommand::Pause).unwrap();
+        assert!(paused.contains(&a));
+        assert!(paused.contains(&b));
+        let jobs = lib.background_jobs().unwrap();
+        assert_eq!(
+            jobs.iter().find(|j| j.id == ordinary).unwrap().state,
+            JobState::Queued
+        );
+        assert_eq!(
+            jobs.iter().find(|j| j.id == a).unwrap().state,
+            JobState::Paused
+        );
+        lib.control_model_jobs(JobCommand::Resume).unwrap();
+        lib.control_model_jobs(JobCommand::Cancel).unwrap();
+        assert!(
+            lib.control_model_jobs(JobCommand::Resume)
+                .unwrap()
+                .is_empty()
+        );
+        let root = lib.root().to_path_buf();
+        drop(lib);
+        let lib = Library::open(&root).unwrap();
+        assert_eq!(
+            lib.background_jobs()
+                .unwrap()
+                .iter()
+                .find(|j| j.id == a)
+                .unwrap()
+                .state,
+            JobState::Cancelled
+        );
     }
 }

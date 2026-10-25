@@ -8,6 +8,8 @@ use iced::{Alignment, Length};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Panel {
+    AiCategories,
+    Libraries,
     Menu,
     Import,
     Filters,
@@ -62,10 +64,12 @@ pub(super) struct Manager {
     pub tags_collapsed: bool,
     pub description_draft: Option<String>,
     pub cover: Option<image::Handle>,
+    pub cover_saving: Option<(LibraryId, u64)>,
     pub label: String,
     pub collection_name: String,
     pub tag_new_name: String,
     pub new_project_name: String,
+    pub new_project_parent: Option<ProjectId>,
     pub active_tag: String,
     pub export: export::ExportState,
     pub parent: Option<ProjectId>,
@@ -87,6 +91,8 @@ pub(super) struct Manager {
 }
 #[derive(Debug, Clone)]
 pub enum ManageMessage {
+    AiMediumFilter(String),
+    AiThemeFilter(String),
     SyncoExecutable,
     SyncoExecutablePicked(Option<PathBuf>),
     SyncoAutoStart(bool),
@@ -119,9 +125,10 @@ pub enum ManageMessage {
     VersionSelected(LibraryId, AssetId, AssetVersionId, Result<(), String>),
     Description(String),
     Cover,
+    AssetCover,
     PickedCover(LibraryId, Option<PathBuf>),
     CoverLoaded(LibraryId, u64, Result<Option<image::Handle>, String>),
-    CoverSaved(LibraryId, Result<(), String>),
+    CoverSaved(LibraryId, u64, Result<(), String>),
     Close,
     Filters,
     Organize,
@@ -176,6 +183,7 @@ pub enum ManageMessage {
     Parent(Option<ProjectId>),
     NewChildProject,
     NewProjectName(String),
+    NewParent(Option<ProjectId>),
     MoveProject,
     DeleteProject,
     FolderImport,
@@ -266,17 +274,11 @@ impl App {
         let version = asset.version_id;
         let asset = asset.id;
         let service = self.service.clone();
-        let recommendations = self.service.clone();
-        Task::batch([
-            Task::perform(async move { service.details(id, asset).await }, move |r| {
-                Message::Manage(ManageMessage::DetailsLoaded(id, asset, version, r))
-            }),
-            Task::perform(
-                async move { recommendations.recommendations(id, asset, version).await },
-                move |r| Message::Ai(crate::ai::AiMessage::Recommended(id, asset, version, r)),
-            ),
-        ])
+        Task::perform(async move { service.details(id, asset).await }, move |r| {
+            Message::Manage(ManageMessage::DetailsLoaded(id, asset, version, r))
+        })
     }
+
     pub(super) fn selected_ids(&self) -> Vec<AssetId> {
         if self.manager.selection.enabled {
             self.manager.selection.assets.iter().copied().collect()
@@ -285,6 +287,9 @@ impl App {
         }
     }
     pub(super) fn manage_message(&mut self, event: ManageMessage) -> Task<Message> {
+        if self.libraries.busy {
+            return Task::none();
+        }
         let language = self.preferences.language;
         use ManageMessage::*;
         if let PickedDestination(expected, _, _) | PickedReference(expected, _, _, _) = &event
@@ -293,6 +298,26 @@ impl App {
             return Task::none();
         }
         match event {
+            AiMediumFilter(id) => {
+                if let Some((id, _)) = AI_MEDIA.iter().find(|(key, _)| *key == id) {
+                    FilterChange::Medium(id).apply(&mut self.manager.filters.query, 0);
+                } else if id.is_empty() {
+                    FilterChange::Medium("").apply(&mut self.manager.filters.query, 0);
+                }
+            }
+            AiThemeFilter(id) => {
+                if let Some((id, _)) = AI_THEMES.iter().find(|(key, _)| *key == id) {
+                    FilterChange::Theme(id).apply(&mut self.manager.filters.query, 0);
+                } else {
+                    let query = &mut self.manager.filters.query;
+                    query.category.clear();
+                    if query.themes.contains(&id) {
+                        query.themes.retain(|s| s != &id);
+                    } else {
+                        query.themes.push(id);
+                    }
+                }
+            }
             SyncoExecutable => {
                 return Task::perform(
                     async move {
@@ -572,11 +597,17 @@ impl App {
                 }
             }
             Parent(parent) => self.manager.parent = parent,
+            NewParent(parent) if !self.manager.busy => self.manager.new_project_parent = parent,
+            NewParent(_) => {}
             NewProjectName(value) => self.manager.new_project_name = value,
             NewChildProject | MoveProject => {
                 if let Some(library) = &self.library {
                     let id = library.info.id;
-                    let parent = self.manager.parent;
+                    let parent = if matches!(event, NewChildProject) {
+                        self.manager.new_project_parent
+                    } else {
+                        self.manager.parent
+                    };
                     let name = self.manager.new_project_name.clone();
                     let project = self.manager.project_target;
                     let service = self.service.clone();
@@ -763,7 +794,28 @@ impl App {
                 }
             }
             Description(value) => self.manager.description_draft = Some(value),
-            Cover => {
+            AssetCover
+                if !self.switching
+                    && !self.manager.busy
+                    && self.manager.cover_saving.is_none()
+                    && !self.query.trash =>
+            {
+                if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
+                    let (id, asset, version) = (library.info.id, asset.id, asset.version_id);
+                    self.cover_write_request = self.cover_write_request.wrapping_add(1);
+                    let request = self.cover_write_request;
+                    self.manager.cover_saving = Some((id, request));
+                    self.manager.panel = None;
+                    self.status =
+                        tr!(language,"正在设置资源库封面…"=>"Setting library cover…").into();
+                    let service = self.service.clone();
+                    return Task::perform(
+                        async move { service.set_asset_cover(id, asset, version).await },
+                        move |r| Message::Manage(CoverSaved(id, request, r)),
+                    );
+                }
+            }
+            Cover if !self.switching && self.manager.cover_saving.is_none() => {
                 if let Some(l) = &self.library {
                     let id = l.info.id;
                     return Task::perform(
@@ -785,26 +837,48 @@ impl App {
                 }
             }
             PickedCover(id, Some(path))
-                if self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+                if !self.switching
+                    && self.manager.cover_saving.is_none()
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
+                self.cover_write_request = self.cover_write_request.wrapping_add(1);
+                let request = self.cover_write_request;
+                self.manager.cover_saving = Some((id, request));
                 let service = self.service.clone();
                 return Task::perform(async move { service.set_cover(id, path).await }, move |r| {
-                    Message::Manage(CoverSaved(id, r))
+                    Message::Manage(CoverSaved(id, request, r))
                 });
             }
-            CoverSaved(id, result) if self.library.as_ref().is_some_and(|l| l.info.id == id) => {
-                let saved = result.is_ok();
-                let task = self.update(Message::Saved(id, result));
-                return if saved {
-                    Task::batch([task, self.refresh_cover()])
-                } else {
-                    task
-                };
+            CoverSaved(id, request, result)
+                if self.manager.cover_saving == Some((id, request))
+                    && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
+            {
+                self.manager.cover_saving = None;
+                match result {
+                    Ok(()) => {
+                        self.library_cards_request = self.library_cards_request.wrapping_add(1);
+                        self.status =
+                            tr!(language,"已设为资源库封面"=>"Library cover updated").into();
+                        return self.refresh_cover();
+                    }
+                    Err(e) => {
+                        self.status = tr!(language,"封面设置失败，请检查后重试"=>"Cover update failed; check the error and retry").into();
+                        self.error = Some(e);
+                    }
+                }
             }
             CoverLoaded(id, request, Ok(handle))
                 if request == self.cover_request
                     && self.library.as_ref().is_some_and(|l| l.info.id == id) =>
             {
+                if let Some(library) = &self.library {
+                    if let Some(cover) = &handle {
+                        self.library_covers
+                            .insert(library.root.clone(), cover.clone());
+                    } else {
+                        self.library_covers.remove(&library.root);
+                    }
+                }
                 self.manager.cover = handle
             }
             CoverLoaded(id, request, Err(e))
@@ -1009,9 +1083,29 @@ impl App {
                 if !self.manager.notes_dirty {
                     self.manager.notes = result.notes.clone();
                 }
-                if self.ai.category_version != Some(version) {
+                let version_changed = self.ai.category_version != Some(version);
+                if version_changed {
                     self.ai.category = result.category.clone();
                     self.ai.category_version = Some(version);
+                    self.ai.classification_dirty = false;
+                    self.ai.description_dirty = false;
+                    self.ai.content_saving = false;
+                    self.ai.content_request = self.ai.content_request.wrapping_add(1);
+                }
+                if !self.ai.classification_dirty && !self.ai.content_saving {
+                    self.ai.medium = if result.medium.is_empty() {
+                        "uncertain".into()
+                    } else {
+                        result.medium.clone()
+                    };
+                    self.ai.themes = result.themes.clone();
+                }
+                if !self.ai.description_dirty && !self.ai.content_saving {
+                    self.ai.description = result.ai_caption.clone();
+                    if version_changed || self.ai.description_editor.text() != self.ai.description {
+                        self.ai.description_editor =
+                            iced::widget::text_editor::Content::with_text(&self.ai.description);
+                    }
                 }
                 self.manager.details = result;
             }
@@ -1450,6 +1544,8 @@ impl App {
             }
         }
         let title = match self.manager.panel {
+            Some(Panel::Libraries) => tr!(language,"管理资源库"=>"Manage library"),
+            Some(Panel::AiCategories) => tr!(language,"自定义分类"=>"Customize categories"),
             Some(Panel::Activity) => tr!(language, "活动记录" => "Activity"),
             Some(Panel::Notifications) => tr!(language, "通知中心" => "Notifications"),
             Some(Panel::Location) => tr!(language, "编辑地点" => "Edit location"),
@@ -1501,6 +1597,14 @@ impl App {
             Space::new().width(0).into()
         };
         let (kind, description) = match self.manager.panel {
+            Some(Panel::Libraries) => (
+                Icon::Database,
+                tr!(language,"移除列表记录，或单独确认永久删除。"=>"Forget a list entry or separately confirm permanent deletion."),
+            ),
+            Some(Panel::AiCategories) => (
+                Icon::Tag,
+                tr!(language, "定义你的分类方式，同步到智能整理与素材侧栏。" => "Define categories for organize cards and the asset sidebar."),
+            ),
             Some(Panel::Collections) => (
                 Icon::Tag,
                 tr!(language, "管理你的整理方式，让素材更有条理。" => "Manage your organization tools and keep assets in order."),
@@ -1626,6 +1730,12 @@ impl App {
         };
         use ManageMessage::*;
         match self.manager.panel {
+            Some(Panel::Libraries) => {
+                content = content.push(self.library_actions_form());
+            }
+            Some(Panel::AiCategories) => {
+                content = content.push(self.category_editor());
+            }
             Some(Panel::People) => content = content.push(self.people_panel()),
             Some(Panel::Metadata) => content = content.push(self.metadata_panel()),
             Some(Panel::Batch) => content = content.push(self.batch_panel()),
@@ -1806,6 +1916,45 @@ impl App {
                 }
             }
             Some(Panel::Filters) => {
+                content = content.push(muted(
+                    tr!(language, "主题（同时满足所选项）" => "Themes (match all selected)"),
+                ));
+                let profile = &self.manager.organizer.ai_profile;
+                content = content.push(
+                    row![
+                        muted(tr!(language,"媒介"=>"Medium")),
+                        choice_labels(
+                            std::iter::once(String::new())
+                                .chain(
+                                    profile
+                                        .categories
+                                        .iter()
+                                        .filter(|c| c.kind == AiCategoryKind::Medium)
+                                        .map(|c| c.id.clone())
+                                )
+                                .collect(),
+                            Some(self.manager.filters.query.medium.clone()),
+                            move |id| profile.categories.iter().find(|c| &c.id == id).map_or_else(
+                                || tr!(language,"全部媒介"=>"All media").to_string(),
+                                |c| crate::categories::category_label(language, c)
+                            ),
+                            |id| Message::Manage(AiMediumFilter(id))
+                        )
+                    ]
+                    .spacing(12),
+                );
+                for c in profile
+                    .categories
+                    .iter()
+                    .filter(|c| c.kind == AiCategoryKind::Theme && c.enabled)
+                {
+                    let id = c.id.clone();
+                    content = content.push(
+                        iced::widget::checkbox(self.manager.filters.query.themes.contains(&id))
+                            .label(crate::categories::category_label(language, c))
+                            .on_toggle(move |_| Message::Manage(AiThemeFilter(id.clone()))),
+                    );
+                }
                 content = content.push(crate::components::action(
                     tr!(language, "EXIF 与 GPS 高级检索" => "Advanced EXIF and GPS search"),
                     Message::Metadata(MetadataMessage::Open),
@@ -2110,12 +2259,28 @@ impl App {
                 .push(separator())
                 .push(text(&self.manager.report).size(12));
         }
+        let categories = self.manager.panel == Some(Panel::AiCategories);
         let has_footer = self.manager.panel == Some(Panel::Filters);
         // Reserve the title, padding and fixed actions before sizing the scroll area.
-        let body_height = (self.viewport.height - if has_footer { 300.0 } else { 240.0 }).max(80.0);
+        let body_height = (self.viewport.height
+            - if categories {
+                350.0
+            } else if has_footer {
+                300.0
+            } else {
+                240.0
+            })
+        .max(80.0);
         let body_content: Element<'_, Message> = if matches!(
             self.manager.panel,
-            Some(Panel::People | Panel::Collections | Panel::Compare)
+            Some(
+                Panel::People
+                    | Panel::Collections
+                    | Panel::Compare
+                    | Panel::AiCategories
+                    | Panel::Project
+                    | Panel::Libraries
+            )
         ) {
             content.into()
         } else {
@@ -2134,6 +2299,9 @@ impl App {
         )
         .max_height(body_height);
         let mut form = iced::widget::column![header, separator(), body].spacing(20);
+        if categories {
+            form = form.push(self.category_footer());
+        }
         if has_footer {
             form = form.push(
                 row![
@@ -2158,6 +2326,8 @@ impl App {
                 (self.viewport.width - 40.0).clamp(
                     260.0,
                     match self.manager.panel {
+                        Some(Panel::AiCategories) => 920.0,
+                        Some(Panel::Project) => 760.0,
                         Some(Panel::Location | Panel::Delete | Panel::AssetProjects) => 560.0,
                         Some(Panel::Versions | Panel::Tasks) => 580.0,
                         Some(Panel::People | Panel::Collections) => 700.0,

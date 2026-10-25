@@ -101,6 +101,8 @@ impl ColorChoice {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterChange {
+    Medium(&'static str),
+    Theme(&'static str),
     Media(MediaChoice),
     Rating(u8),
     Imported(Period),
@@ -114,6 +116,18 @@ pub enum FilterChange {
 impl FilterChange {
     pub fn apply(self, q: &mut Query, now: u64) {
         match self {
+            Self::Medium(id) => {
+                q.medium = id.into();
+                q.category.clear();
+            }
+            Self::Theme(id) => {
+                q.category.clear();
+                if q.themes.iter().any(|s| s == id) {
+                    q.themes.retain(|s| s != id);
+                } else {
+                    q.themes.push(id.into());
+                }
+            }
             Self::Media(choice) => {
                 q.media_kind = match choice {
                     MediaChoice::Raw => MediaKind::Raw,
@@ -183,6 +197,8 @@ impl FilterChange {
 impl std::fmt::Display for FilterChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match *self {
+            Self::Medium("") => "全部媒介",
+            Self::Medium(id) | Self::Theme(id) => ai_label(id),
             Self::Media(MediaChoice::All) => "全部类型",
             Self::Media(MediaChoice::Raw) => "RAW",
             Self::Media(MediaChoice::Video) => "视频",

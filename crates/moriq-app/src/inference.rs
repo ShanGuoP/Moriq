@@ -6,6 +6,13 @@ use moriq_library::{
 };
 
 pub trait InferenceRunner: Send + Sync {
+    fn qwen_infer(
+        &self,
+        task: &str,
+        image: &std::path::Path,
+        profile: &AiProfile,
+        cancel: &AtomicBool,
+    ) -> TaskResult<InferenceResult>;
     fn revision(&self, model: ModelId) -> TaskResult<String>;
     fn ready(&self, model: ModelId) -> TaskResult<()>;
     fn infer(
@@ -18,6 +25,29 @@ pub trait InferenceRunner: Send + Sync {
 
 pub struct LocalInference;
 impl InferenceRunner for LocalInference {
+    fn qwen_infer(
+        &self,
+        task: &str,
+        image: &std::path::Path,
+        profile: &AiProfile,
+        cancel: &AtomicBool,
+    ) -> TaskResult<InferenceResult> {
+        if cancel.load(Ordering::Acquire) {
+            return Err(TaskError::Cancelled);
+        }
+        self.ready(ModelId::Qwen35_4b)?;
+        let revision = self.revision(ModelId::Qwen35_4b)?;
+        let data = moriq_ai::llama_infer_profile(task, image, cancel, profile)
+            .map_err(TaskError::Runtime)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(TaskError::Cancelled);
+        }
+        Ok(InferenceResult {
+            model: ModelId::Qwen35_4b,
+            revision,
+            data,
+        })
+    }
     fn revision(&self, model: ModelId) -> TaskResult<String> {
         moriq_ai::registry()
             .map_err(TaskError::Runtime)?
@@ -69,6 +99,20 @@ pub(super) fn execute(
                 &cancel,
             );
             request.complete(result)
+        }
+        Execution::QwenClassification(request) => {
+            let profile = request.profile().cloned().unwrap_or_default();
+            let result = runner.qwen_infer("classify", request.image_path(), &profile, &cancel);
+            request.complete_qwen("qwen_classification", result)
+        }
+        Execution::QwenDescription(request) => {
+            let result = runner.qwen_infer(
+                "describe",
+                request.image_path(),
+                &AiProfile::default(),
+                &cancel,
+            );
+            request.complete_qwen("qwen_description", result)
         }
     }
 }
