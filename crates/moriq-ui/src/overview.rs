@@ -3,7 +3,9 @@ use crate::components::grouped_number as number;
 use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
-use iced::widget::{Column, Row, Space, button, column, container, image, row, stack, text};
+use iced::widget::{
+    Column, Row, Space, button, column, container, image, row, stack, text, tooltip,
+};
 use iced::{Alignment, Border, Color, ContentFit, Length};
 impl App {
     pub(super) fn overview(&self) -> Element<'_, Message> {
@@ -218,10 +220,13 @@ impl App {
                         row![
                             button(
                                 column![
-                                    heading(title, 13),
+                                    heading(title, 13)
+                                        .width(Length::Fill)
+                                        .wrapping(text::Wrapping::Glyph),
                                     muted(trf!(language, "{} 张" => "{} photos", number(count)))
                                 ]
                                 .spacing(4)
+                                .width(Length::Fill)
                             )
                             .padding(0)
                             .style(flat)
@@ -258,21 +263,50 @@ impl App {
 
         for tile in self.manager.favorites.iter().take(4) {
             favorites = favorites.push(
-                button(column![
-                    photo(tile.handle.as_ref(), Length::Fixed(144.0), 256.0),
-                    container(text(&tile.asset.name).size(12)).padding(6)
-                ])
-                .padding(0)
-                .style(secondary)
-                .on_press(Message::Favorites)
-                .width(144),
+                tooltip(
+                    button(
+                        column![
+                            photo(tile.handle.as_ref(), Length::Fill, 256.0),
+                            container(
+                                text(crate::welcome::compact(&tile.asset.name, 20))
+                                    .size(12)
+                                    .line_height(text::LineHeight::Absolute(16.0.into()))
+                                    .width(Length::Fill)
+                                    .height(32)
+                                    .wrapping(text::Wrapping::Glyph)
+                            )
+                            .padding([6, 8])
+                            .height(44)
+                            .width(Length::Fill)
+                            .clip(true)
+                        ]
+                        .width(Length::Fill),
+                    )
+                    .padding(0)
+                    .style(secondary)
+                    .on_press(Message::Favorites)
+                    .width(144),
+                    container(
+                        text(&tile.asset.name)
+                            .size(12)
+                            .width(Length::Fill)
+                            .wrapping(text::Wrapping::Glyph),
+                    )
+                    .padding([8, 10])
+                    .width(320)
+                    .style(panel),
+                    tooltip::Position::Top,
+                )
+                .gap(8)
+                .delay(Duration::from_millis(450))
+                .snap_within_viewport(true),
             );
         }
 
         let favorites: Element<'_, Message> = if !self.manager.favorites.is_empty() {
             iced::widget::scrollable(favorites)
                 .direction(iced::widget::scrollable::Direction::Horizontal(
-                    Default::default(),
+                    iced::widget::scrollable::Scrollbar::new().spacing(8),
                 ))
                 .width(Length::Fill)
                 .into()
@@ -374,7 +408,7 @@ impl App {
                 ),
                 iced::widget::scrollable(projects)
                     .direction(iced::widget::scrollable::Direction::Horizontal(
-                        Default::default()
+                        iced::widget::scrollable::Scrollbar::new().spacing(8)
                     ))
                     .width(Length::Fill)
             ]

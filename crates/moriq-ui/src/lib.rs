@@ -1828,6 +1828,9 @@ impl App {
                     }
                     if self.capture_ticks == 8 {
                         let scroll_target = match self.launch.panel.as_deref() {
+                            Some("overview-filenames" | "overview-filenames-compact") => {
+                                Some(("overview", 100000.0))
+                            }
                             Some("settings-bottom") => Some(("management", 100000.0)),
                             Some("details-ai") => Some(("details", 220.0)),
                             Some("details-ai-tags") => Some(("details", 620.0)),
@@ -1849,6 +1852,17 @@ impl App {
                             self.detail_tab = 2;
                         }
                         match self.launch.panel.as_deref() {
+                            Some("overview-filenames" | "overview-filenames-compact") => {
+                                let size = if self.launch.panel.as_deref()
+                                    == Some("overview-filenames-compact")
+                                {
+                                    Size::new(1180.0, 740.0)
+                                } else {
+                                    Size::new(1600.0, 900.0)
+                                };
+                                return iced::window::oldest()
+                                    .and_then(move |id| iced::window::resize(id, size));
+                            }
                             Some("drop-hover") => {
                                 return self.update(Message::Drop(DropMessage::Hover(
                                     PathBuf::from("drop-feedback.png"),
