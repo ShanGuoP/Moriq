@@ -196,8 +196,8 @@ pub fn scroll<'a>(
     scrollable(content)
         .direction(scrollable::Direction::Vertical(
             scrollable::Scrollbar::new()
-                .width(10)
-                .scroller_width(10)
+                .width(16)
+                .scroller_width(14)
                 .spacing(6),
         ))
         .style(theme::scroll_style)
@@ -206,7 +206,11 @@ pub fn metadata<'a>(kind: Icon, label: &str, value: impl Into<String>) -> Elemen
     row![
         icon(kind, 14.0, MUTED),
         muted(label).width(74),
-        text(value.into()).size(12).style(text_color(ICON))
+        text(value.into())
+            .width(Length::Fill)
+            .wrapping(text::Wrapping::Glyph)
+            .size(12)
+            .style(text_color(ICON))
     ]
     .spacing(8)
     .align_y(Alignment::Center)

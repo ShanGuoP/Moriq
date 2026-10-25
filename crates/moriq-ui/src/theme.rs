@@ -359,7 +359,10 @@ pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style 
 }
 pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
     let mut style = scrollable::default(theme, status);
-    style.vertical_rail.background = None;
+    style.vertical_rail.background = Some(Background::Color(adaptive(
+        theme,
+        Color::from_rgba8(146, 157, 175, 0.10),
+    )));
     style.vertical_rail.scroller.background = Background::Color(
         if matches!(
             status,
@@ -367,7 +370,7 @@ pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::St
         ) {
             Color::from_rgba8(118, 131, 151, 0.75)
         } else {
-            Color::from_rgba8(146, 157, 175, 0.42)
+            Color::from_rgba8(146, 157, 175, 0.65)
         },
     );
     style.vertical_rail.scroller.border.radius = 4.0.into();

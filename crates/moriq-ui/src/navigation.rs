@@ -44,6 +44,7 @@ pub(super) struct Location {
 impl Location {
     fn saved(&self) -> SavedVisit {
         SavedVisit {
+            library_picker: self.library_picker,
             screen: match self.screen {
                 Screen::Overview => 0,
                 Screen::Assets => 1,
@@ -65,7 +66,7 @@ impl Location {
             },
             surfaces: Default::default(),
             expanded: false,
-            library_picker: false,
+            library_picker: value.library_picker,
             screen: match value.screen {
                 1 => Screen::Assets,
                 2 => Screen::Models,
@@ -131,8 +132,11 @@ impl History {
 }
 impl App {
     pub(super) fn navigation_snapshot(&self) -> SavedNavigation {
+        let mut current = self.location().saved();
+        // Opening a library should enter it; picker visits remain in the history.
+        current.library_picker = false;
         SavedNavigation {
-            current: self.location().saved(),
+            current,
             back: self.history.back.iter().map(Location::saved).collect(),
             forward: self.history.forward.iter().map(Location::saved).collect(),
         }
@@ -272,6 +276,7 @@ impl App {
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.update_inner(message);
         if library != self.library.as_ref().map(|l| l.info.id) {
+            self.favorites = Default::default();
             self.drop_import.clear();
             self.jobs = crate::tasks::TaskState {
                 request: self.jobs.request + 1,
@@ -336,6 +341,12 @@ impl App {
             self.history.back.pop_back()
         };
         let Some(destination) = destination else {
+            if !forward && !self.library_picker {
+                let current = self.location();
+                History::push(&mut self.history.forward, current);
+                self.history.searching = false;
+                return self.update_inner(Message::ShowLibraries);
+            }
             return Task::none();
         };
         let current = self.location();

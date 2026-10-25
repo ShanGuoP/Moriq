@@ -1,5 +1,7 @@
 //! Qwen model management and native llama.cpp inference.
 mod llama;
+mod qwen_faces;
+pub use qwen_faces::infer as llama_faces;
 mod models;
 pub use moriq_runtime::verify_runtime;
 mod runtime;

@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(fs::read(second).unwrap(), fs::read(b).unwrap());
         let other = library.create_project("另一个项目").unwrap();
         assert!(
-            !library
+            library
                 .import_file(&item(a.clone()), Some(other), false)
                 .unwrap()
         );
@@ -301,7 +301,7 @@ mod tests {
             fs::read(library.root().join("assets/另一个项目/原文件夹/照片.png")).unwrap(),
             fs::read(a).unwrap()
         );
-        assert_eq!(library.info().unwrap().count, 2);
+        assert_eq!(library.info().unwrap().count, 3);
         assert_eq!(
             library
                 .page(

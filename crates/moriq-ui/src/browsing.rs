@@ -74,7 +74,10 @@ impl App {
         self.browse_task = Some(handle);
         task
     }
-    pub(super) fn focus_tile(&mut self, tile: Tile) -> Task<Message> {
+    pub(super) fn focus_tile(&mut self, mut tile: Tile) -> Task<Message> {
+        if let Some(value) = self.pending_favorite(tile.asset.id) {
+            tile.asset.favorite = value;
+        }
         if self.viewer.selected.as_ref().is_some_and(|asset| {
             asset.id == tile.asset.id && asset.version_id == tile.asset.version_id
         }) && (self.viewer.preview_task.is_some() || self.viewer.preview_background.is_some())

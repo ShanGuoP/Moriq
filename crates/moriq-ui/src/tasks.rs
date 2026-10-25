@@ -364,6 +364,9 @@ impl App {
                 JobKind::QwenDescription => {
                     tr!(language, "Qwen 中文标签与描述" => "Qwen Chinese tags and descriptions")
                 }
+                JobKind::QwenFaces => {
+                    tr!(language,"Qwen 人脸识别与人物分组"=>"Qwen face recognition and people grouping")
+                }
             };
             view = view
                 .push(heading(

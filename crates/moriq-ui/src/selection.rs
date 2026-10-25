@@ -4,12 +4,14 @@ use super::*;
 pub(super) struct SelectionState {
     pub assets: std::collections::HashSet<AssetId>,
     pub enabled: bool,
+    pub additive: bool,
     pub anchor: Option<AssetId>,
 }
 impl SelectionState {
     pub fn clear(&mut self) {
         self.assets.clear();
         self.anchor = None;
+        self.additive = false;
     }
     pub fn toggle_mode(&mut self) {
         self.enabled = !self.enabled;

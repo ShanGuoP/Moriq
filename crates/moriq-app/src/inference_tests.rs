@@ -20,6 +20,29 @@ impl FakeRunner {
     }
 }
 impl InferenceRunner for FakeRunner {
+    fn qwen_faces(
+        &self,
+        image: &std::path::Path,
+        references: &[(String, PathBuf)],
+        cancel: &AtomicBool,
+    ) -> TaskResult<InferenceResult> {
+        assert!(image.is_file());
+        self.entered.store(true, Ordering::Release);
+        let start = Instant::now();
+        while !self.release.load(Ordering::Acquire) {
+            if cancel.load(Ordering::Acquire) {
+                self.cancelled.store(true, Ordering::Release);
+                return Err(TaskError::Cancelled);
+            }
+            assert!(start.elapsed() < Duration::from_secs(15));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(InferenceResult {
+            model: ModelId::Qwen35_4b,
+            revision: "test-qwen".into(),
+            data: serde_json::json!({"faces":[{"box":[0.1,0.1,0.5,0.5],"person":references.first().map(|p|p.0.as_str())}]}),
+        })
+    }
     fn qwen_infer(
         &self,
         _: &str,
@@ -136,6 +159,45 @@ async fn wait_completed(service: &Service, owner: LibraryId) -> BackgroundJob {
         assert!(started.elapsed() < Duration::from_secs(10), "{job:?}");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+#[test]
+fn qwen_faces_run_through_the_scheduler_and_cancel_without_late_publication() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for cancel in [false, true] {
+            let (_dir, root, asset) = seed();
+            let runner = FakeRunner::new(6, !cancel);
+            let service = Service::start_with_inference(runner.clone()).unwrap();
+            let owner = service.open(root).await.unwrap().info.id;
+            service
+                .queue_media_job(owner, JobKind::QwenFaces)
+                .await
+                .unwrap();
+            if cancel {
+                wait_entered(&runner).await;
+                tokio::time::timeout(Duration::from_secs(2), service.rating(owner, asset, 3))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let job = service.background_jobs(owner).await.unwrap().remove(0);
+                service
+                    .control_job(owner, job.id, JobCommand::Cancel)
+                    .await
+                    .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !runner.cancelled.load(Ordering::Acquire) {
+                    assert!(Instant::now() < deadline);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                assert!(service.faces(owner, asset).await.unwrap().is_empty());
+            } else {
+                assert_eq!(wait_completed(&service, owner).await.failed, 0);
+                assert_eq!(service.faces(owner, asset).await.unwrap().len(), 1);
+                assert_eq!(service.organizer(owner).await.unwrap().people.len(), 1);
+            }
+            service.close().await.unwrap();
+        }
+    });
 }
 #[test]
 fn injected_inference_binds_revision_and_supports_both_search_inputs_without_runtime() {

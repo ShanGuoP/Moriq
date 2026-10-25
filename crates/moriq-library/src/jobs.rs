@@ -112,6 +112,7 @@ pub enum Execution {
     Inference(InferenceWork),
     QwenClassification(InferenceWork),
     QwenDescription(InferenceWork),
+    QwenFaces(InferenceWork),
 }
 pub struct InferenceWork {
     work: Work,
@@ -119,6 +120,28 @@ pub struct InferenceWork {
     model: ModelId,
 }
 impl InferenceWork {
+    pub fn face_references(
+        &self,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<crate::qwen_faces::References> {
+        crate::qwen_faces::references(&self.work.readers, cancel)
+    }
+    pub fn complete_faces(self, result: TaskResult<analysis::InferenceResult>) -> Outcome {
+        let mut revision = None;
+        let result = result
+            .and_then(|output| output.checked(ModelId::Qwen35_4b))
+            .map(|output| {
+                revision = Some(output.revision);
+                output.data
+            })
+            .map_err(|e| e.to_string());
+        Outcome {
+            work: self.work,
+            image: Ok(None),
+            analysis: Some(result),
+            revision,
+        }
+    }
     pub fn profile(&self) -> Option<&AiProfile> {
         self.work.profile.as_ref()
     }
@@ -191,7 +214,7 @@ impl Work {
         };
         if matches!(
             self.kind,
-            JobKind::QwenClassification | JobKind::QwenDescription
+            JobKind::QwenClassification | JobKind::QwenDescription | JobKind::QwenFaces
         ) {
             return self.execute_qwen();
         }
@@ -233,6 +256,11 @@ impl Work {
         };
         match image {
             Ok(image) => match self.kind {
+                JobKind::QwenFaces => Execution::QwenFaces(InferenceWork {
+                    work: self,
+                    image,
+                    model: ModelId::Qwen35_4b,
+                }),
                 JobKind::QwenClassification => Execution::QwenClassification(InferenceWork {
                     work: self,
                     image,
@@ -354,7 +382,12 @@ error.chars().take(2000).collect::<String>()])?;
                 params![id, serde_json::json!({"ai_profile":profile}).to_string()],
             )?;
         }
-        let formats = if kind == JobKind::Integrity {
+        let formats = if kind == JobKind::QwenFaces {
+            format!(
+                "v.format NOT IN({}) AND a.display_version_id=v.id",
+                video::sql_formats()
+            )
+        } else if kind == JobKind::Integrity {
             "1=1".into()
         } else {
             format!("v.format NOT IN({})", video::sql_formats())
@@ -577,15 +610,27 @@ work.generation],
             return Ok(());
         }
         let mut failure = String::new();
+        let mut copies = project_isolation::Copies::default();
         let tx = self.db.transaction()?;
+        tx.execute_batch("PRAGMA defer_foreign_keys=ON;")?;
         if let Some(result) = outcome.analysis {
             match result {
                 Ok(result) => {
                     if result.as_object().is_some_and(|m| !m.is_empty()) {
                         if work.kind == JobKind::Batch {
-                            batch::apply(&tx, &work.version, &result)?;
+                            batch::apply(&tx, &self.root, &mut copies, &work.version, &result)?;
                         } else if work.kind == JobKind::Metadata {
                             metadata::store(&tx, &work.version, &result)?;
+                        } else if work.kind == JobKind::QwenFaces {
+                            crate::qwen_faces::store(
+                                &tx,
+                                &work.version,
+                                outcome
+                                    .revision
+                                    .as_deref()
+                                    .ok_or_else(|| Error::Invalid("人脸任务缺少模型修订".into()))?,
+                                &result,
+                            )?;
                         } else {
                             let model = work
                                 .kind
@@ -652,6 +697,7 @@ failure])?;
 
         tx.commit()?;
         self.snapshot = None;
+        copies.commit();
         Ok(())
     }
 }

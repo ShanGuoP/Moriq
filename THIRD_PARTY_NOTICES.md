@@ -6,6 +6,7 @@ Moriq Space source is distributed under the Apache License, Version 2.0, in LICE
 - FFmpeg n8.1.3-18-g46d899d7a0: https://ffmpeg.org/ . BtbN's LGPL shared build enables version3 and is LGPLv3. License is archived outside the package under target/package-reports/runtime-notices/codecs. Exact binary provenance is in codecs/provenance.json. Upstream revision: https://github.com/FFmpeg/FFmpeg/tree/46d899d7a0 . Build recipes: https://github.com/BtbN/FFmpeg-Builds . A reproducible corresponding-source bundle including enabled dependencies must be archived before public release.
 - llama.cpp b11869: https://github.com/ggml-org/llama.cpp/releases/tag/b11869 . Native Windows Vulkan runtime. Exact archive provenance and file hashes are recorded in ai/provenance.json and ai/llama/checksums.json. LLVM OpenMP notices are archived under target/package-reports/runtime-notices/ai/llama.
 - cryoglyph 0.1.0: MIT OR Apache-2.0 OR Zlib. The local copy under vendor/cryoglyph preserves upstream source and notices and updates its lru dependency to 0.18.2 for the upstream panic-safety fix. See vendor/cryoglyph/MORIQ_PATCH.md.
+- iced_widget 0.14.2: MIT. The local copy under vendor/iced_widget preserves upstream source and license and increases the minimum vertical scrollbar thumb size with accurate drag endpoints. See vendor/iced_widget/MORIQ_PATCH.md.
 - moxcms 0.8.1: https://github.com/awxkee/moxcms . BSD-3-Clause or Apache-2.0.
 - resvg/usvg 0.45.1: https://github.com/linebender/resvg . Apache-2.0 or MIT.
 

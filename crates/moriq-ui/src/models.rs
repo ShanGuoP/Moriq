@@ -117,7 +117,7 @@ impl App {
                         ]
                         .spacing(12)
                         .align_y(Alignment::Center),
-                        muted(tr!(language, "使用 Qwen3.5-4B 在本机生成图片分类、中文标签与描述。" => "Generate image categories, Chinese tags and descriptions locally with Qwen3.5-4B."))
+                        muted(tr!(language, "使用 Qwen3.5-4B 在本机生成分类、标签与描述，并识别人脸、整理人物分组。" => "Use Qwen3.5-4B locally for categories, tags, descriptions, face recognition and people groups."))
                     ]
                     .spacing(6)
                     .width(Length::Fill),
@@ -307,20 +307,10 @@ impl App {
             .padding([8, 12])
             .style(secondary)
             .into()
-        } else if self.manager.organizer.people.is_empty() {
-            muted(tr!(language, "按图片内容分类" => "Group by image content")).into()
         } else {
-            crate::components::localized_choice(
-                language,
-                vec!["按内容类型分组", "人物管理与纠正"],
-                Some("按内容类型分组"),
-                |value| {
-                    if value == "人物管理与纠正" {
-                        Message::Ai(AiMessage::People)
-                    } else {
-                        Message::Noop
-                    }
-                },
+            action(
+                tr!(language,"人物识别与分组"=>"Face recognition and people"),
+                Message::Ai(AiMessage::People),
             )
             .into()
         }
@@ -713,6 +703,9 @@ fn job_title(language: Language, kind: JobKind) -> &'static str {
         }
         JobKind::QwenDescription => {
             tr!(language, "Qwen 中文标签与描述" => "Qwen Chinese tags and descriptions")
+        }
+        JobKind::QwenFaces => {
+            tr!(language,"Qwen 人脸识别与人物分组"=>"Qwen face recognition and people grouping")
         }
         JobKind::Fingerprints => tr!(language, "近似图片索引" => "Image similarity index"),
         JobKind::Thumbnails => tr!(language, "重建图片缩略图" => "Rebuild image thumbnails"),

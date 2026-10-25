@@ -132,6 +132,9 @@ impl App {
         }
     }
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
+        if self.defer_favorite_navigation(&message) {
+            return Task::none();
+        }
         if let Message::Drop(event) = message {
             return self.drop_message(event);
         }

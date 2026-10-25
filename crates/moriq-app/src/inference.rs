@@ -6,6 +6,14 @@ use moriq_library::{
 };
 
 pub trait InferenceRunner: Send + Sync {
+    fn qwen_faces(
+        &self,
+        _image: &std::path::Path,
+        _references: &[(String, std::path::PathBuf)],
+        _cancel: &AtomicBool,
+    ) -> TaskResult<InferenceResult> {
+        Err(TaskError::Runtime("未配置 Qwen 人脸推理".into()))
+    }
     fn qwen_infer(
         &self,
         task: &str,
@@ -25,6 +33,24 @@ pub trait InferenceRunner: Send + Sync {
 
 pub struct LocalInference;
 impl InferenceRunner for LocalInference {
+    fn qwen_faces(
+        &self,
+        image: &std::path::Path,
+        references: &[(String, std::path::PathBuf)],
+        cancel: &AtomicBool,
+    ) -> TaskResult<InferenceResult> {
+        self.ready(ModelId::Qwen35_4b)?;
+        let revision = self.revision(ModelId::Qwen35_4b)?;
+        let data = moriq_ai::llama_faces(image, references, cancel).map_err(TaskError::Runtime)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(TaskError::Cancelled);
+        }
+        Ok(InferenceResult {
+            model: ModelId::Qwen35_4b,
+            revision,
+            data,
+        })
+    }
     fn qwen_infer(
         &self,
         task: &str,
@@ -92,6 +118,15 @@ pub(super) fn execute(
 ) -> Outcome {
     match work.execute(cancel.clone()) {
         Execution::Complete(outcome) => outcome,
+        Execution::QwenFaces(request) => {
+            let result = request
+                .face_references(&cancel)
+                .map_err(|e| TaskError::Storage(e.to_string()))
+                .and_then(|references| {
+                    runner.qwen_faces(request.image_path(), &references.items, &cancel)
+                });
+            request.complete_faces(result)
+        }
         Execution::Inference(request) => {
             let result = runner.infer(
                 request.model(),

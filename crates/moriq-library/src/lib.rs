@@ -13,7 +13,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const SCHEMA: u32 = 24;
+const SCHEMA: u32 = 25;
 mod ai_content;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -61,7 +61,12 @@ pub use catalog::validate_reference;
 mod organize;
 pub mod overview;
 mod project_deletion;
+mod project_isolation;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod project_isolation_tests;
 mod purge;
+pub mod qwen_faces;
 mod resize;
 mod rules;
 pub mod settings;
@@ -423,6 +428,9 @@ impl Library {
                     )?;
                 }
                 tx.commit()?;
+            }
+            if version <= 24 {
+                project_isolation::migrate(&mut db, &root)?;
             }
             Ok(())
         })();
@@ -947,8 +955,11 @@ rusqlite::params_from_iter(values))?;
         let duplicate: Option<String> = self
             .db
             .query_row(
-                "SELECT v.asset_id FROM asset_versions v JOIN assets a ON a.id=v.asset_id WHERE v.sha256=?1 AND v.bytes=?2 ORDER BY a.deleted_at IS NOT NULL LIMIT 1",
-                params![hash, fs::metadata(staged)?.len()],
+                "SELECT v.asset_id FROM asset_versions v JOIN assets a ON a.id=v.asset_id WHERE v.sha256=?1 AND v.bytes=?2 AND \
+                 ((?3 IS NULL AND NOT EXISTS(SELECT 1 FROM project_assets p WHERE p.asset_id=a.id)) OR \
+                  (?3 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM project_assets p WHERE p.asset_id=a.id AND p.project_id<>?3))) \
+                 ORDER BY a.deleted_at IS NOT NULL LIMIT 1",
+                params![hash, fs::metadata(staged)?.len(), project.map(|p| p.to_string())],
                 |r| r.get(0),
             )
             .optional()?;
@@ -959,8 +970,8 @@ rusqlite::params_from_iter(values))?;
             }
             if !referenced && let Some(project) = project {
                 let existing_version: String = self.db.query_row(
-                    "SELECT id FROM asset_versions WHERE sha256=?1 AND bytes=?2 LIMIT 1",
-                    params![hash, fs::metadata(staged)?.len()],
+                    "SELECT id FROM asset_versions WHERE sha256=?1 AND bytes=?2 AND asset_id=?3 LIMIT 1",
+                    params![hash, fs::metadata(staged)?.len(), existing],
                     |r| r.get(0),
                 )?;
                 self.duplicate_project_file(

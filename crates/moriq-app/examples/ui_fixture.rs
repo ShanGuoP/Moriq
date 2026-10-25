@@ -17,7 +17,9 @@ async fn run() -> Result<(), String> {
     let mut library =
         moriq_library::Library::create(&parent, "资源库管理验证").map_err(|e| e.to_string())?;
     if let Some(image) = std::env::args_os().nth(2) {
-        library.import(&std::path::PathBuf::from(image), None).map_err(|e| e.to_string())?;
+        library
+            .import(&std::path::PathBuf::from(image), None)
+            .map_err(|e| e.to_string())?;
     }
     let a = library
         .create_project("项目管理验证")

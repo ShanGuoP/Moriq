@@ -30,6 +30,9 @@ impl Library {
 /// Crop the actual detected face, with a little context, from a bounded preview.
 /// Copy only the crop rows rather than cloning the entire image for every face.
 pub fn crop(preview: &Pixels, bounds: [f32; 4]) -> Result<Pixels> {
+    crop_at(preview, bounds, 96)
+}
+pub(crate) fn crop_at(preview: &Pixels, bounds: [f32; 4], output: u32) -> Result<Pixels> {
     if preview.width == 0
         || preview.height == 0
         || preview.width > 1600
@@ -66,7 +69,12 @@ pub fn crop(preview: &Pixels, bounds: [f32; 4]) -> Result<Pixels> {
     let image = image::RgbaImage::from_raw(edge, edge, pixels)
         .ok_or_else(|| Error::Invalid("人脸预览像素无效".into()))?;
     Ok(super::pixels(image::DynamicImage::ImageRgba8(
-        image::imageops::resize(&image, 96, 96, image::imageops::FilterType::Triangle),
+        image::imageops::resize(
+            &image,
+            output,
+            output,
+            image::imageops::FilterType::Triangle,
+        ),
     )))
 }
 

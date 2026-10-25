@@ -1,6 +1,105 @@
 use super::*;
 
 #[test]
+fn ctrl_click_and_context_menu_preserve_the_batch_and_plain_click_exits_additive_selection() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Assets;
+    let a = crate::tests::selected_asset();
+    let b = crate::tests::selected_asset();
+    let c = crate::tests::selected_asset();
+    app.tiles = [a.clone(), b.clone(), c.clone()]
+        .into_iter()
+        .map(|asset| Tile {
+            asset,
+            handle: None,
+        })
+        .collect();
+    app.viewer.selected = Some(a.clone());
+    drop(app.update(Message::Modifiers(iced::keyboard::Modifiers::CTRL)));
+    drop(app.update(Message::CardPressed(b.id)));
+    assert_eq!(app.selected_ids().len(), 2);
+    assert!(app.selected_ids().contains(&a.id));
+    assert!(app.selected_ids().contains(&b.id));
+    drop(app.update(Message::Modifiers(iced::keyboard::Modifiers::empty())));
+    app.scroll_y = 90_000.0;
+    drop(app.update(Message::AssetContext(a.id)));
+    assert_eq!(app.selected_ids().len(), 2);
+    assert_eq!(app.scroll_y, 90_000.0);
+    assert_eq!(app.manager.panel, Some(manage::Panel::AssetMenu));
+    drop(app.update(Message::Manage(ManageMessage::Close)));
+    drop(app.update(Message::Modifiers(iced::keyboard::Modifiers::CTRL)));
+    drop(app.update(Message::CardPressed(b.id)));
+    assert_eq!(app.selected_ids(), vec![a.id]);
+    drop(app.update(Message::Modifiers(iced::keyboard::Modifiers::empty())));
+    drop(app.update(Message::CardPressed(c.id)));
+    assert!(!app.manager.selection.enabled);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, c.id);
+    drop(app.update(Message::Manage(ManageMessage::ToggleMulti)));
+    drop(app.update(Message::CardPressed(a.id)));
+    drop(app.update(Message::CardPressed(b.id)));
+    assert_eq!(app.selected_ids().len(), 2);
+}
+
+#[test]
+fn opening_and_closing_context_menu_keeps_existing_scroll_widget_state() {
+    use iced::advanced::widget::{Tree, tree};
+    use std::collections::HashSet;
+    fn states(tree: &Tree, tag: tree::Tag, result: &mut HashSet<usize>) {
+        if tree.tag == tag
+            && let tree::State::Some(state) = &tree.state
+        {
+            result.insert(&**state as *const dyn std::any::Any as *const () as usize);
+        }
+        for child in &tree.children {
+            states(child, tag, result);
+        }
+    }
+    let mut app = crate::tests::app();
+    app.screen = Screen::Assets;
+    app.scroll_y = 90_000.0;
+    let a = crate::tests::selected_asset();
+    app.tiles = vec![Tile {
+        asset: a.clone(),
+        handle: None,
+    }];
+    app.viewer.selected = Some(a.clone());
+    let scroll: Element<'_, Message> = crate::components::scroll(iced::widget::Space::new()).into();
+    let tag = scroll.as_widget().tag();
+    let mut tree = Tree::new(app.shell());
+    let mut before = HashSet::new();
+    states(&tree, tag, &mut before);
+    assert!(before.len() >= 2);
+    for message in [
+        Message::AssetContext(a.id),
+        Message::Manage(ManageMessage::Close),
+    ] {
+        drop(app.update(message));
+        tree.diff(app.shell());
+        let mut after = HashSet::new();
+        states(&tree, tag, &mut after);
+        assert!(
+            before.is_subset(&after),
+            "opening a popup remounted an existing scrollable"
+        );
+        assert_eq!(app.scroll_y, 90_000.0);
+    }
+}
+
+#[test]
+fn back_from_library_root_opens_picker_and_forward_restores_projects() {
+    let mut app = crate::tests::app();
+    app.preferences.reduced_motion = true;
+    app.screen = Screen::Overview;
+    assert!(app.can_go_back());
+    drop(app.update(Message::Back));
+    assert!(app.library_picker);
+    assert!(app.history.can_forward());
+    drop(app.update(Message::Forward));
+    assert!(!app.library_picker);
+    assert_eq!(app.screen, Screen::Overview);
+}
+
+#[test]
 fn asset_cover_save_is_single_flight_scoped_and_refreshes_the_library_card() {
     let mut app = crate::tests::app();
     let owner = app.library.as_ref().unwrap().info.id;
@@ -51,7 +150,10 @@ fn asset_cover_save_is_single_flight_scoped_and_refreshes_the_library_card() {
     assert!(app.manager.cover.is_some());
     assert!(app.library_covers.contains_key(&root));
     let stale = app.library_cards_request.wrapping_sub(1);
-    drop(app.update(Message::LibraryCardsLoaded(stale, Ok(vec![(root.clone(), None)]))));
+    drop(app.update(Message::LibraryCardsLoaded(
+        stale,
+        Ok(vec![(root.clone(), None)]),
+    )));
     assert!(app.library_covers.contains_key(&root));
     assert!(app.manager.notes_dirty);
     assert_eq!(app.manager.notes, "尚未保存的备注");

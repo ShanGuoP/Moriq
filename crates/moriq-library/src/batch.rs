@@ -84,7 +84,13 @@ impl Library {
         Ok(id)
     }
 }
-pub(crate) fn apply(tx: &Connection, version: &str, value: &serde_json::Value) -> Result<()> {
+pub(crate) fn apply(
+    tx: &Connection,
+    root: &Path,
+    copies: &mut project_isolation::Copies,
+    version: &str,
+    value: &serde_json::Value,
+) -> Result<()> {
     let patch: BatchPatch =
         serde_json::from_value(value.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
     validate(&patch)?;
@@ -124,10 +130,20 @@ now_ms()?])?;
         )?;
     }
     if let Some(project) = patch.project {
-        tx.execute(
-            "INSERT OR IGNORE INTO project_assets VALUES(?1,?2)",
-            params![project.to_string(), asset],
+        let target = project.to_string();
+        let assigned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=?1 AND project_id<>?2)",
+            params![asset, target],
+            |r| r.get(0),
         )?;
+        if assigned {
+            project_isolation::clone_asset(tx, root, &asset, &target, copies)?;
+        } else {
+            tx.execute(
+                "INSERT OR IGNORE INTO project_assets VALUES(?1,?2)",
+                params![project.to_string(), asset],
+            )?;
+        }
     }
     Ok(())
 }

@@ -403,6 +403,7 @@ native::raw_sql()),
             .map(|r| Ok(ProjectId(parse_id(&r?)?)))
             .collect::<Result<Vec<_>>>()?;
         Ok(AssetDetails {
+            project_copies: self.db.prepare("SELECT c.project_id FROM project_copies c JOIN project_assets p ON p.project_id=c.project_id AND p.asset_id=c.asset_id WHERE c.source_asset_id=?1")?.query_map([id.to_string()],|r|r.get::<_,String>(0))?.map(|r|Ok(ProjectId(parse_id(&r?)?))).collect::<Result<Vec<_>>>()?,
             manual_location:self.manual_location(id)?,
             exif_location:None,
             notes,
@@ -433,7 +434,9 @@ native::raw_sql()),
             return Err(Error::Invalid("最多 64 个标签，每个最多 128 字节".into()));
         }
         let at = now_ms()?;
+        let mut copies = project_isolation::Copies::default();
         let tx = self.db.transaction()?;
+        tx.execute_batch("PRAGMA defer_foreign_keys=ON;")?;
         for id in ids {
             let exists: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1)",
@@ -469,10 +472,28 @@ native::raw_sql()),
                     )?;
                 }
                 Edit::Project(project, true) => {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO project_assets VALUES(?1,?2)",
-                        params![project.to_string(), id.to_string()],
+                    let target = project.to_string();
+                    let asset = id.to_string();
+                    let member: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM project_assets WHERE project_id=?1 AND asset_id=?2)", params![target, asset], |r| r.get(0))?;
+                    let assigned: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=?1)",
+                        [&asset],
+                        |r| r.get(0),
                     )?;
+                    if !member && assigned {
+                        project_isolation::clone_asset(
+                            &tx,
+                            &self.root,
+                            &asset,
+                            &target,
+                            &mut copies,
+                        )?;
+                    } else {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO project_assets VALUES(?1,?2)",
+                            params![target, asset],
+                        )?;
+                    }
                 }
                 Edit::Project(project, false) => {
                     tx.execute(
@@ -506,6 +527,7 @@ native::raw_sql()),
             tx.execute_batch("DELETE FROM asset_order; INSERT INTO asset_order SELECT row_number() OVER(ORDER BY imported_at,id)-1,id FROM assets WHERE deleted_at IS NULL;")?;
         }
         tx.commit()?;
+        copies.commit();
         self.snapshot = None;
         Ok(())
     }

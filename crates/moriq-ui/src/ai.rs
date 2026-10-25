@@ -300,7 +300,17 @@ impl App {
                     if model.spec.id == "qwen35-4b" {
                         let classification = service.clone();
                         let description = service.clone();
+                        let faces = service.clone();
                         return Some(Task::batch([
+                            Task::perform(
+                                async move {
+                                    faces
+                                        .queue_media_job(owner, JobKind::QwenFaces)
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                },
+                                move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
+                            ),
                             Task::perform(
                                 async move {
                                     classification
@@ -594,6 +604,13 @@ impl App {
             .map(|person| PersonChoice::person(language, person))
             .collect();
         let can_rename = self.ai.person.is_some() && !self.ai.person_name.trim().is_empty();
+        let can_recognize = self.library.is_some()
+            && !self.switching
+            && self
+                .ai
+                .models
+                .iter()
+                .any(|m| m.spec.id == "qwen35-4b" && m.installed);
         let can_merge = self
             .ai
             .person
@@ -657,7 +674,9 @@ impl App {
                 icon(Icon::Person, 20.0, MUTED),
                 heading(tr!(language, "已识别的人物" => "Recognized people"), 15),
                 chip(self.manager.organizer.people.len().to_string(), ICON),
-                Space::new().width(Length::Fill)
+                Space::new().width(Length::Fill),
+                action(tr!(language,"Qwen 识别与分组"=>"Recognize with Qwen"), Message::Jobs(tasks::JobMessage::Queue(JobKind::QwenFaces)))
+                    .on_press_maybe(can_recognize.then_some(Message::Jobs(tasks::JobMessage::Queue(JobKind::QwenFaces))))
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -665,7 +684,7 @@ impl App {
         .spacing(18);
         if self.manager.organizer.people.is_empty() {
             view = view.push(muted(
-                tr!(language, "暂无历史人物分组。" => "No historical people groups."),
+                tr!(language, "暂无人物分组。安装 Qwen 后点击“Qwen 识别与分组”，识别完成后可命名、合并或纠正。" => "No people groups yet. Install Qwen and choose Recognize with Qwen, then name, merge or correct the results."),
             ));
         }
         for person in &self.manager.organizer.people {
@@ -992,7 +1011,7 @@ impl App {
             view = view.push(
                 form_action(
                     Icon::Person,
-                    tr!(language, "管理历史人物分组" => "Manage historical people groups"),
+                    tr!(language, "管理人物分组" => "Manage people groups"),
                     Message::Ai(AiMessage::People),
                     false,
                 )

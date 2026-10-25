@@ -17,7 +17,10 @@ impl App {
         let language = self.preferences.language;
         use ManageMessage::*;
         let mut content = column![].spacing(2);
-        let title = if self.manager.panel == Some(Panel::AssetMenu) {
+        let multiple = self.manager.selection.enabled;
+        let title = if self.manager.panel == Some(Panel::AssetMenu) && multiple {
+            tr!(language, "所选素材" => "Selected assets")
+        } else if self.manager.panel == Some(Panel::AssetMenu) {
             self.viewer
                 .selected
                 .as_ref()
@@ -30,10 +33,15 @@ impl App {
                 _ => tr!(language, "显示方式" => "Display options"),
             }
         };
+        let title = if self.manager.panel == Some(Panel::AssetMenu) && multiple {
+            format!("{title} · {}", self.selected_ids().len())
+        } else {
+            title.to_owned()
+        };
         let title = if title.chars().count() > 36 {
             format!("{}…", title.chars().take(35).collect::<String>())
         } else {
-            title.into()
+            title
         };
         content = content
             .push(
@@ -44,21 +52,21 @@ impl App {
         let mut entries = Vec::<(Icon, &str, Message, bool, bool)>::new();
         match self.manager.panel {
             Some(Panel::AssetMenu) => {
-                if self.viewer.selected.is_some() {
+                if !self.selected_ids().is_empty() {
                     entries.extend([
                         (
                             Icon::Image,
                             tr!(language, "放大查看" => "Enlarge"),
                             Message::ExpandPreview,
                             false,
-                            true,
+                            !multiple,
                         ),
                         (
                             Icon::Edit,
                             tr!(language, "重命名" => "Rename"),
                             Message::ShowRenameAsset,
                             false,
-                            true,
+                            !multiple,
                         ),
                         (
                             Icon::Download,
@@ -72,14 +80,15 @@ impl App {
                             tr!(language, "项目归属…" => "Project membership…"),
                             Message::Manage(AssetProjects),
                             false,
-                            true,
+                            !multiple,
                         ),
                         (
                             Icon::Image,
                             tr!(language, "设为资源库封面" => "Set as library cover"),
                             Message::Manage(AssetCover),
                             false,
-                            !self.query.trash
+                            !multiple
+                                && !self.query.trash
                                 && !self.switching
                                 && self.manager.cover_saving.is_none(),
                         ),
@@ -88,14 +97,14 @@ impl App {
                             tr!(language, "版本与对比…" => "Versions and comparison…"),
                             Message::Manage(Versions),
                             false,
-                            true,
+                            !multiple,
                         ),
                         (
                             Icon::Folder,
                             tr!(language, "在文件夹中显示" => "Show in folder"),
                             Message::Manage(RevealAsset),
                             false,
-                            true,
+                            !multiple,
                         ),
                         (
                             Icon::Edit,
@@ -116,6 +125,31 @@ impl App {
                             true,
                         ),
                     ]);
+                    if multiple && !self.query.trash {
+                        entries.extend([
+                            (
+                                Icon::Heart,
+                                tr!(language, "收藏所选素材" => "Favorite selected assets"),
+                                Message::Manage(Edit(moriq_domain::Edit::Favorite(true))),
+                                false,
+                                true,
+                            ),
+                            (
+                                Icon::Heart,
+                                tr!(language, "取消所选收藏" => "Unfavorite selected assets"),
+                                Message::Manage(Edit(moriq_domain::Edit::Favorite(false))),
+                                false,
+                                true,
+                            ),
+                            (
+                                Icon::Collection,
+                                tr!(language, "批量处理…" => "Batch actions…"),
+                                Message::Batch(batch::BatchMessage::Open),
+                                false,
+                                true,
+                            ),
+                        ]);
+                    }
                     if self.query.trash {
                         entries.push((
                             Icon::Trash,

@@ -574,7 +574,14 @@ project.to_string()]).unwrap();
         let shared_path = library.asset_path(shared).unwrap();
         library.import(&exclusive_path, Some(root)).unwrap();
         library.import(&shared_path, Some(child)).unwrap();
-        library.import(&shared_path, Some(other)).unwrap();
+        // Retain defensive purge coverage for legacy shared records.
+        library
+            .db
+            .execute(
+                "INSERT INTO project_assets VALUES(?1,?2)",
+                params![other.to_string(), shared.to_string()],
+            )
+            .unwrap();
         library.set_tags(exclusive, &["待删除测试".into()]).unwrap();
         let external = dir.path().join("用户原片.png");
         image::RgbImage::from_pixel(3, 3, image::Rgb([9, 17, 26]))
@@ -942,7 +949,13 @@ asset.version_id.to_string()]).unwrap();
         let removed = lib.create_project("删除共享归属").unwrap();
         let retained = lib.create_project("保留归属").unwrap();
         lib.edit(&[asset], &Edit::Project(removed, true)).unwrap();
-        lib.edit(&[asset], &Edit::Project(retained, true)).unwrap();
+        // Retain defensive purge coverage for legacy shared records.
+        lib.db
+            .execute(
+                "INSERT INTO project_assets VALUES(?1,?2)",
+                params![retained.to_string(), asset.to_string()],
+            )
+            .unwrap();
         lib.prepare_synco(&[asset], Some(retained)).unwrap();
         let plan = lib.project_deletion_plan(removed).unwrap();
         assert!(plan.assets.is_empty());

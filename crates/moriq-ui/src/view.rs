@@ -323,7 +323,8 @@ impl App {
         } else if self.manager.panel.is_some() {
             self.management_overlay(base.into())
         } else {
-            base.into()
+            // Keep the base at child zero when a menu or dialog opens.
+            stack![base].into()
         };
         let result: Element<'_, Message> = if let Some(error) = &self.error {
             let toast = container(
@@ -371,7 +372,7 @@ impl App {
             ]
             .into()
         } else {
-            result
+            stack![result].into()
         };
         container(self.drop_overlay(result))
             .padding(self.frame_padding())

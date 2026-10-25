@@ -10,6 +10,20 @@ pub(crate) struct ReadLease {
     pool: Arc<ReadPool>,
 }
 impl ReadPool {
+    pub fn media_source(
+        self: &Arc<Self>,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<media::Source> {
+        let lease = self.checkout()?;
+        media::Source::from_read_connection(
+            lease.connection()?,
+            &self.root,
+            self._lease.clone(),
+            asset,
+            version,
+        )
+    }
     pub fn new(root: PathBuf, lease: Arc<File>) -> Arc<Self> {
         Arc::new(Self {
             root,

@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(app.scroll_y, 4800.0);
         assert_eq!(app.query.tag, "原查询");
         assert_eq!(app.viewer.selected.as_ref().unwrap().id, selected.id);
-        assert!(!app.can_go_back());
+        assert!(app.can_go_back());
     }
     #[test]
     fn viewer_back_restores_anchor_and_ignores_remount_zero_scroll_events() {
@@ -254,7 +254,10 @@ impl App {
     pub(super) fn can_go_back(&self) -> bool {
         !self.libraries.busy
             && !(self.manager.panel == Some(manage::Panel::Delete) && self.manager.busy)
-            && (self.surface_open() || self.viewer.preview_expanded || self.history.can_back())
+            && (self.surface_open()
+                || self.viewer.preview_expanded
+                || self.history.can_back()
+                || (self.library.is_some() && !self.library_picker))
     }
     pub(super) fn sync_surface(
         &mut self,

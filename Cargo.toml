@@ -1,13 +1,14 @@
 [workspace]
 resolver = "3"
 members = ["apps/desktop", "crates/*"]
-exclude = ["vendor/cryoglyph"]
+exclude = ["vendor/cryoglyph", "vendor/iced_widget"]
 
 [patch.crates-io]
 cryoglyph = { path = "vendor/cryoglyph" }
+iced_widget = { path = "vendor/iced_widget" }
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"

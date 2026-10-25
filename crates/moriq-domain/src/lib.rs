@@ -172,6 +172,7 @@ pub enum SortOrder {
 }
 #[derive(Debug, Clone, Default)]
 pub struct AssetDetails {
+    pub project_copies: Vec<ProjectId>,
     pub medium: String,
     pub themes: Vec<String>,
     pub ai_tags: Vec<String>,
@@ -381,6 +382,7 @@ impl Default for AiPreferences {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedVisit {
+    pub library_picker: bool,
     pub screen: u8,
     pub query: Query,
     pub scroll_y: f32,

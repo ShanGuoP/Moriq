@@ -17,6 +17,50 @@ pub struct Source {
     extension: String,
     _lease: Arc<File>,
 }
+impl Source {
+    pub(crate) fn from_read_connection(
+        db: &Connection,
+        root: &Path,
+        lease: Arc<File>,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<Self> {
+        let (hash, extension, width, height, relative): (String,String,u32,u32,String) = db.query_row(
+            "SELECT sha256,format,width,height,path FROM asset_versions WHERE asset_id=?1 AND id=?2",
+            params![asset.to_string(),version.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+        let reference: Option<(String, Vec<u8>)> = db
+            .query_row(
+                "SELECT platform,native_path FROM file_locations WHERE version_id=?1",
+                [version.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let path = if let Some((platform, bytes)) = &reference {
+            let path = organize::decode_path(platform, bytes)?;
+            if !path.is_absolute() {
+                return Err(Error::Invalid("引用路径无效".into()));
+            }
+            organize::reject_network_reference(&path)?;
+            path
+        } else {
+            safe_path(root, &relative)?
+        };
+        let file = File::open(&path)?;
+        let identity = file_id::get_file_id(&path)?;
+        Ok(Self {
+            root: root.to_owned(),
+            version,
+            dimensions: (width, height),
+            file,
+            path,
+            identity,
+            expected: reference.is_some().then_some(hash.clone()),
+            registered_hash: hash,
+            extension,
+            _lease: lease,
+        })
+    }
+}
 enum Thumbnail {
     Cached(File),
     Rebuild(Source),

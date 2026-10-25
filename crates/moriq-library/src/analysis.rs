@@ -390,6 +390,9 @@ fn refresh_person_vectors(tx: &Connection, person: &str) -> Result<()> {
         let mut rows = stmt.query(params![person, revision])?;
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(0)?;
+            if bytes.is_empty() {
+                continue;
+            } // Qwen compares portraits directly; it does not invent embeddings.
             let values = decode_vector(&bytes)?;
             if sum.is_empty() {
                 sum.resize(values.len(), 0.);

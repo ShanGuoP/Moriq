@@ -533,8 +533,9 @@ impl App {
             }
             ToggleTags => self.manager.tags_collapsed = !self.manager.tags_collapsed,
             AssetMenu | AssetProjects | Versions if self.viewer.selected.is_some() => {
-                // These menus belong to the detail image, not to the batch selection.
-                self.manager.selection.enabled = false;
+                if !matches!(event, AssetMenu) {
+                    self.manager.selection.enabled = false;
+                }
                 self.manager.panel = Some(match event {
                     AssetProjects => Panel::AssetProjects,
                     Versions => Panel::Versions,
@@ -1763,6 +1764,7 @@ impl App {
                     tr!(language, "精确标签、RAW、日期与评分请在筛选中选择；复杂条件使用组合规则。" => "Use filters for exact tags, RAW, dates and ratings. Use combined rules for more complex queries."),
                     tr!(language, "Alt+← / →：后退与前进。← / →：按当前排序浏览相邻素材。" => "Alt+← / →: Back and forward. ← / →: Browse neighboring assets in the current sort order."),
                     tr!(language, "Ctrl+A：选择当前已加载的素材（最多 128 张）。Shift+单击：范围选择。" => "Ctrl+A: Select loaded assets (up to 128). Shift+click: Select a range."),
+                    tr!(language, "Ctrl+单击：加入或取消多选。右键已选素材：操作整个选中范围。" => "Ctrl+click: Add to or remove from selection. Right-click a selected asset: Act on the entire selection."),
                     tr!(language, "Ctrl+Shift+A：对全部查询结果进行批量编辑。B：打开多字段批量编辑。" => "Ctrl+Shift+A: Batch edit all search results. B: Open multi-field batch editing."),
                     tr!(language, "0～5：给选中范围评分。F：切换收藏。Ctrl+E：导出所选素材。" => "0–5: Rate the selection. F: Toggle favorite. Ctrl+E: Export selected assets."),
                     tr!(language, "Enter / 空格：放大选中图片。Delete：将选中范围移入回收站。" => "Enter / Space: Enlarge the selected image. Delete: Move the selection to Trash."),
@@ -1834,12 +1836,14 @@ impl App {
             Some(Panel::AssetProjects) => {
                 if let Some(asset) = &self.viewer.selected {
                     content = content.push(heading(&asset.name, 15));
+                    content = content.push(muted(tr!(language, "加入其他项目会创建独立副本，后续修改互不影响。" => "Adding to another project creates an independent copy; later edits stay separate.")));
                     if self.manager.details.projects.is_empty() {
                         content = content.push(muted(tr!(language, "这张素材尚未加入项目" => "This asset does not belong to a project yet")));
                     }
                     if let Some(library) = &self.library {
                         for project in &library.info.projects {
                             let belongs = self.manager.details.projects.contains(&project.id);
+                            let copied = self.manager.details.project_copies.contains(&project.id);
                             content = content.push(
                                 row![
                                     crate::components::action(
@@ -1850,11 +1854,14 @@ impl App {
                                     action(
                                         if belongs {
                                             tr!(language, "移出" => "Remove")
+                                        } else if copied {
+                                            tr!(language, "已有独立副本" => "Independent copy exists")
                                         } else {
-                                            tr!(language, "加入" => "Add")
+                                            tr!(language, "复制到项目" => "Copy to project")
                                         },
                                         Edit(moriq_domain::Edit::Project(project.id, !belongs))
                                     )
+                                    .on_press_maybe((!copied || belongs).then_some(Message::Manage(Edit(moriq_domain::Edit::Project(project.id, !belongs)))))
                                 ]
                                 .align_y(Alignment::Center),
                             );

@@ -193,6 +193,8 @@ impl App {
                     Ok(report) => {
                         let target = self.deletion.target.take();
                         self.deletion.reset();
+                        self.manager.panel = None;
+                        self.dialog = None;
                         return match target {
                             Some(Target::Project(plan)) => self.manage_message(
                                 ManageMessage::ProjectDeleted(library, plan.projects, Ok(report)),
@@ -351,6 +353,37 @@ impl App {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn successful_trash_deletion_closes_the_confirmation_and_discards_menu_history() {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Assets;
+        app.query.trash = true;
+        let a = crate::tests::selected_asset();
+        app.viewer.selected = Some(a.clone());
+        app.tiles = vec![Tile {
+            asset: a.clone(),
+            handle: None,
+        }];
+        drop(app.update(Message::AssetContext(a.id)));
+        drop(app.update(Message::Manage(ManageMessage::Purge)));
+        let request = app.deletion.request;
+        let owner = app.library.as_ref().unwrap().info.id;
+        drop(app.update(Message::Deletion(DeletionMessage::Next)));
+        drop(app.update(Message::Deletion(DeletionMessage::Confirm)));
+        drop(app.update(Message::Deletion(DeletionMessage::Finished(
+            owner,
+            request,
+            Ok(PurgeReport {
+                deleted: 1,
+                cleanup_pending: false,
+            }),
+        ))));
+        assert!(app.manager.panel.is_none());
+        assert!(app.dialog.is_none());
+        assert!(!app.surface_has_parent());
+        assert!(app.deletion.target.is_none());
+        assert!(!app.manager.busy);
+    }
     fn plan(root: ProjectId) -> ProjectDeletionPlan {
         ProjectDeletionPlan {
             root,

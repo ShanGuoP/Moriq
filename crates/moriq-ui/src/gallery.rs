@@ -437,11 +437,7 @@ impl App {
                     ..Default::default()
                 }),
         )
-        .on_press(if self.manager.selection.enabled {
-            Message::Manage(ManageMessage::Toggle(tile.asset.id))
-        } else {
-            Message::Select(tile.asset.id)
-        })
+        .on_press(Message::CardPressed(tile.asset.id))
         .on_enter(Message::CardHovered(tile.asset.id, true))
         .on_exit(Message::CardHovered(tile.asset.id, false))
         .on_double_click(Message::OpenImage(tile.asset.id))
@@ -466,7 +462,9 @@ impl App {
                 row![
                     photo(tile.handle.as_ref(), Length::Fixed(82.0), 62.0),
                     column![
-                        heading(&tile.asset.name, 13),
+                        heading(&tile.asset.name, 13)
+                            .width(Length::Fill)
+                            .wrapping(text::Wrapping::Glyph),
                         muted(format!(
                             "{} · {} × {} · {}",
                             tile.asset.format.to_uppercase(),
@@ -512,11 +510,7 @@ impl App {
                 ..Default::default()
             }),
         )
-        .on_press(if self.manager.selection.enabled {
-            Message::Manage(ManageMessage::Toggle(tile.asset.id))
-        } else {
-            Message::Select(tile.asset.id)
-        })
+        .on_press(Message::CardPressed(tile.asset.id))
         .on_enter(Message::CardHovered(tile.asset.id, true))
         .on_exit(Message::CardHovered(tile.asset.id, false))
         .on_double_click(Message::OpenImage(tile.asset.id))
@@ -552,10 +546,18 @@ impl App {
             container(
                 row![
                     Space::new().width(Length::Fill),
-                    button(icon(Icon::Heart, 17.0, Color::WHITE))
-                        .padding(6)
-                        .style(flat)
-                        .on_press(Message::Favorite(asset.id, !asset.favorite)),
+                    button(icon(
+                        Icon::Heart,
+                        17.0,
+                        if asset.favorite {
+                            Color::from_rgb8(255, 105, 133)
+                        } else {
+                            Color::WHITE
+                        }
+                    ))
+                    .padding(6)
+                    .style(flat)
+                    .on_press(Message::Favorite(asset.id, !asset.favorite)),
                     button(icon(Icon::Maximize, 17.0, Color::WHITE))
                         .padding(6)
                         .style(flat)
@@ -870,7 +872,7 @@ impl App {
         let mut details = column![
             cover,
             row![
-                heading(&asset.name, 15).width(Length::Fill),
+                heading(&asset.name, 15).width(Length::Fill).wrapping(text::Wrapping::Glyph),
                 icon_button(Icon::Edit, Message::ShowRenameAsset)
             ]
             .spacing(8)
@@ -886,7 +888,7 @@ impl App {
                     MUTED
                 )
             ]
-            .spacing(7),
+            .spacing(7).wrap(),
             muted(format!(
                 "{}  |  {}",
                 date(asset.imported_at),

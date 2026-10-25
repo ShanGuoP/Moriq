@@ -5,6 +5,7 @@ mod ai;
 mod batch;
 mod categories;
 mod export;
+mod favorites;
 mod filters;
 mod folders;
 use export::ExportChange;
@@ -136,7 +137,10 @@ pub(crate) enum Message {
     Manage(ManageMessage),
     Modifiers(iced::keyboard::Modifiers),
     SettingsLoaded(Result<UserSettings, String>),
-    LibraryCardsLoaded(u64, Result<Vec<(PathBuf, Option<moriq_app::Pixels>)>, String>),
+    LibraryCardsLoaded(
+        u64,
+        Result<Vec<(PathBuf, Option<moriq_app::Pixels>)>, String>,
+    ),
     OpenRecent(PathBuf),
     Libraries(libraries::LibraryMessage),
     ShowLibraries,
@@ -175,6 +179,7 @@ pub(crate) enum Message {
     Zoom(f32),
     List(bool),
     Select(AssetId),
+    CardPressed(AssetId),
     FullPreviewLoaded(
         LibraryId,
         AssetId,
@@ -198,6 +203,7 @@ pub(crate) enum Message {
     VideoControlled(u64, Result<(), String>),
     ExpandPreview,
     Favorite(AssetId, bool),
+    FavoriteSaved(LibraryId, AssetId, u64, Result<(), String>),
     Rating(u8),
     Tags(String),
     SaveTags,
@@ -294,6 +300,7 @@ pub(crate) struct App {
     metadata: metadata::MetadataState,
     folders: folders::FolderState,
     ai: ai::AiState,
+    favorites: favorites::Favorites,
     surfaces: surfaces::Surfaces,
     deletion: deletion::Deletion,
     storage: storage::Storage,
@@ -434,6 +441,7 @@ impl App {
                 storage: Default::default(),
                 journal: Default::default(),
                 history: Default::default(),
+                favorites: Default::default(),
                 pending_scroll: None,
                 restored_notes: None,
                 browse_request: 0,
@@ -848,8 +856,19 @@ impl App {
                 {
                     return Task::none();
                 }
+                if menu && self.manager.selection.enabled {
+                    if !self.manager.selection.assets.contains(&id) {
+                        self.manager.selection.clear();
+                        self.manager.selection.assets.insert(id);
+                        self.manager.selection.anchor = Some(id);
+                    }
+                    self.viewer.preview_expanded = false;
+                    self.manager.panel = Some(manage::Panel::AssetMenu);
+                    return Task::none();
+                }
                 self.manager.selection.enabled = false;
-                let task = self.update(Message::Select(id));
+                // A context click selects its target without re-entering navigation.
+                let task = self.update_inner(Message::Select(id));
                 if self.viewer.selected.as_ref().is_some_and(|a| a.id == id) {
                     if menu {
                         self.viewer.preview_expanded = false;
@@ -878,6 +897,7 @@ impl App {
                 match which {
                     Shortcut::SelectVisible if !self.viewer.preview_expanded => {
                         self.manager.selection.enabled = true;
+                        self.manager.selection.additive = false;
                         self.manager.selection.assets =
                             self.tiles.iter().map(|t| t.asset.id).collect();
                     }
@@ -898,7 +918,19 @@ impl App {
                     }
                     Shortcut::Export => return self.manage_message(ManageMessage::ExportMenu),
                     Shortcut::Favorite if !self.query.trash => {
-                        if let Some(asset) = &self.viewer.selected {
+                        if self.manager.selection.enabled
+                            && !self.manager.selection.assets.is_empty()
+                        {
+                            let favorite = !self.manager.selection.assets.iter().all(|id| {
+                                self.tiles
+                                    .iter()
+                                    .chain(self.neighbors.iter())
+                                    .find(|tile| tile.asset.id == *id)
+                                    .is_some_and(|tile| tile.asset.favorite)
+                            });
+                            return self
+                                .manage_message(ManageMessage::Edit(Edit::Favorite(favorite)));
+                        } else if let Some(asset) = &self.viewer.selected {
                             return self.manage_message(ManageMessage::Edit(Edit::Favorite(
                                 !asset.favorite,
                             )));
@@ -975,7 +1007,9 @@ impl App {
                 }
                 Err(e) => self.error = Some(e),
             },
-            Message::LibraryCardsLoaded(request, Ok(cards)) if request == self.library_cards_request => {
+            Message::LibraryCardsLoaded(request, Ok(cards))
+                if request == self.library_cards_request =>
+            {
                 for (path, cover) in cards {
                     if self.preferences.recent.iter().any(|(_, p)| p == &path) {
                         if let Some(pixels) = cover {
@@ -989,7 +1023,11 @@ impl App {
                     }
                 }
             }
-            Message::LibraryCardsLoaded(request, Err(error)) if request == self.library_cards_request => self.error = Some(error),
+            Message::LibraryCardsLoaded(request, Err(error))
+                if request == self.library_cards_request =>
+            {
+                self.error = Some(error)
+            }
             Message::ShowLibraries if !self.manager.busy => {
                 self.stop_viewer();
                 self.library_picker = true;
@@ -1703,12 +1741,29 @@ impl App {
                     }
                     if matches!(
                         self.launch.panel.as_deref(),
-                        Some("viewer-return" | "gallery-scroll")
+                        Some(
+                            "viewer-return"
+                                | "gallery-scroll"
+                                | "gallery-context"
+                                | "gallery-bottom"
+                        )
                     ) {
                         if self.capture_ticks == 2 {
-                            self.scroll_y = 900.0;
-                            self.pending_scroll = Some(900.0);
-                            self.surfaces.restoring_gallery = Some(900.0);
+                            let y = if matches!(
+                                self.launch.panel.as_deref(),
+                                Some("gallery-context" | "gallery-bottom")
+                            ) {
+                                (self.active_masonry().map_or_else(
+                                    || self.grid().total_height(self.total as usize),
+                                    |layout| layout.height,
+                                ) - self.grid().viewport_height)
+                                    .max(0.0)
+                            } else {
+                                900.0
+                            };
+                            self.scroll_y = y;
+                            self.pending_scroll = Some(y);
+                            self.surfaces.restoring_gallery = Some(y);
                             return self.refresh();
                         }
                         if self.capture_ticks == 5 {
@@ -1743,6 +1798,12 @@ impl App {
                             && self.launch.panel.as_deref() == Some("viewer-return")
                         {
                             return self.update(Message::Back);
+                        }
+                        if self.capture_ticks == 8
+                            && self.launch.panel.as_deref() == Some("gallery-context")
+                            && let Some(asset) = &self.viewer.selected
+                        {
+                            return self.update(Message::AssetContext(asset.id));
                         }
                     }
                     if self.capture_ticks == 8
@@ -2017,12 +2078,13 @@ impl App {
                     let service = self.service.clone();
                     let playback = self.viewer.playback.clone();
                     let playback_state = format!(
-                        "expanded={} request={} error={:?} presented_frames={} first_gpu_ready_ms={:?}\n",
+                        "expanded={} request={} error={:?} presented_frames={} first_gpu_ready_ms={:?} gallery_scroll_y={}\n",
                         self.viewer.preview_expanded,
                         self.viewer.original_request,
                         self.error,
                         self.viewer.video_presented,
-                        self.viewer.video_first_ready_ms
+                        self.viewer.video_first_ready_ms,
+                        self.scroll_y
                     );
                     return Task::perform(
                         async move {
@@ -2094,6 +2156,17 @@ impl App {
                             });
                         }
                         self.tiles = tiles;
+                        let pending: Vec<_> = self
+                            .tiles
+                            .iter()
+                            .filter_map(|tile| {
+                                self.pending_favorite(tile.asset.id)
+                                    .map(|value| (tile.asset.id, value))
+                            })
+                            .collect();
+                        for (id, value) in pending {
+                            self.paint_favorite(id, value);
+                        }
                         self.drain_uploads();
                         if page.warnings > 0 {
                             self.status = trf!(language, "{} 张缩略图不可用，原片仍被保留" => "{} thumbnails unavailable. Original files are preserved.", page.warnings);
@@ -2162,6 +2235,31 @@ impl App {
                 self.screen = Screen::Assets;
                 self.list = value;
                 return self.reset_query();
+            }
+            Message::CardPressed(id) => {
+                if self.surface_open() || self.switching || self.viewer.preview_expanded {
+                    return Task::none();
+                }
+                if !self.tiles.iter().any(|tile| tile.asset.id == id) {
+                    return Task::none();
+                }
+                if self.modifiers.control()
+                    || (self.manager.selection.enabled && !self.manager.selection.additive)
+                {
+                    if !self.manager.selection.enabled {
+                        self.manager.selection.clear();
+                        if let Some(asset) = &self.viewer.selected {
+                            self.manager.selection.assets.insert(asset.id);
+                            self.manager.selection.anchor = Some(asset.id);
+                        }
+                        self.manager.selection.enabled = true;
+                        self.manager.selection.additive = true;
+                    }
+                    return self.manage_message(ManageMessage::Toggle(id));
+                }
+                self.manager.selection.enabled = false;
+                self.manager.selection.clear();
+                return self.update_inner(Message::Select(id));
             }
             Message::Select(id) => {
                 self.screen = Screen::Assets;
@@ -2325,14 +2423,10 @@ impl App {
             }
             Message::ExpandPreview => return self.set_viewer(!self.viewer.preview_expanded),
             Message::Favorite(asset, value) => {
-                if let Some(library) = &self.library {
-                    let service = self.service.clone();
-                    let id = library.info.id;
-                    return Task::perform(
-                        async move { service.favorite(id, asset, value).await },
-                        move |r| Message::VisualsSaved(id, r),
-                    );
-                }
+                return self.favorite(asset, value);
+            }
+            Message::FavoriteSaved(owner, asset, request, result) => {
+                return self.favorite_saved(owner, asset, request, result);
             }
             Message::Rating(rating) => {
                 if let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) {
@@ -2461,6 +2555,7 @@ impl App {
             Message::DiagnosticLogging(enabled) => return self.set_diagnostic_logging(enabled),
             // Disabled actions and receipts from an older request are intentionally ignored.
             Message::ShowLibraries
+            | Message::LibraryCardsLoaded(..)
             | Message::OpenRecent(..)
             | Message::AiPolicySaved(..)
             | Message::LibraryRenamed(..)

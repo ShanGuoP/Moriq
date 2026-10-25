@@ -360,12 +360,13 @@ fn image_gestures_target_clicked_card_and_reject_missing_or_modal_targets() {
     app.manager.selection.enabled = true;
     app.manager.selection.assets.insert(first.id);
     drop(app.update(Message::AssetContext(second.id)));
-    assert_eq!(app.viewer.selected.as_ref().unwrap().id, second.id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, first.id);
     assert_eq!(app.manager.panel, Some(manage::Panel::AssetMenu));
-    assert!(!app.manager.selection.enabled);
+    assert!(app.manager.selection.enabled);
+    assert_eq!(app.selected_ids(), vec![second.id]);
     assert!(!app.viewer.preview_expanded);
     drop(app.update(Message::OpenImage(first.id)));
-    assert_eq!(app.viewer.selected.as_ref().unwrap().id, second.id);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, first.id);
     drop(app.update(Message::Manage(ManageMessage::Close)));
     drop(app.update(Message::OpenImage(first.id)));
     assert_eq!(app.viewer.selected.as_ref().unwrap().id, first.id);
