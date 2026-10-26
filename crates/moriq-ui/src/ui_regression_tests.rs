@@ -152,7 +152,11 @@ fn asset_cover_save_is_single_flight_scoped_and_refreshes_the_library_card() {
     let stale = app.library_cards_request.wrapping_sub(1);
     drop(app.update(Message::LibraryCardsLoaded(
         stale,
-        Ok(vec![(root.clone(), None)]),
+        Ok(vec![moriq_app::LibraryCard {
+            path: root.clone(),
+            cover: None,
+            summary: None,
+        }]),
     )));
     assert!(app.library_covers.contains_key(&root));
     assert!(app.manager.notes_dirty);

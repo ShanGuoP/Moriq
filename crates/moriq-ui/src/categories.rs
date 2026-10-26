@@ -110,7 +110,7 @@ impl App {
             match result {
                 Ok(profile) => {
                     self.preferences.category_template = Some(profile);
-                    self.ai.categories.notice=Some(tr!(language,"模板已保存，新建资源库将自动沿用；本库修改仍需保存并同步。"=>"Template saved for new libraries. Save and sync to apply edits to this library.").into());
+                    self.ai.categories.notice=Some(tr!(language,"模板已保存。新建项目可套用；当前项目的修改仍需保存并同步。"=>"Template saved for new projects. Save and sync to apply edits to this project.").into());
                 }
                 Err(e) => self.ai.categories.error = Some(e),
             }
@@ -451,7 +451,7 @@ impl App {
         ]
         .spacing(10)
         .wrap();
-        let mut view=column![tools,muted(tr!(language,"模板自动用于新建资源库；套用到已有库后，保存并同步才会生效。"=>"New libraries inherit the template. Applying it to an existing library requires Save and sync.")),panes,
+        let mut view=column![tools,muted(tr!(language,"分类配置仅影响当前整理空间。模板可复制到新项目，已有项目不会自动变化。"=>"Categories affect this workspace only. Templates can be copied into new projects; existing projects stay independent.")),panes,
             muted(tr!(language,"修改识别说明或启用状态后，旧分类任务会停止；需手动重新整理以更新已有素材。"=>"Changing definitions or enabled categories stops old classification jobs. Run Organize again to update existing assets."))].spacing(14);
         if let Some(notice) = &state.notice {
             view = view.push(muted(notice));
@@ -467,7 +467,7 @@ impl App {
             } else if state.dirty {
                 tr!(language,"有未保存的修改"=>"Unsaved changes").into()
             } else {
-                tr!(language,"已同步到当前资源库"=>"Synced with this library").into()
+                tr!(language,"已同步到当前整理空间"=>"Synced with this workspace").into()
             }
         });
         let controls = row![

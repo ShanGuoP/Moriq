@@ -2,6 +2,35 @@
 use super::*;
 
 impl Service {
+    pub async fn copy_to_project(
+        &self,
+        id: LibraryId,
+        assets: Vec<AssetId>,
+        project: ProjectId,
+        annotations: bool,
+    ) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .copy_to_project(&assets, project, annotations)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn create_project_configured(
+        &self,
+        id: LibraryId,
+        name: String,
+        parent: Option<ProjectId>,
+        template: ProjectTemplate,
+    ) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .create_project_configured(&name, parent, template)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
     pub async fn save_ai_profile(&self, id: LibraryId, profile: AiProfile) -> Result<AiProfile> {
         let cancellation = self.job_cancel.clone();
         self.call(move |active| {

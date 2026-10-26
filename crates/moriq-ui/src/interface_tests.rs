@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn project_navigation_preserves_workspace_filters_and_rejects_previous_projection() {
+    let mut app = crate::tests::app();
+    app.preferences.reduced_motion = true;
+    let project = ProjectId::default();
+    let owner = app.library.as_ref().unwrap().info.id;
+    let old = app.projection_request;
+    drop(app.update(Message::Project(project)));
+    assert_eq!(app.service.workspace_project(), Some(project));
+    let stale = Organizer {
+        description: "old project".into(),
+        ..Default::default()
+    };
+    drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
+        owner,
+        old,
+        Ok(stale),
+    ))));
+    assert!(app.manager.organizer.description.is_empty());
+    drop(app.update(Message::Favorites));
+    assert_eq!(app.query.project, Some(project));
+    drop(app.update(Message::Manage(ManageMessage::Builtin(Builtin::Trash))));
+    assert_eq!(app.query.project, Some(project));
+    drop(app.update(Message::Manage(ManageMessage::ClearFilters)));
+    assert_eq!(app.query.project, Some(project));
+    drop(app.update(Message::Ai(AiMessage::Workspace(Some(project)))));
+    assert_eq!(app.screen, Screen::Models);
+    drop(app.update(Message::AllAssets));
+    assert_eq!(app.service.workspace_project(), None);
+}
+
+#[test]
 fn changing_interface_keeps_library_query_selection_and_unsaved_form() {
     let mut app = crate::tests::app();
     let library = app.library.as_ref().unwrap().info.id;

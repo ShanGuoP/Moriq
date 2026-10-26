@@ -8,6 +8,8 @@ impl Library {
         anchor: AssetId,
         direction: i8,
     ) -> Result<Option<Neighborhood>> {
+        let scoped = self.workspace_query(query)?;
+        let query = &scoped;
         if !(-1..=1).contains(&direction) {
             return Err(Error::Invalid("浏览方向无效".into()));
         }
@@ -50,6 +52,8 @@ impl Library {
         first: AssetId,
         last: AssetId,
     ) -> Result<Vec<AssetId>> {
+        let scoped = self.workspace_query(query)?;
+        let query = &scoped;
         self.page(query, 0, 1)?;
         let table = if *query == Query::default() {
             "asset_order"
@@ -85,6 +89,7 @@ impl Library {
         parent: Option<ProjectId>,
     ) -> Result<ProjectId> {
         import::validate_component(name.trim())?;
+        let profile = self.ai_profile_for("")?;
         let tx = self.db.transaction()?;
         if name.trim().is_empty() || name.len() > 120 {
             return Err(Error::Invalid("文件夹名称应为 1～120 字节".into()));
@@ -94,6 +99,7 @@ impl Library {
             "INSERT INTO projects(id,name,parent_id) VALUES(?1,?2,?3)",
             params![id.to_string(), name.trim(), parent.map(|v| v.to_string())],
         )?;
+        workspace::insert_profile(&tx, id, &profile)?;
         tx.commit()?;
         self.snapshot = None;
         Ok(id)
@@ -120,67 +126,54 @@ parent.to_string()],
         self.snapshot = None;
         Ok(())
     }
-    /// Rename, or merge into an existing target without duplicating asset relationships.
+    /// Only this project's edges change; vocabulary storage may deduplicate strings.
     pub fn rename_tag(&mut self, source: &str, target: &str) -> Result<()> {
         let target = target.trim();
         if target.is_empty() || target.len() > 128 {
             return Err(Error::Invalid("标签应为 1～128 字节".into()));
         }
-        let tx = self.db.transaction()?;
-        let old: Option<i64> = tx
-            .query_row("SELECT id FROM tags WHERE name=?1", [source], |r| r.get(0))
-            .optional()?;
         if source == target {
             return Ok(());
         }
-        let automatic = tx.prepare("SELECT t.version_id,v.asset_id FROM ai_visible_tags t JOIN asset_versions v ON v.id=t.version_id WHERE t.name=?1")?
-            .query_map([source], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
-        if old.is_none() && automatic.is_empty() {
-            return Err(Error::Invalid("标签已不存在".into()));
+        let scope = self.workspace_key();
+        let tx = self.db.transaction()?;
+        let assets=tx.prepare("SELECT DISTINCT t.asset_id FROM effective_asset_tags t JOIN asset_workspaces w ON w.asset_id=t.asset_id WHERE t.name=?1 AND w.workspace=?2")?
+            .query_map(params![source,scope],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        if assets.is_empty() {
+            return Err(Error::Invalid("本项目中没有此标签".into()));
         }
         tx.execute("INSERT OR IGNORE INTO tags(name) VALUES(?1)", [target])?;
-        let new: i64 = tx.query_row("SELECT id FROM tags WHERE name=?1", [target], |r| r.get(0))?;
-        for (version, asset) in automatic {
-            ai_content::reject_tag(&tx, &version, source)?;
+        for asset in assets {
+            tx.execute("INSERT OR IGNORE INTO ai_rejected_tags SELECT display_version_id,?2 FROM assets WHERE id=?1",params![asset,source])?;
+            tx.execute("DELETE FROM asset_tags WHERE asset_id=?1 AND tag_id IN(SELECT id FROM tags WHERE name=?2)",params![asset,source])?;
             tx.execute(
-                "INSERT OR IGNORE INTO asset_tags VALUES(?1,?2)",
-                params![asset, new],
+                "INSERT OR IGNORE INTO asset_tags SELECT ?1,id FROM tags WHERE name=?2",
+                params![asset, target],
             )?;
             tx.execute(
                 "UPDATE assets SET edited_at=?2 WHERE id=?1",
                 params![asset, now_ms()?],
             )?;
         }
-        if let Some(old) = old {
-            tx.execute("UPDATE assets SET edited_at=?1 WHERE id IN(SELECT asset_id FROM asset_tags WHERE tag_id=?2)",params![now_ms()?,old])?;
-            tx.execute("INSERT OR IGNORE INTO asset_tags SELECT asset_id,?1 FROM asset_tags WHERE tag_id=?2",params![new,old])?;
-            tx.execute("DELETE FROM asset_tags WHERE tag_id=?1", [old])?;
-            tx.execute("DELETE FROM tags WHERE id=?1", [old])?;
-        }
-        tx.execute(
-            "INSERT INTO activity(at,kind,detail) VALUES(?1,'tag',?2)",
-            params![now_ms()?, format!("标签 {source} → {target}")],
-        )?;
+        tx.execute("DELETE FROM tags WHERE name=?1 AND NOT EXISTS(SELECT 1 FROM asset_tags WHERE tag_id=tags.id)",[source])?;
         tx.commit()?;
         self.snapshot = None;
         Ok(())
     }
     pub fn delete_tag(&mut self, name: &str) -> Result<()> {
+        let scope = self.workspace_key();
         let tx = self.db.transaction()?;
-        let versions = tx
-            .prepare("SELECT version_id FROM ai_visible_tags WHERE name=?1")?
-            .query_map([name], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        for version in versions {
-            ai_content::reject_tag(&tx, &version, name)?;
-            tx.execute("UPDATE assets SET edited_at=?2 WHERE id IN(SELECT asset_id FROM asset_versions WHERE id=?1)", params![version, now_ms()?])?;
+        let assets=tx.prepare("SELECT DISTINCT t.asset_id FROM effective_asset_tags t JOIN asset_workspaces w ON w.asset_id=t.asset_id WHERE t.name=?1 AND w.workspace=?2")?
+            .query_map(params![name,scope],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        for asset in assets {
+            tx.execute("INSERT OR IGNORE INTO ai_rejected_tags SELECT display_version_id,?2 FROM assets WHERE id=?1",params![asset,name])?;
+            tx.execute("DELETE FROM asset_tags WHERE asset_id=?1 AND tag_id IN(SELECT id FROM tags WHERE name=?2)",params![asset,name])?;
+            tx.execute(
+                "UPDATE assets SET edited_at=?2 WHERE id=?1",
+                params![asset, now_ms()?],
+            )?;
         }
-        tx.execute("UPDATE assets SET edited_at=?1 WHERE id IN(SELECT x.asset_id FROM asset_tags x JOIN tags t ON t.id=x.tag_id WHERE t.name=?2)",params![now_ms()?,name])?;
-        tx.execute(
-            "DELETE FROM asset_tags WHERE tag_id IN(SELECT id FROM tags WHERE name=?1)",
-            [name],
-        )?;
-        tx.execute("DELETE FROM tags WHERE name=?1", [name])?;
+        tx.execute("DELETE FROM tags WHERE name=?1 AND NOT EXISTS(SELECT 1 FROM asset_tags WHERE tag_id=tags.id)",[name])?;
         tx.commit()?;
         self.snapshot = None;
         Ok(())

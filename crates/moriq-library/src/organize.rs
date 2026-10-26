@@ -218,6 +218,18 @@ _>>()?;
         self.import_inner(source, project, false, true, None)
     }
     pub fn organizer(&self) -> Result<Organizer> {
+        let scope = self.workspace_key();
+        let changes = self.db.total_changes();
+        let schema: u32 = self
+            .db
+            .pragma_query_value(None, "schema_version", |r| r.get(0))?;
+        if let Some((known, version, value)) = self.organizer_cache.borrow().get(&scope)
+            && *known == changes
+            && *version == schema
+        {
+            return Ok(value.clone());
+        }
+        let filter = self.workspace_filter("a.id");
         let mut result = Organizer::default();
         // Each projection owns its error. A broken panel must not suppress the
         // remaining projections or become a prerequisite for background execution.
@@ -251,22 +263,18 @@ _>>()?;
         result.ai_profile = section(&mut errors, Categories, self.ai_profile());
         result.ai_groups = section(&mut errors, Categories, self.ai_groups());
         result.ai_outdated = section(&mut errors, Categories, self.outdated_ai_count());
-        result.ai_categories = section(
-            &mut errors,
-            Categories,
-            (|| {
-                Ok(self.db.prepare("SELECT category,sum(n) FROM (SELECT c.category,count(*) n FROM asset_ai_categories c JOIN assets a ON a.id=c.asset_id WHERE a.deleted_at IS NULL GROUP BY c.category UNION ALL SELECT '未分类',count(*) FROM assets a WHERE a.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM asset_ai_categories c WHERE c.asset_id=a.id) HAVING count(*)>0) GROUP BY category ORDER BY category")?.query_map([],
-|r|Ok((r.get(0)?,
-r.get(1)?)))?.collect::<std::result::Result<Vec<_>,
-_>>()?)
-            })(),
-        );
+        result.ai_categories = result
+            .ai_groups
+            .iter()
+            .filter(|g| g.count > 0)
+            .map(|g| (g.label.trim_start_matches("历史 · ").to_string(), g.count))
+            .collect();
         result.video_count = section(
             &mut errors,
             Statistics,
             (|| {
                 Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at \
-                IS NULL AND v.format IN({})",
+                IS NULL AND {filter} AND v.format IN({})",
 crate::video::sql_formats()),
 [],
 |r|r.get(0))?)
@@ -276,8 +284,8 @@ crate::video::sql_formats()),
             &mut errors,
             Tags,
             (|| {
-                Ok(self.db.prepare("SELECT t.name,count(*) FROM effective_asset_tags t JOIN assets a ON \
-                a.id=t.asset_id WHERE a.deleted_at IS NULL GROUP BY t.name ORDER BY t.name LIMIT 2000")?
+                Ok(self.db.prepare(&format!("SELECT t.name,count(*) FROM effective_asset_tags t JOIN assets a ON \
+                a.id=t.asset_id WHERE a.deleted_at IS NULL AND {filter} GROUP BY t.name ORDER BY t.name LIMIT 2000"))?
             .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?)
             })(),
         );
@@ -288,7 +296,9 @@ crate::video::sql_formats()),
             Statistics,
             (|| {
                 Ok(self.db.query_row(
-                    "SELECT count(*) FROM assets WHERE deleted_at IS NOT NULL",
+                    &format!(
+                        "SELECT count(*) FROM assets a WHERE deleted_at IS NOT NULL AND {filter}"
+                    ),
                     [],
                     |r| r.get(0),
                 )?)
@@ -303,9 +313,9 @@ crate::video::sql_formats()),
             &mut errors,
             Statistics,
             (|| {
-                Ok(self.db.query_row("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM effective_asset_tags WHERE \
+                Ok(self.db.query_row(&format!("SELECT coalesce(sum(imported_at>=?1),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM effective_asset_tags WHERE \
                 asset_id=a.id)),0),coalesce(sum(NOT EXISTS(SELECT 1 FROM project_assets WHERE \
-                asset_id=a.id)),0),coalesce(sum(rating>=4),0) FROM assets a WHERE deleted_at IS NULL",
+                asset_id=a.id)),0),coalesce(sum(rating>=4),0) FROM assets a WHERE deleted_at IS NULL AND {filter}"),
 [week],
 |r|Ok((r.get(0)?,
 r.get(1)?,
@@ -318,8 +328,8 @@ r.get(3)?)))?)
             Statistics,
             (|| {
                 Ok(self.db.query_row(
-                    "SELECT count(*) FROM operation_journal WHERE phase='interrupted'",
-                    [],
+                    "SELECT count(*) FROM operation_journal j WHERE phase='interrupted' AND (?1='' OR EXISTS(SELECT 1 FROM import_context c WHERE c.operation_id=j.id AND c.project_id=?1))",
+                    [scope.clone()],
                     |r| r.get(0),
                 )?)
             })(),
@@ -329,7 +339,7 @@ r.get(3)?)))?)
             Statistics,
             (|| {
                 Ok(self.db.query_row(
-                    "SELECT count(*) FROM assets WHERE deleted_at IS NULL AND edited_at>=?1",
+                    &format!("SELECT count(*) FROM assets a WHERE deleted_at IS NULL AND edited_at>=?1 AND {filter}"),
                     [week],
                     |r| r.get(0),
                 )?)
@@ -340,7 +350,7 @@ r.get(3)?)))?)
             Statistics,
             (|| {
                 Ok(self.db.query_row(&format!("SELECT count(*) FROM assets a JOIN asset_versions v ON v.id=a.display_version_id WHERE a.deleted_at \
-                IS NULL AND v.format IN({})",
+                IS NULL AND {filter} AND v.format IN({})",
 native::raw_sql()),
 [],
 |r|r.get(0))?)
@@ -363,14 +373,24 @@ native::raw_sql()),
             })(),
         );
         result.errors = errors;
+        if result.errors.is_empty() {
+            let mut cache = self.organizer_cache.borrow_mut();
+            if cache.len() >= 32 {
+                cache.clear();
+            }
+            cache.insert(scope, (changes, schema, result.clone()));
+        }
         Ok(result)
     }
     pub fn smart_collections(&self) -> Result<Vec<Collection>> {
         let mut collections = Vec::new();
-        let mut stmt = self
-            .db
-            .prepare("SELECT id,name,query FROM smart_collections ORDER BY name")?;
-        for row in stmt.query_map([], |r| {
+        let sql = if self.workspace.is_some() {
+            "SELECT id,name,query FROM workspace_collections WHERE workspace=?1 ORDER BY name"
+        } else {
+            "SELECT id,name,query FROM smart_collections WHERE ?1='' ORDER BY name"
+        };
+        let mut stmt = self.db.prepare(sql)?;
+        for row in stmt.query_map([self.workspace_key()], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -433,6 +453,7 @@ native::raw_sql()),
         {
             return Err(Error::Invalid("最多 64 个标签，每个最多 128 字节".into()));
         }
+        self.require_workspace_assets(ids)?;
         let at = now_ms()?;
         let mut copies = project_isolation::Copies::default();
         let tx = self.db.transaction()?;
@@ -493,13 +514,23 @@ native::raw_sql()),
                             "INSERT OR IGNORE INTO project_assets VALUES(?1,?2)",
                             params![target, asset],
                         )?;
+                        workspace::rehome_asset(&tx, &asset, &target)?;
                     }
                 }
                 Edit::Project(project, false) => {
+                    let asset = id.to_string();
+                    let versions = tx
+                        .prepare("SELECT id FROM asset_versions WHERE asset_id=?1")?
+                        .query_map([&asset], |r| r.get::<_, String>(0))?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    let mapping = versions.into_iter().map(|id| (id.clone(), id)).collect();
+                    workspace::map_classification(&tx, &asset, &mapping, "")?;
                     tx.execute(
                         "DELETE FROM project_assets WHERE project_id=?1 AND asset_id=?2",
                         params![project.to_string(), id.to_string()],
                     )?;
+                    let scope = workspace::asset_scope(&tx, &asset)?;
+                    workspace::rehome_asset(&tx, &asset, &scope)?;
                 }
                 Edit::RemoveTags(tags) => {
                     for tag in tags {
@@ -563,17 +594,26 @@ native::raw_sql()),
         if name.trim().is_empty() || name.len() > 120 {
             return Err(Error::Invalid("请输入 1～120 字节的集合名称".into()));
         }
-        let rule = toml::to_string(query).map_err(|e| Error::Invalid(e.to_string()))?;
-        self.db.execute("INSERT INTO smart_collections VALUES(?1,?2,?3) ON CONFLICT(name) DO UPDATE SET query=excluded.query",
-params![Uuid::new_v4().to_string(),
-name.trim(),
-rule])?;
-
+        let mut query = query.clone();
+        query.project = self.workspace;
+        let rule = toml::to_string(&query).map_err(|e| Error::Invalid(e.to_string()))?;
+        if let Some(project) = self.workspace {
+            self.db.execute("INSERT INTO workspace_collections VALUES(?1,?2,?3,?4) ON CONFLICT(workspace,name) DO UPDATE SET query=excluded.query", params![Uuid::new_v4().to_string(),name.trim(),rule,project.to_string()])?;
+        } else {
+            self.db.execute("INSERT INTO smart_collections VALUES(?1,?2,?3) ON CONFLICT(name) DO UPDATE SET query=excluded.query",params![Uuid::new_v4().to_string(),name.trim(),rule])?;
+        }
         Ok(())
     }
     pub fn delete_collection(&mut self, id: &str) -> Result<()> {
-        self.db
-            .execute("DELETE FROM smart_collections WHERE id=?1", [id])?;
+        if let Some(project) = self.workspace {
+            self.db.execute(
+                "DELETE FROM workspace_collections WHERE id=?1 AND workspace=?2",
+                params![id, project.to_string()],
+            )?;
+        } else {
+            self.db
+                .execute("DELETE FROM smart_collections WHERE id=?1", [id])?;
+        }
         Ok(())
     }
     pub fn asset_path(&self, id: AssetId) -> Result<PathBuf> {

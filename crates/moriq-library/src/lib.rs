@@ -13,7 +13,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const SCHEMA: u32 = 25;
+const SCHEMA: u32 = 26;
 mod ai_content;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -57,6 +57,10 @@ pub mod storage;
 mod storage_regression_tests;
 mod vector;
 pub mod video;
+mod workspace;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod workspace_tests;
 pub use catalog::validate_reference;
 mod organize;
 pub mod overview;
@@ -117,6 +121,8 @@ struct Manifest {
 }
 
 pub struct Library {
+    workspace: Option<ProjectId>,
+    organizer_cache: std::cell::RefCell<std::collections::BTreeMap<String, (u64, u32, Organizer)>>,
     root: PathBuf,
     manifest: Manifest,
     db: Connection,
@@ -432,6 +438,9 @@ impl Library {
             if version <= 24 {
                 project_isolation::migrate(&mut db, &root)?;
             }
+            if version <= 25 {
+                workspace::migrate(&mut db)?;
+            }
             Ok(())
         })();
         migrations.map_err(|error| {
@@ -473,6 +482,8 @@ impl Library {
         let lock = std::sync::Arc::new(lock);
         let readers = read_pool::ReadPool::new(root.clone(), lock.clone());
         let mut library = Self {
+            workspace: None,
+            organizer_cache: Default::default(),
             root,
             manifest,
             db,
@@ -579,6 +590,8 @@ impl Library {
     }
 
     pub fn page(&mut self, query: &Query, offset: usize, limit: usize) -> Result<Page> {
+        let scoped = self.workspace_query(query)?;
+        let query = &scoped;
         let project = query.project.map(|id| id.to_string());
         // instr makes %, _ and quotes literal. All user input stays parameterized.
         const WHERE_HEAD: &str = "WHERE (?1='' OR instr(lower(a.name),lower(?1))>0 OR instr(lower(a.notes),lower(?1))>0 OR \
@@ -616,6 +629,11 @@ impl Library {
             native::raw_sql(),
             video::sql_formats()
         );
+        let media_condition = if query.project_exact {
+            media_condition.replace("pa.project_id IN(WITH RECURSIVE descendants(id) AS(SELECT ?3 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT id FROM descendants)", "pa.project_id=?3")
+        } else {
+            media_condition
+        };
         let mut condition = media_condition.as_str();
         let mut values: Vec<rusqlite::types::Value> = params![
             search_text,
@@ -1166,10 +1184,14 @@ rusqlite::params_from_iter(values))?;
             return Err(Error::Invalid("项目名不能为空且最多 120 字节".into()));
         }
         let id = ProjectId::default();
-        self.db.execute(
+        let profile = self.ai_profile_for("")?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO projects(id,name) VALUES(?1,?2)",
             params![id.to_string(), name.trim()],
         )?;
+        workspace::insert_profile(&tx, id, &profile)?;
+        tx.commit()?;
         Ok(id)
     }
 }

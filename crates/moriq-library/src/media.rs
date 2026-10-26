@@ -177,7 +177,7 @@ impl Library {
             let id = metadata.themes.first().unwrap_or(&metadata.medium);
             metadata.category = self
                 .db
-                .query_row("SELECT label FROM ai_vocabulary WHERE id=?1", [id], |r| {
+                .query_row("SELECT label FROM workspace_vocabulary WHERE id=?1 AND workspace=(SELECT workspace FROM ai_effective_content WHERE version_id=?2)", params![id,version], |r| {
                     r.get(0)
                 })
                 .optional()?

@@ -226,7 +226,9 @@ impl App {
                 | Message::Search(_)
                 | Message::Folder(FolderMessage::Open(_))
                 | Message::Metadata(MetadataMessage::Apply | MetadataMessage::Clear)
-                | Message::Ai(AiMessage::Category(_) | AiMessage::PersonFilter(_))
+                | Message::Ai(
+                    AiMessage::Category(_) | AiMessage::PersonFilter(_) | AiMessage::Workspace(_)
+                )
                 | Message::ModelSearch(_)
                 | Message::ModelFilter(_)
                 | Message::List(_)

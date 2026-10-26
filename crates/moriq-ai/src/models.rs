@@ -129,7 +129,7 @@ pub fn inventory() -> Result<Vec<ModelInfo>> {
                 .is_some_and(|m| m.id == model.id && m.revision == model.revision)
                 && model.files.iter().all(|f| {
                     safe_file(&root.join(key(&model)), &f.path)
-                        .is_ok_and(|p| valid_installed_file(&p, f))
+                        .is_ok_and(|p| present_installed_file(&p, f))
                 });
             let resumable = root.join(format!(".download-{}", key(&model))).is_dir();
             let bytes = model.files.iter().map(|f| f.bytes).sum();
@@ -163,6 +163,11 @@ pub fn installed_path(id: &str) -> Result<PathBuf> {
         }
     }
     Ok(path)
+}
+// Browsing inventory must not hash multi-gigabyte weights. Install verifies
+// checksums before publishing current.json; inference verifies before loading.
+fn present_installed_file(path: &Path, artifact: &ModelFile) -> bool {
+    fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == artifact.bytes)
 }
 fn valid_installed_file(path: &Path, artifact: &ModelFile) -> bool {
     type Stamp = (

@@ -1,7 +1,30 @@
 //! User preferences and library cards.
 use super::*;
+#[derive(Debug, Clone)]
+pub struct LibraryCard {
+    pub path: PathBuf,
+    pub cover: Option<Pixels>,
+    pub summary: Option<(u64, u64)>,
+}
 
 impl Service {
+    pub async fn library_card_details(&self, paths: Vec<PathBuf>) -> Result<Vec<LibraryCard>> {
+        tokio::task::spawn_blocking(move || {
+            paths
+                .into_iter()
+                .map(|path| LibraryCard {
+                    cover: moriq_library::settings::card_cover(&path).unwrap_or_else(|error| {
+                        tracing::debug!(%error,"library cover unavailable");
+                        None
+                    }),
+                    summary: moriq_library::settings::card_summary(&path).ok(),
+                    path,
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
     pub async fn interface_preferences(
         &self,
         language: Language,

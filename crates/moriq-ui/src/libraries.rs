@@ -176,6 +176,7 @@ impl App {
                         self.apply_settings(settings);
                         if let Some(path) = self.libraries.path.take() {
                             self.library_covers.remove(&path);
+                            self.library_summaries.remove(&path);
                         }
                         self.manager.panel = None;
                         self.status =

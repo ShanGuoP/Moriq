@@ -83,6 +83,11 @@ pub(super) fn clone_asset(
     project: &str,
     files: &mut Copies,
 ) -> Result<String> {
+    let workspace_schema: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_people')",
+        [],
+        |r| r.get(0),
+    )?;
     if let Some(existing) = db
         .query_row(
             "SELECT c.asset_id FROM project_copies c WHERE source_asset_id=?1 AND project_id=?2 AND NOT EXISTS(SELECT 1 FROM project_assets p WHERE p.asset_id=c.asset_id AND p.project_id<>?2)",
@@ -209,6 +214,9 @@ pub(super) fn clone_asset(
         "asset_classification",
         "virtual_folder_assets",
     ] {
+        if table == "virtual_folder_assets" && workspace_schema {
+            continue;
+        }
         copy_rows(
             db,
             table,
@@ -221,6 +229,11 @@ pub(super) fn clone_asset(
         "INSERT INTO project_assets VALUES(?1,?2)",
         params![project, new_asset],
     )?;
+    if workspace_schema {
+        workspace::map_classification(db, asset, &mapping, project)?;
+        db.execute("DELETE FROM asset_classification WHERE asset_id=?1 AND NOT EXISTS(SELECT 1 FROM workspace_vocabulary WHERE workspace=?2 AND label=asset_classification.category AND enabled=1)",params![new_asset,project])?;
+        workspace::rehome_asset(db, &new_asset, project)?;
+    }
     db.execute("DELETE FROM asset_order WHERE asset_id=?1 AND EXISTS(SELECT 1 FROM assets WHERE id=?1 AND deleted_at IS NOT NULL)",[&new_asset])?;
     db.execute(
         "INSERT INTO project_copies VALUES(?1,?2,?3) ON CONFLICT(source_asset_id,project_id) DO UPDATE SET asset_id=excluded.asset_id",

@@ -54,9 +54,10 @@ impl Library {
         version: AssetVersionId,
         edit: AiEdit,
     ) -> Result<()> {
+        self.require_workspace_assets(&[asset])?;
+        let profile = self.ai_profile_for(&self.asset_workspace(asset)?)?;
         let version = version.to_string();
         let asset = asset.to_string();
-        let profile = self.ai_profile()?;
         let tx = self.db.transaction()?;
         let current: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND display_version_id=?2 AND deleted_at IS NULL)", params![asset, version], |r| r.get(0))?;
         if !current {

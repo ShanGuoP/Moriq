@@ -461,6 +461,7 @@ fn store_faces(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let scope = workspace::version_scope(tx, version)?;
     let mut affected = old
         .iter()
         .filter_map(|f| f.person.clone())
@@ -509,8 +510,8 @@ fn store_faces(
             .or_else(|| face["suggested_person"].as_str());
         let person = if let Some(id) = candidate.filter(|id| !assigned.contains(*id)) {
             let exists: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM people WHERE id=?1)",
-                [id],
+                "SELECT EXISTS(SELECT 1 FROM people WHERE id=?1 AND coalesce((SELECT workspace FROM workspace_people WHERE person_id=people.id),'')=?2)",
+                params![id,scope],
                 |r| r.get(0),
             )?;
             exists.then(|| id.to_string())
@@ -525,6 +526,7 @@ fn store_faces(
                     "INSERT INTO people VALUES(?1,'未命名人物',?2,?3)",
                     params![id, revision, now_ms()?],
                 )?;
+                workspace::own_person(tx, &id, &scope)?;
                 id
             }
         };
@@ -560,6 +562,7 @@ impl Library {
         })
     }
     pub fn set_category(&mut self, ids: &[AssetId], category: &str) -> Result<()> {
+        self.require_workspace_assets(ids)?;
         if ids.is_empty() || ids.len() > 10000 || category.trim().is_empty() || category.len() > 128
         {
             return Err(Error::Invalid("分类名称或选择范围无效".into()));
@@ -578,7 +581,7 @@ category.trim()])?;
     pub fn people(&self) -> Result<Vec<Person>> {
         self.db.prepare("SELECT p.id,p.name,count(DISTINCT a.id) FROM people p LEFT JOIN detected_faces f ON \
                 f.person_id=p.id LEFT JOIN assets a ON a.display_version_id=f.version_id AND a.deleted_at IS NULL \
-                GROUP BY p.id ORDER BY count(DISTINCT a.id) DESC,p.name")?.query_map([],
+                WHERE coalesce((SELECT workspace FROM workspace_people WHERE person_id=p.id),'')=?1 GROUP BY p.id ORDER BY count(DISTINCT a.id) DESC,p.name")?.query_map([self.workspace_key()],
 |r|Ok(Person{
 id:r.get(0)?,
 name:r.get(1)?,
@@ -587,6 +590,7 @@ count:r.get(2)?}
 _>>().map_err(Error::from)
     }
     pub fn rename_person(&mut self, id: &str, name: &str) -> Result<()> {
+        self.require_workspace_object("people", id)?;
         let name = name.trim();
         if name.is_empty() || name.len() > 128 {
             return Err(Error::Invalid("人物名称无效".into()));
@@ -601,6 +605,8 @@ _>>().map_err(Error::from)
         Ok(())
     }
     pub fn merge_people(&mut self, source: &str, target: &str) -> Result<()> {
+        self.require_workspace_object("people", source)?;
+        self.require_workspace_object("people", target)?;
         if source == target {
             return Err(Error::Invalid("请选择两个不同人物".into()));
         }
@@ -653,6 +659,18 @@ _>>().map_err(Error::from)
             .collect()
     }
     pub fn assign_face(&mut self, face: &str, person: Option<&str>) -> Result<()> {
+        let version: String = self.db.query_row(
+            "SELECT version_id FROM detected_faces WHERE id=?1",
+            [face],
+            |r| r.get(0),
+        )?;
+        let scope = workspace::version_scope(&self.db, &version)?;
+        if scope != self.workspace_key() {
+            return Err(Error::Invalid("请进入人脸所属项目后修改人物分组".into()));
+        }
+        if let Some(person) = person {
+            self.require_workspace_object("people", person)?;
+        }
         let tx = self.db.transaction()?;
         let (revision, old): (String, Option<String>) = tx.query_row(
             "SELECT revision,person_id FROM detected_faces WHERE id=?1",
@@ -675,6 +693,7 @@ _>>().map_err(Error::from)
                 "INSERT INTO people VALUES(?1,'未命名人物',?2,?3)",
                 params![id, revision, now_ms()?],
             )?;
+            workspace::own_person(&tx, &id, &scope)?;
             id
         };
         tx.execute(
@@ -691,15 +710,16 @@ _>>().map_err(Error::from)
         Ok(())
     }
     pub fn clear_ai_indexes(&mut self, model: &str) -> Result<()> {
+        let scope = self.workspace_key();
         let tx = self.db.transaction()?;
         if model == "qwen35-4b" {
-            tx.execute("DELETE FROM ai_analysis_runs", [])?;
+            tx.execute("DELETE FROM ai_analysis_runs WHERE version_id IN(SELECT v.id FROM asset_versions v JOIN asset_workspaces w ON w.asset_id=v.asset_id WHERE w.workspace=?1)",[&scope])?;
         }
-        tx.execute("DELETE FROM ai_results WHERE model_id=?1", [model])?;
-        tx.execute("DELETE FROM ai_embeddings WHERE model_id=?1", [model])?;
+        tx.execute("DELETE FROM ai_results WHERE model_id=?1 AND version_id IN(SELECT v.id FROM asset_versions v JOIN asset_workspaces w ON w.asset_id=v.asset_id WHERE w.workspace=?2)", params![model,scope])?;
+        tx.execute("DELETE FROM ai_embeddings WHERE model_id=?1 AND version_id IN(SELECT v.id FROM asset_versions v JOIN asset_workspaces w ON w.asset_id=v.asset_id WHERE w.workspace=?2)", params![model,scope])?;
         if model == "faces" {
-            tx.execute("DELETE FROM detected_faces WHERE manual=0", [])?;
-            tx.execute("DELETE FROM person_vectors", [])?;
+            tx.execute("DELETE FROM detected_faces WHERE manual=0 AND version_id IN(SELECT v.id FROM asset_versions v JOIN asset_workspaces w ON w.asset_id=v.asset_id WHERE w.workspace=?1)", [&scope])?;
+            tx.execute("DELETE FROM person_vectors WHERE person_id IN(SELECT id FROM people WHERE coalesce((SELECT workspace FROM workspace_people WHERE person_id=people.id),'')=?1)", [&scope])?;
             let people = tx
                 .prepare(
                     "SELECT DISTINCT person_id FROM detected_faces WHERE person_id IS NOT NULL",

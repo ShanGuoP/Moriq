@@ -27,6 +27,16 @@ identity!(AssetId);
 identity!(AssetVersionId);
 identity!(ProjectId);
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProjectTemplate {
+    #[default]
+    Default,
+    Portrait,
+    Product,
+    Travel,
+    Existing(ProjectId),
+}
+
 #[derive(Debug, Clone)]
 pub struct LibraryInfo {
     pub id: LibraryId,
@@ -79,6 +89,7 @@ pub struct Query {
     pub text: String,
     pub favorites_only: bool,
     pub project: Option<ProjectId>,
+    pub project_exact: bool,
     pub format: String,
     pub storage: u8,
     pub min_rating: u8,

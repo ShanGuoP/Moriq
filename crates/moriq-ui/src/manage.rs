@@ -70,6 +70,8 @@ pub(super) struct Manager {
     pub tag_new_name: String,
     pub new_project_name: String,
     pub new_project_parent: Option<ProjectId>,
+    pub new_project_template: ProjectTemplate,
+    pub copy_without_annotations: bool,
     pub active_tag: String,
     pub export: export::ExportState,
     pub parent: Option<ProjectId>,
@@ -91,6 +93,9 @@ pub(super) struct Manager {
 }
 #[derive(Debug, Clone)]
 pub enum ManageMessage {
+    NewProjectTemplate(ProjectTemplate),
+    CopyAnnotations(bool),
+    CopyProject(ProjectId),
     AiMediumFilter(String),
     AiThemeFilter(String),
     SyncoExecutable,
@@ -203,6 +208,7 @@ pub enum ManageMessage {
 }
 impl App {
     pub(super) fn refresh_organizer(&mut self) -> Task<Message> {
+        self.sync_project_workspace();
         let Some(library) = &self.library else {
             return Task::none();
         };
@@ -298,6 +304,21 @@ impl App {
             return Task::none();
         }
         match event {
+            NewProjectTemplate(template) => self.manager.new_project_template = template,
+            CopyAnnotations(value) => self.manager.copy_without_annotations = !value,
+            CopyProject(project) => {
+                if let Some(library) = &self.library {
+                    let owner = library.info.id;
+                    let assets = self.selected_ids();
+                    let annotations = !self.manager.copy_without_annotations;
+                    let service = self.service.clone();
+                    return self.mutation(async move {
+                        service
+                            .copy_to_project(owner, assets, project, annotations)
+                            .await
+                    });
+                }
+            }
             AiMediumFilter(id) => {
                 if let Some((id, _)) = AI_MEDIA.iter().find(|(key, _)| *key == id) {
                     FilterChange::Medium(id).apply(&mut self.manager.filters.query, 0);
@@ -613,8 +634,11 @@ impl App {
                     let project = self.manager.project_target;
                     let service = self.service.clone();
                     if matches!(event, NewChildProject) {
+                        let template = self.manager.new_project_template;
                         return self.mutation(async move {
-                            service.create_child_project(id, name, parent).await
+                            service
+                                .create_project_configured(id, name, parent, template)
+                                .await
                         });
                     }
                     if let Some(project) = project {
@@ -1180,18 +1204,24 @@ impl App {
                 return self.reset_query();
             }
             ClearFilters => {
-                self.query = Query::default();
+                self.query = Query {
+                    project: self.query.project,
+                    ..Default::default()
+                };
                 self.manager.panel = None;
                 return self.reset_query();
             }
             Builtin(which) => {
+                let project = self.query.project;
                 self.query = which.query(chrono::Utc::now().timestamp_millis().max(0) as u64);
+                self.query.project = project;
                 self.screen = Screen::Assets;
                 self.manager.panel = None;
                 return self.reset_query();
             }
             Tag(tag) => {
                 self.query = Query {
+                    project: self.query.project,
                     tag,
                     ..Default::default()
                 };
@@ -1837,6 +1867,12 @@ impl App {
                 if let Some(asset) = &self.viewer.selected {
                     content = content.push(heading(&asset.name, 15));
                     content = content.push(muted(tr!(language, "加入其他项目会创建独立副本，后续修改互不影响。" => "Adding to another project creates an independent copy; later edits stay separate.")));
+                    content=content.push(
+                        checkbox(!self.manager.copy_without_annotations)
+                            .label(tr!(language,"同时复制标签、描述与收藏评分"=>"Include tags, descriptions, favorites and ratings"))
+                            .on_toggle(|value|Message::Manage(CopyAnnotations(value)))
+                    );
+                    content=content.push(muted(tr!(language,"分类按名称和类型匹配；未匹配项留待整理。人物分组独立创建，集合关系不复制。"=>"Categories match by name and type; unmatched items await organization. People are independent and collection membership is not copied.")));
                     if self.manager.details.projects.is_empty() {
                         content = content.push(muted(tr!(language, "这张素材尚未加入项目" => "This asset does not belong to a project yet")));
                     }
@@ -1844,6 +1880,11 @@ impl App {
                         for project in &library.info.projects {
                             let belongs = self.manager.details.projects.contains(&project.id);
                             let copied = self.manager.details.project_copies.contains(&project.id);
+                            let edit = if belongs {
+                                Edit(moriq_domain::Edit::Project(project.id, false))
+                            } else {
+                                CopyProject(project.id)
+                            };
                             content = content.push(
                                 row![
                                     crate::components::action(
@@ -1859,9 +1900,9 @@ impl App {
                                         } else {
                                             tr!(language, "复制到项目" => "Copy to project")
                                         },
-                                        Edit(moriq_domain::Edit::Project(project.id, !belongs))
+                                        edit.clone()
                                     )
-                                    .on_press_maybe((!copied || belongs).then_some(Message::Manage(Edit(moriq_domain::Edit::Project(project.id, !belongs)))))
+                                    .on_press_maybe((!copied || belongs).then_some(Message::Manage(edit)))
                                 ]
                                 .align_y(Alignment::Center),
                             );

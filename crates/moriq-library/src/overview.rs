@@ -9,14 +9,15 @@ pub struct Assets {
 impl Library {
     pub fn overview_assets(&self) -> Result<Assets> {
         let favorites = self.read_assets(
-            "SELECT a.id,v.id,a.name,v.format,v.width,v.height,v.bytes,a.favorite,a.rating,a.imported_at \
+            &format!("SELECT a.id,v.id,a.name,v.format,v.width,v.height,v.bytes,a.favorite,a.rating,a.imported_at \
              FROM assets a JOIN asset_versions v ON v.id=a.display_version_id \
-             WHERE a.deleted_at IS NULL AND a.favorite=1 \
-             ORDER BY a.imported_at DESC,a.id DESC LIMIT 4",
+             WHERE a.deleted_at IS NULL AND a.favorite=1 AND {} \
+             ORDER BY a.imported_at DESC,a.id DESC LIMIT 4",self.workspace_filter("a.id")),
             [],
         )?;
         let categories = self
-            .ai_groups()?
+            .organizer()?
+            .ai_groups
             .into_iter()
             .map(|g| (g.id, g.cover))
             .collect();

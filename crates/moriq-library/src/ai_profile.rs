@@ -15,6 +15,19 @@ pub fn classification_hash(profile: &AiProfile) -> Result<String> {
 }
 impl Library {
     pub fn ai_profile(&self) -> Result<AiProfile> {
+        self.ai_profile_for(&self.workspace_key())
+    }
+    pub(crate) fn ai_profile_for(&self, scope: &str) -> Result<AiProfile> {
+        if !scope.is_empty() {
+            let (revision,max_themes,json):(u64,u8,String)=self.db.query_row("SELECT revision,max_themes,categories FROM project_ai_profiles WHERE project_id=?1",[scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            let categories =
+                serde_json::from_str(&json).map_err(|e| Error::Invalid(e.to_string()))?;
+            return Ok(AiProfile {
+                revision,
+                max_themes,
+                categories,
+            });
+        }
         let (revision, max_themes) = self.db.query_row(
             "SELECT revision,max_themes FROM ai_profile_state WHERE id=1",
             [],
@@ -75,6 +88,25 @@ impl Library {
                 .find(|n| n.id == c.id)
                 .is_some_and(|n| n.label != c.label || n.enabled != c.enabled)
         });
+        if let Some(project) = self.workspace {
+            profile.revision = profile.revision.saturating_add(1);
+            let tx = self.db.transaction()?;
+            let categories = serde_json::to_string(&profile.categories)
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            tx.execute("UPDATE project_ai_profiles SET revision=?2,max_themes=?3,categories=?4 WHERE project_id=?1", params![project.to_string(),profile.revision,profile.max_themes,categories])?;
+            let mut cancelled = Vec::new();
+            if changed {
+                cancelled = tx.prepare("UPDATE background_jobs SET state='cancelled',inflight=0,generation=generation+1,error='本项目分类定义已更新，请重新整理' WHERE kind='analysis:qwen35-4b/classify' AND state IN('queued','running','paused') AND id IN(SELECT job_id FROM workspace_jobs WHERE workspace=?1) RETURNING id")?
+                    .query_map([project.to_string()],|r|r.get(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
+            }
+            if reindex {
+                tx.execute("DELETE FROM ai_text_fts WHERE version_id IN(SELECT v.id FROM asset_versions v JOIN asset_workspaces w ON w.asset_id=v.asset_id WHERE w.workspace=?1)",[project.to_string()])?;
+                tx.execute("INSERT INTO ai_text_fts SELECT s.version_id,s.body FROM ai_search_source s JOIN asset_versions v ON v.id=s.version_id JOIN asset_workspaces w ON w.asset_id=v.asset_id WHERE w.workspace=?1 AND trim(s.body)<>''",[project.to_string()])?;
+            }
+            tx.commit()?;
+            self.snapshot = None;
+            return Ok((profile, cancelled));
+        }
         let tx = self.db.transaction()?;
         tx.execute(
             "UPDATE ai_vocabulary SET label='__moriq_profile_transaction_renaming__'||id",
@@ -91,9 +123,9 @@ impl Library {
         )?;
         let mut cancelled = Vec::new();
         if changed {
-            cancelled=tx.prepare("SELECT id FROM background_jobs WHERE kind='analysis:qwen35-4b/classify' AND state IN('queued','running','paused')")?
+            cancelled=tx.prepare("SELECT id FROM background_jobs WHERE kind='analysis:qwen35-4b/classify' AND state IN('queued','running','paused') AND NOT EXISTS(SELECT 1 FROM workspace_jobs w WHERE w.job_id=background_jobs.id AND w.workspace<>'')")?
                 .query_map([],|r| r.get(0))?.collect::<std::result::Result<_,_>>()?;
-            tx.execute("UPDATE background_jobs SET state='cancelled',inflight=0,generation=generation+1,error='分类定义已更新，请重新整理以使用新配置' WHERE kind='analysis:qwen35-4b/classify' AND state IN('queued','running','paused')",[])?;
+            tx.execute("UPDATE background_jobs SET state='cancelled',inflight=0,generation=generation+1,error='分类定义已更新，请重新整理以使用新配置' WHERE kind='analysis:qwen35-4b/classify' AND state IN('queued','running','paused') AND NOT EXISTS(SELECT 1 FROM workspace_jobs w WHERE w.job_id=background_jobs.id AND w.workspace<>'')",[])?;
         }
         if reindex {
             // Replace display labels, not the immutable model receipts or human tags.
@@ -106,6 +138,15 @@ impl Library {
     }
     pub fn ai_groups(&self) -> Result<Vec<AiGroup>> {
         let profile = self.ai_profile()?;
+        // Materialize effective content once. The old implementation expanded the
+        // full content views independently for every sidebar category and cover.
+        let rows = self.db.prepare("WITH live AS MATERIALIZED (SELECT a.id,a.display_version_id,a.imported_at,e.medium,e.themes FROM assets a JOIN ai_effective_content e ON e.version_id=a.display_version_id WHERE a.deleted_at IS NULL AND e.workspace=?1), entries AS (SELECT 'medium:'||medium key,id,display_version_id,imported_at FROM live WHERE medium<>'' UNION ALL SELECT 'theme:'||j.value,l.id,l.display_version_id,l.imported_at FROM live l,json_each(l.themes) j UNION ALL SELECT 'legacy:'||c.category,l.id,l.display_version_id,l.imported_at FROM live l JOIN asset_classification c ON c.asset_id=l.id WHERE c.manual=1 OR l.medium='' UNION ALL SELECT '_unclassified',l.id,l.display_version_id,l.imported_at FROM live l LEFT JOIN asset_classification c ON c.asset_id=l.id WHERE (l.medium='' AND c.category IS NULL) OR c.category='未分类'), ranked AS (SELECT key,display_version_id,count(*) OVER(PARTITION BY key) n,row_number() OVER(PARTITION BY key ORDER BY imported_at DESC,id DESC) rank FROM entries) SELECT key,n,display_version_id FROM ranked WHERE rank=1")?
+            .query_map([self.workspace_key()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u64>(1)?,r.get::<_,String>(2)?)))?
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut counts = std::collections::BTreeMap::new();
+        for (key, n, version) in rows {
+            counts.insert(key, (n, AssetVersionId(parse_id(&version)?)));
+        }
         let mut groups = profile
             .categories
             .into_iter()
@@ -114,79 +155,79 @@ impl Library {
                 let query = if c.kind == AiCategoryKind::Medium {
                     Query {
                         medium: c.id.clone(),
-                        ..Query::default()
+                        ..Default::default()
                     }
                 } else {
                     Query {
                         themes: vec![c.id.clone()],
-                        ..Query::default()
+                        ..Default::default()
                     }
                 };
-                AiGroup {
-                    id: c.id,
-                    label: c.label,
-                    query,
-                    count: 0,
-                    cover: None,
-                }
+                let key = format!(
+                    "{}:{}",
+                    if c.kind == AiCategoryKind::Medium {
+                        "medium"
+                    } else {
+                        "theme"
+                    },
+                    c.id
+                );
+                (
+                    key,
+                    AiGroup {
+                        id: c.id,
+                        label: c.label,
+                        query,
+                        count: 0,
+                        cover: None,
+                    },
+                )
             })
             .collect::<Vec<_>>();
-        let legacy=self.db.prepare("SELECT DISTINCT c.category FROM asset_classification c JOIN assets a ON a.id=c.asset_id WHERE a.deleted_at IS NULL AND (c.manual=1 OR NOT EXISTS(SELECT 1 FROM ai_effective_content e WHERE e.version_id=a.display_version_id AND e.medium<>'')) ORDER BY c.category")?
-            .query_map([],|r| r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        for label in legacy {
-            groups.push(AiGroup {
-                id: format!("legacy:{label}"),
-                label: format!("历史 · {label}"),
+        for key in counts.keys().filter(|key| key.starts_with("legacy:")) {
+            let label = key.trim_start_matches("legacy:").to_string();
+            groups.push((
+                key.clone(),
+                AiGroup {
+                    id: key.clone(),
+                    label: format!("历史 · {label}"),
+                    query: Query {
+                        legacy_category: label,
+                        ..Default::default()
+                    },
+                    count: 0,
+                    cover: None,
+                },
+            ));
+        }
+        groups.push((
+            "_unclassified".into(),
+            AiGroup {
+                id: "_unclassified".into(),
+                label: "未分类".into(),
                 query: Query {
-                    legacy_category: label,
-                    ..Query::default()
+                    category: "未分类".into(),
+                    ..Default::default()
                 },
                 count: 0,
                 cover: None,
-            });
-        }
-        groups.push(AiGroup {
-            id: "_unclassified".into(),
-            label: "未分类".into(),
-            query: Query {
-                category: "未分类".into(),
-                ..Query::default()
             },
-            count: 0,
-            cover: None,
-        });
-        for g in &mut groups {
-            let (condition, key) = if !g.query.medium.is_empty() {
-                (
-                    "EXISTS(SELECT 1 FROM ai_effective_content e WHERE e.version_id=a.display_version_id AND e.medium=?1)",
-                    &g.query.medium,
-                )
-            } else if let Some(theme) = g.query.themes.first() {
-                (
-                    "EXISTS(SELECT 1 FROM ai_effective_content e,json_each(e.themes) j WHERE e.version_id=a.display_version_id AND j.value=?1)",
-                    theme,
-                )
-            } else if !g.query.legacy_category.is_empty() {
-                (
-                    "EXISTS(SELECT 1 FROM asset_classification c WHERE c.asset_id=a.id AND c.category=?1 AND (c.manual=1 OR NOT EXISTS(SELECT 1 FROM ai_effective_content e WHERE e.version_id=a.display_version_id AND e.medium<>'')))",
-                    &g.query.legacy_category,
-                )
-            } else {
-                (
-                    "(?1='未分类') AND (NOT EXISTS(SELECT 1 FROM asset_ai_categories c WHERE c.asset_id=a.id) OR EXISTS(SELECT 1 FROM asset_classification c WHERE c.asset_id=a.id AND c.category='未分类'))",
-                    &g.query.category,
-                )
-            };
-            let row=self.db.query_row(&format!("SELECT count(*) OVER(),a.display_version_id FROM assets a WHERE a.deleted_at IS NULL AND {condition} ORDER BY a.imported_at DESC,a.id DESC LIMIT 1"),[key],|r| Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?))).optional()?;
-            if let Some((count, version)) = row {
-                g.count = count;
-                g.cover = Some(AssetVersionId(parse_id(&version)?));
-            }
-        }
-        Ok(groups)
+        ));
+        Ok(groups
+            .into_iter()
+            .map(|(key, mut g)| {
+                if let Some((n, v)) = counts.get(&key) {
+                    g.count = *n;
+                    g.cover = Some(*v);
+                }
+                g.query.project = self.workspace;
+                g.query.project_exact = self.workspace.is_some();
+                g
+            })
+            .collect())
     }
     pub fn outdated_ai_count(&self) -> Result<u64> {
         let hash = classification_hash(&self.ai_profile()?)?;
-        Ok(self.db.query_row("SELECT count(*) FROM assets a JOIN ai_effective_results e ON e.version_id=a.display_version_id AND e.task='qwen_classification' JOIN ai_analysis_runs r ON r.id=e.run_id WHERE a.deleted_at IS NULL AND coalesce(json_extract(r.data,'$.profile_hash'),'')<>?1",[hash],|r| r.get(0))?)
+        Ok(self.db.query_row("SELECT count(*) FROM assets a JOIN ai_effective_results e ON e.version_id=a.display_version_id AND e.task='qwen_classification' JOIN ai_analysis_runs r ON r.id=e.run_id WHERE a.deleted_at IS NULL AND coalesce(json_extract(r.data,'$.profile_hash'),'')<>?1 AND (SELECT workspace FROM asset_workspaces WHERE asset_id=a.id)=?2",params![hash,self.workspace_key()],|r| r.get(0))?)
     }
 }

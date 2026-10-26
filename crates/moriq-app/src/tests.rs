@@ -1,4 +1,44 @@
 use super::*;
+
+#[test]
+fn concurrent_project_requests_keep_frozen_context_and_leave_aggregate_service_unscoped() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Service::start().unwrap();
+        let opened = service
+            .create(dir.path().into(), "请求项目隔离".into())
+            .await
+            .unwrap();
+        let owner = opened.info.id;
+        let a = service.project(owner, "甲".into()).await.unwrap();
+        let b = service.project(owner, "乙".into()).await.unwrap();
+        let sa = service.for_project(Some(a));
+        let sb = service.for_project(Some(b));
+        let mut pa = sa.organizer(owner).await.unwrap().ai_profile;
+        let mut pb = sb.organizer(owner).await.unwrap().ai_profile;
+        pa.categories[0].label = "甲的分类".into();
+        pb.categories[0].label = "乙的分类".into();
+        let (ra, rb) = futures::join!(sa.save_ai_profile(owner, pa), sb.save_ai_profile(owner, pb));
+        ra.unwrap();
+        rb.unwrap();
+        let (ra, rb) = futures::join!(
+            sa.folder_edit(owner, FolderEdit::Create("甲分组".into(), false)),
+            sb.folder_edit(owner, FolderEdit::Create("乙分组".into(), false))
+        );
+        ra.unwrap();
+        rb.unwrap();
+        let oa = sa.organizer(owner).await.unwrap();
+        let ob = sb.organizer(owner).await.unwrap();
+        let root = service.organizer(owner).await.unwrap();
+        assert_eq!(oa.ai_profile.categories[0].label, "甲的分类");
+        assert_eq!(ob.ai_profile.categories[0].label, "乙的分类");
+        assert_eq!(oa.folders[0].name, "甲分组");
+        assert_eq!(ob.folders[0].name, "乙分组");
+        assert!(root.folders.is_empty());
+        assert_ne!(root.ai_profile.categories[0].label, "乙的分类");
+        service.close().await.unwrap();
+    });
+}
 #[test]
 fn asset_cover_persists_to_the_card_and_switching_library_during_budget_wait_rejects_commit() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -238,7 +278,8 @@ fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library
             .await
             .unwrap();
         service.favorite(owner, asset, true).await.unwrap();
-        let overview = service.overview(owner).await.unwrap();
+        let project_service = service.for_project(Some(project));
+        let overview = project_service.overview(owner).await.unwrap();
         assert_eq!(overview.favorites.len(), 1);
         assert!(overview.projects.iter().all(|(_, p)| p.is_some()));
         for (label, pixels) in overview.categories {
@@ -253,7 +294,7 @@ fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library
             .await
             .unwrap();
         assert!(
-            service
+            project_service
                 .overview(owner)
                 .await
                 .unwrap()

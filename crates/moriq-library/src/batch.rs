@@ -33,13 +33,14 @@ impl Library {
         let table = match &scope {
             BatchScope::Query(query) => {
                 self.page(query, 0, 0)?;
-                if **query == Query::default() {
+                if **query == Query::default() && self.workspace.is_none() {
                     "asset_order"
                 } else {
                     "query_snapshot"
                 }
             }
             BatchScope::Assets(ids) => {
+                self.require_workspace_assets(ids)?;
                 if ids.is_empty() || ids.len() > 10000 {
                     return Err(Error::Invalid("请选择素材或使用完整查询范围".into()));
                 }
@@ -55,6 +56,7 @@ impl Library {
                 "batch_selection"
             }
         };
+        let workspace = self.workspace_key();
         let id = Uuid::new_v4().to_string();
         let tx = self.db.transaction()?;
         if let Some(project) = patch.project {
@@ -68,6 +70,10 @@ impl Library {
             }
         }
         tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,'batch','queued',20,?2)",params![id,now_ms()?])?;
+        tx.execute(
+            "INSERT INTO workspace_jobs VALUES(?1,?2)",
+            params![id, workspace],
+        )?;
         tx.execute(
             "INSERT INTO background_job_payload VALUES(?1,?2)",
             params![
@@ -143,6 +149,7 @@ now_ms()?])?;
                 "INSERT OR IGNORE INTO project_assets VALUES(?1,?2)",
                 params![project.to_string(), asset],
             )?;
+            workspace::rehome_asset(tx, &asset, &target)?;
         }
     }
     Ok(())

@@ -137,10 +137,7 @@ pub(crate) enum Message {
     Manage(ManageMessage),
     Modifiers(iced::keyboard::Modifiers),
     SettingsLoaded(Result<UserSettings, String>),
-    LibraryCardsLoaded(
-        u64,
-        Result<Vec<(PathBuf, Option<moriq_app::Pixels>)>, String>,
-    ),
+    LibraryCardsLoaded(u64, Result<Vec<moriq_app::LibraryCard>, String>),
     OpenRecent(PathBuf),
     Libraries(libraries::LibraryMessage),
     ShowLibraries,
@@ -320,6 +317,7 @@ pub(crate) struct App {
     interface: settings::InterfaceState,
     libraries: libraries::State,
     library_covers: HashMap<PathBuf, image::Handle>,
+    library_summaries: HashMap<PathBuf, (u64, u64)>,
     library_picker: bool,
     service: Service,
     library: Option<Opened>,
@@ -455,6 +453,7 @@ impl App {
                 interface: Default::default(),
                 libraries: Default::default(),
                 library_covers: HashMap::new(),
+                library_summaries: HashMap::new(),
                 library_picker: false,
                 service,
                 library: None,
@@ -553,6 +552,33 @@ impl App {
             columns -= 1;
         }
     }
+    fn sync_project_workspace(&mut self) -> bool {
+        if self.service.workspace_project() == self.query.project {
+            return false;
+        }
+        self.service = self.service.for_project(self.query.project);
+        self.projection_request = self.projection_request.wrapping_add(1);
+        self.overview_request = self.overview_request.wrapping_add(1);
+        self.manager.organizer = Default::default();
+        self.manager.favorites.clear();
+        self.manager.category_covers.clear();
+        let request = self.jobs.request.wrapping_add(1);
+        self.jobs = tasks::TaskState {
+            request,
+            ..Default::default()
+        };
+        self.manager.filters.query = self.query.clone();
+        self.stop_people_portraits();
+        self.ai.portraits.clear();
+        self.ai.person = None;
+        self.ai.target = None;
+        let request = self.ai.categories.request.wrapping_add(1);
+        self.ai.categories = categories::State {
+            request,
+            ..Default::default()
+        };
+        true
+    }
     fn refresh(&mut self) -> Task<Message> {
         if let Some(handle) = self.page_task.take() {
             handle.abort();
@@ -592,6 +618,11 @@ impl App {
         })
     }
     fn reset_query(&mut self) -> Task<Message> {
+        let workspace = if self.sync_project_workspace() {
+            Task::batch([self.refresh_organizer(), self.refresh_visuals()])
+        } else {
+            Task::none()
+        };
         self.gallery_feedback.clear();
         self.clear_browsing();
         self.pending_scroll = None;
@@ -612,6 +643,7 @@ impl App {
             Task::none()
         };
         Task::batch([
+            workspace,
             page,
             layout,
             iced::widget::operation::scroll_to(
@@ -994,13 +1026,16 @@ impl App {
                         .collect();
                     self.library_covers
                         .retain(|path, _| self.preferences.recent.iter().any(|(_, p)| p == path));
+                    self.library_summaries
+                        .retain(|path, _| self.preferences.recent.iter().any(|(_, p)| p == path));
+
                     return Task::batch([
                         Task::perform(async move { service.ai_policy(value).await }, |r| match r {
                             Ok(()) => Message::Noop,
                             Err(e) => Message::Notice(e),
                         }),
                         Task::perform(
-                            async move { cards_service.library_cards(paths).await },
+                            async move { cards_service.library_card_details(paths).await },
                             move |result| Message::LibraryCardsLoaded(cards_request, result),
                         ),
                     ]);
@@ -1010,8 +1045,16 @@ impl App {
             Message::LibraryCardsLoaded(request, Ok(cards))
                 if request == self.library_cards_request =>
             {
-                for (path, cover) in cards {
+                for moriq_app::LibraryCard {
+                    path,
+                    cover,
+                    summary,
+                } in cards
+                {
                     if self.preferences.recent.iter().any(|(_, p)| p == &path) {
+                        if let Some(summary) = summary {
+                            self.library_summaries.insert(path.clone(), summary);
+                        }
                         if let Some(pixels) = cover {
                             self.library_covers.insert(
                                 path,
@@ -1459,6 +1502,7 @@ impl App {
             }
             Message::Favorites => {
                 self.query = Query {
+                    project: self.query.project,
                     favorites_only: true,
                     ..Query::default()
                 };
@@ -1685,6 +1729,27 @@ impl App {
                     && !self.switching
                 {
                     self.capture_ticks = self.capture_ticks.saturating_add(1);
+                    if self.capture_ticks == 2
+                        && matches!(
+                            self.launch.panel.as_deref(),
+                            Some("workspace-models" | "workspace-categories")
+                        )
+                        && let Some(project) = self
+                            .library
+                            .as_ref()
+                            .and_then(|l| l.info.projects.first())
+                            .map(|p| p.id)
+                    {
+                        return self.ai_message(AiMessage::Workspace(Some(project)));
+                    }
+                    if self.capture_ticks == 5
+                        && self.launch.panel.as_deref() == Some("workspace-categories")
+                    {
+                        if self.manager.organizer.ai_groups.is_empty() {
+                            self.capture_ticks = 4;
+                        }
+                        return self.category_message(categories::CategoryMessage::Open);
+                    }
                     if self.launch.panel.as_deref() == Some("motion-proof") {
                         if self.capture_ticks == 2 {
                             if self.viewer.selected.is_none() {

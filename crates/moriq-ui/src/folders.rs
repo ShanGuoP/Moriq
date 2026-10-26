@@ -49,6 +49,7 @@ impl App {
             }
             FolderMessage::Open(folder) => {
                 self.query = Query {
+                    project: self.query.project,
                     folder: Some(folder),
                     ..Default::default()
                 };

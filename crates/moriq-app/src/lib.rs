@@ -29,6 +29,7 @@ pub use moriq_library::library_removal::Plan as LibraryRemovalPlan;
 pub use moriq_library::maintenance::Control as MaintenanceControl;
 pub use moriq_library::native::IMPORT_EXTENSIONS;
 pub use moriq_library::storage::Control as StorageControl;
+pub use settings::LibraryCard;
 use std::{
     path::PathBuf,
     sync::{
@@ -76,6 +77,7 @@ type Job = Box<dyn FnOnce(&mut Option<Library>) + Send>;
 
 #[derive(Clone)]
 pub struct Service {
+    workspace: Option<ProjectId>,
     media_cache: Arc<cache::MediaCache>,
     inference: Arc<dyn inference::InferenceRunner>,
     queue: mpsc::Sender<Job>,
@@ -173,6 +175,16 @@ impl ImportControl {
     }
 }
 impl Service {
+    /// A request owns its project context; changing the UI cannot retarget queued work.
+    pub fn for_project(&self, project: Option<ProjectId>) -> Self {
+        Self {
+            workspace: project,
+            ..self.clone()
+        }
+    }
+    pub fn workspace_project(&self) -> Option<ProjectId> {
+        self.workspace
+    }
     pub async fn close(&self) -> Result<()> {
         self.job_cancel.stop(None);
         self.media_cache.clear();
@@ -210,6 +222,7 @@ impl Service {
                 }
             })?;
         let service = Self {
+            workspace: None,
             queue,
             inference,
             import_slots: Arc::new(Semaphore::new(32)),
@@ -241,12 +254,20 @@ impl Service {
         f: impl FnOnce(&mut Option<Library>) -> std::result::Result<T, E> + Send + 'static,
     ) -> std::result::Result<T, E> {
         let (sender, receiver) = oneshot::channel();
+        let workspace = self.workspace;
         self.queue
             .send(Box::new(move |active| {
                 if cancellable && sender.is_closed() {
                     return;
                 }
-                if sender.send(f(active)).is_err() {
+                if let Some(library) = active.as_mut() {
+                    library.set_workspace(workspace);
+                }
+                let result = f(active);
+                if let Some(library) = active.as_mut() {
+                    library.set_workspace(None);
+                }
+                if sender.send(result).is_err() {
                     tracing::debug!("caller no longer listening to worker response");
                 }
             }))

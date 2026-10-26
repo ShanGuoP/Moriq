@@ -51,6 +51,7 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
             loop {
                 let Some(queue) = queue.upgrade() else { break };
                 let service = Service {
+                    workspace: None,
                     queue,
                     media_cache: media_cache.clone(),
                     inference: inference.clone(),

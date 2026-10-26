@@ -1,6 +1,7 @@
 //! Durable per-library scheduling. A step owns its frozen media and generation token.
 use super::*;
 pub struct Work {
+    workspace: String,
     profile: Option<AiProfile>,
     readers: std::sync::Arc<read_pool::ReadPool>,
     library: LibraryId,
@@ -124,7 +125,7 @@ impl InferenceWork {
         &self,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<crate::qwen_faces::References> {
-        crate::qwen_faces::references(&self.work.readers, cancel)
+        crate::qwen_faces::references(&self.work.readers, &self.work.workspace, cancel)
     }
     pub fn complete_faces(self, result: TaskResult<analysis::InferenceResult>) -> Outcome {
         let mut revision = None;
@@ -312,6 +313,7 @@ impl Library {
             .collect()
     }
     fn retry_failed_job(&mut self, old: &str) -> Result<String> {
+        self.require_workspace_object("jobs", old)?;
         let tx = self.db.transaction()?;
         let source:Option<(String,
 i32)>=tx.query_row("SELECT kind,priority FROM background_jobs WHERE id=?1 AND state IN('completed','cancelled')",
@@ -326,6 +328,10 @@ r.get(1)?))).optional()?;
         };
         let id = Uuid::new_v4().to_string();
         tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind.as_str(),priority,now_ms()?])?;
+        tx.execute(
+            "INSERT INTO workspace_jobs SELECT ?1,workspace FROM workspace_jobs WHERE job_id=?2",
+            params![id, old],
+        )?;
         tx.execute("INSERT INTO background_job_items SELECT ?1,row_number() OVER(ORDER BY e.seq),e.version_id FROM \
                 background_job_errors e JOIN asset_versions v ON v.id=e.version_id JOIN assets a ON a.id=v.asset_id \
                 WHERE e.job_id=?2 AND a.deleted_at IS NULL",
@@ -366,16 +372,21 @@ error.chars().take(2000).collect::<String>()])?;
         if kind == JobKind::Batch || !(-100..=100).contains(&priority) {
             return Err(Error::Invalid("后台任务类型或优先级无效".into()));
         }
-        let existing:Option<String>=self.db.query_row("SELECT id FROM background_jobs WHERE kind=?1 AND state IN('queued','running','paused') LIMIT 1",
-[kind.as_str()],
+        let existing:Option<String>=self.db.query_row("SELECT id FROM background_jobs WHERE kind=?1 AND state IN('queued','running','paused') AND coalesce((SELECT workspace FROM workspace_jobs WHERE job_id=background_jobs.id),'')=?2 LIMIT 1",
+params![kind.as_str(),self.workspace_key()],
 |r|r.get(0)).optional()?;
 
         if let Some(id) = existing {
             return Ok(id);
         }
+        let scope = self.workspace_key();
         let id = Uuid::new_v4().to_string();
         let tx = self.db.transaction()?;
         tx.execute("INSERT INTO background_jobs(id,kind,state,priority,created_at) VALUES(?1,?2,'queued',?3,?4)",params![id,kind.as_str(),priority,now_ms()?])?;
+        tx.execute(
+            "INSERT INTO workspace_jobs VALUES(?1,?2)",
+            params![id, scope],
+        )?;
         if let Some(profile) = profile {
             tx.execute(
                 "INSERT INTO background_job_payload VALUES(?1,?2)",
@@ -394,16 +405,16 @@ error.chars().take(2000).collect::<String>()])?;
         };
         tx.execute(&format!("INSERT INTO background_job_items(job_id,seq,version_id) SELECT ?1,row_number() OVER(ORDER BY \
                 v.id),v.id FROM asset_versions v JOIN assets a ON a.id=v.asset_id WHERE a.deleted_at IS NULL AND \
-                {formats}"),
-[&id])?;
+                {formats} AND coalesce((SELECT min(project_id) FROM project_assets WHERE asset_id=a.id),'')=?2"),
+params![id,scope])?;
 
         tx.execute("UPDATE background_jobs SET total=(SELECT count(*) FROM background_job_items WHERE job_id=?1) WHERE id=?1",[&id])?;
         tx.commit()?;
         Ok(id)
     }
     pub fn background_jobs(&self) -> Result<Vec<BackgroundJob>> {
-        self.db.prepare("SELECT id,kind,state,priority,checkpoint,total,failed,error FROM background_jobs ORDER BY CASE WHEN \
-                state IN('queued','running') THEN 0 WHEN state='paused' THEN 1 ELSE 2 END,created_at DESC LIMIT 100")?.query_map([],
+        self.db.prepare("SELECT id,kind,state,priority,checkpoint,total,failed,error FROM background_jobs WHERE (?1='' OR id IN(SELECT job_id FROM workspace_jobs WHERE workspace=?1)) ORDER BY CASE WHEN \
+                state IN('queued','running') THEN 0 WHEN state='paused' THEN 1 ELSE 2 END,created_at DESC LIMIT 100")?.query_map([self.workspace_key()],
 |r|Ok(BackgroundJob{
 id:r.get(0)?,
 kind:parse_protocol(r.get(1)?, 1)?,
@@ -429,13 +440,15 @@ _>>().map_err(Error::from)
             }
             _ => return Err(Error::Invalid("不支持的批量模型任务操作".into())),
         };
-        let mut statement = self.db.prepare(sql)?;
+        let sql = sql.replace(" RETURNING id", " AND coalesce((SELECT workspace FROM workspace_jobs WHERE job_id=background_jobs.id),'')=?1 RETURNING id");
+        let mut statement = self.db.prepare(&sql)?;
         statement
-            .query_map([], |r| r.get(0))?
+            .query_map([self.workspace_key()], |r| r.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Error::from)
     }
     pub fn control_job(&mut self, id: &str, command: JobCommand) -> Result<()> {
+        self.require_workspace_object("jobs", id)?;
         if matches!(command, JobCommand::RetryFailed) {
             return self.retry_failed_job(id).map(|_| ());
         }
@@ -529,6 +542,7 @@ r.get(1)?))).optional()?;
                 .transpose()
                 .map_err(|e| e.to_string())
         };
+        let workspace = workspace::job_scope(&self.db, &job)?;
         let profile = if kind == JobKind::QwenClassification {
             let stored: Option<String> = self
                 .db
@@ -544,11 +558,11 @@ r.get(1)?))).optional()?;
                 serde_json::from_value::<AiProfile>(value["ai_profile"].clone())
                     .map_err(|e| Error::Invalid(e.to_string()))?
             } else {
-                self.ai_profile()?
+                self.ai_profile_for(&workspace)?
             };
             profile.validate().map_err(|e| Error::Invalid(e.into()))?;
             if crate::ai_profile::classification_hash(&profile)?
-                != crate::ai_profile::classification_hash(&self.ai_profile()?)?
+                != crate::ai_profile::classification_hash(&self.ai_profile_for(&workspace)?)?
             {
                 self.db.execute("UPDATE background_jobs SET state='cancelled',generation=generation+1,inflight=0,error='分类定义已更新，请重新整理' WHERE id=?1",[&job])?;
                 return Ok(None);
@@ -562,6 +576,7 @@ r.get(1)?))).optional()?;
             [&job],
         )?;
         Ok(Some(Work {
+            workspace,
             profile,
             readers: self.readers.clone(),
             library: self.id(),
@@ -604,7 +619,7 @@ work.generation],
         }
         if let Some(profile) = &work.profile
             && crate::ai_profile::classification_hash(profile)?
-                != crate::ai_profile::classification_hash(&self.ai_profile()?)?
+                != crate::ai_profile::classification_hash(&self.ai_profile_for(&work.workspace)?)?
         {
             self.db.execute("UPDATE background_jobs SET state='cancelled',generation=generation+1,inflight=0,error='分类定义已更新，请重新整理' WHERE id=?1",[&work.job])?;
             return Ok(());

@@ -1,6 +1,10 @@
 use super::*;
 
 pub(crate) fn downgrade_to_22(db: &Connection) {
+    db.execute_batch(
+        "DROP VIEW IF EXISTS workspace_vocabulary; DROP TABLE IF EXISTS project_ai_profiles;",
+    )
+    .unwrap();
     db.execute_batch("DROP TABLE IF EXISTS ai_profile_state;")
         .unwrap();
     let triggers = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'content_ai_%' OR name='ai_document_delete')").unwrap()

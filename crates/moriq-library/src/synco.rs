@@ -55,7 +55,7 @@ _>>().map_err(Error::from)
         Ok(())
     }
     pub fn synco_tasks(&self) -> Result<Vec<SyncoTask>> {
-        self.db.prepare("SELECT t.id,a.name,t.state,t.error,t.request,t.ack FROM synco_tasks t JOIN assets a ON a.id=t.asset_id ORDER BY t.created_at DESC LIMIT 100")?
+        self.db.prepare(&format!("SELECT t.id,a.name,t.state,t.error,t.request,t.ack FROM synco_tasks t JOIN assets a ON a.id=t.asset_id WHERE {} ORDER BY t.created_at DESC LIMIT 100",self.workspace_filter("a.id")))?
             .query_map([],
 |r|Ok(SyncoTask{
 id:r.get(0)?,

@@ -12,10 +12,10 @@ impl Library {
                 ORDER BY a.imported_at DESC,a.id DESC LIMIT 1)),
              (SELECT count(*) FROM virtual_folder_assets m JOIN assets a ON a.id=m.asset_id
               WHERE m.folder_id=f.id AND a.deleted_at IS NULL)
-             FROM virtual_folders f ORDER BY f.kind DESC,f.name",
+             FROM virtual_folders f WHERE coalesce((SELECT workspace FROM workspace_folders WHERE folder_id=f.id),'')=?1 ORDER BY f.kind DESC,f.name",
         )?;
         let values = stmt
-            .query_map([], |r| {
+            .query_map([self.workspace_key()], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -44,13 +44,21 @@ impl Library {
             return Err(Error::Invalid("分组名称需要 1～256 字节".into()));
         }
         let id = Uuid::new_v4().to_string();
-        self.db.execute(
+        let scope = self.workspace_key();
+        let tx = self.db.transaction()?;
+        tx.execute(
             "INSERT INTO virtual_folders(id,name,kind,created_at) VALUES(?1,?2,?3,?4)",
             params![id, name, favorite_group, now_ms()?],
         )?;
+        tx.execute(
+            "INSERT INTO workspace_folders VALUES(?1,?2)",
+            params![id, scope],
+        )?;
+        tx.commit()?;
         Ok(id)
     }
     pub fn rename_virtual_folder(&mut self, id: &str, name: &str) -> Result<()> {
+        self.require_workspace_object("folders", id)?;
         let name = name.trim();
         if name.is_empty() || name.len() > 256 {
             return Err(Error::Invalid("分组名称无效".into()));
@@ -65,6 +73,7 @@ impl Library {
         Ok(())
     }
     pub fn delete_virtual_folder(&mut self, id: &str) -> Result<()> {
+        self.require_workspace_object("folders", id)?;
         self.db
             .execute("DELETE FROM virtual_folders WHERE id=?1", [id])?;
         self.snapshot = None;
@@ -76,6 +85,9 @@ impl Library {
         ids: &[AssetId],
         add: bool,
     ) -> Result<()> {
+        self.require_workspace_object("folders", folder)?;
+        self.require_workspace_assets(ids)?;
+        self.require_exact_workspace_assets(ids)?;
         if ids.is_empty() || ids.len() > 10000 {
             return Err(Error::Invalid("请选择 1～10000 个素材".into()));
         }
@@ -106,6 +118,8 @@ impl Library {
         Ok(())
     }
     pub fn virtual_folder_cover(&mut self, folder: &str, asset: AssetId) -> Result<()> {
+        self.require_workspace_object("folders", folder)?;
+        self.require_workspace_assets(&[asset])?;
         let member: bool = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM virtual_folder_assets WHERE folder_id=?1 AND asset_id=?2)",
             params![folder, asset.to_string()],

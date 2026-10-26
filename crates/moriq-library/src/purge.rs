@@ -42,7 +42,10 @@ fn no_links_path(root: &Path, relative: &str) -> Result<PathBuf> {
 impl Library {
     pub fn trash_snapshot(&self) -> Result<Vec<AssetId>> {
         self.db
-            .prepare("SELECT id FROM assets WHERE deleted_at IS NOT NULL ORDER BY id")?
+            .prepare(&format!(
+                "SELECT a.id FROM assets a WHERE deleted_at IS NOT NULL AND {} ORDER BY a.id",
+                self.workspace_filter("a.id")
+            ))?
             .query_map([], |r| r.get::<_, String>(0))?
             .map(|r| Ok(AssetId(parse_id(&r?)?)))
             .collect()
@@ -66,6 +69,7 @@ impl Library {
     }
     /// Only assets already in the trash can be removed. The caller freezes the confirmed IDs.
     pub fn purge(&mut self, ids: &[AssetId]) -> Result<PurgeReport> {
+        self.require_workspace_assets(ids)?;
         if ids.is_empty() || ids.len() > 10000 {
             return Err(Error::Invalid("每批请选择 1～10000 项永久删除".into()));
         }

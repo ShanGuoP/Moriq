@@ -5,6 +5,16 @@ use crate::{
     theme::*,
 };
 use iced::widget::{column, row, text_input};
+#[derive(Clone, PartialEq, Eq)]
+struct TemplateChoice {
+    template: ProjectTemplate,
+    label: String,
+}
+impl std::fmt::Display for TemplateChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
 impl App {
     pub(super) fn project_form(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
@@ -117,9 +127,40 @@ impl App {
             .iter()
             .find(|p| p.id == self.manager.new_project_parent)
             .cloned();
+        let mut templates = vec![
+            TemplateChoice {
+                template: ProjectTemplate::Default,
+                label: tr!(language,"默认分类模板"=>"Default category template").into(),
+            },
+            TemplateChoice {
+                template: ProjectTemplate::Portrait,
+                label: tr!(language,"人像摄影"=>"Portrait photography").into(),
+            },
+            TemplateChoice {
+                template: ProjectTemplate::Product,
+                label: tr!(language,"产品拍摄"=>"Product photography").into(),
+            },
+            TemplateChoice {
+                template: ProjectTemplate::Travel,
+                label: tr!(language,"旅行记录"=>"Travel").into(),
+            },
+        ];
+        templates.extend(projects.iter().map(|p| TemplateChoice {
+            template: ProjectTemplate::Existing(p.id),
+            label: trf!(language,"复制配置：{}"=>"Copy settings: {}",p.name),
+        }));
+        let selected_template = templates
+            .iter()
+            .find(|t| t.template == self.manager.new_project_template)
+            .cloned();
         content = content.push(form_card(
             column![
                 heading(tr!(language,"新建项目"=>"New project"), 16),
+                column![
+                    heading(tr!(language,"整理模板"=>"Organization template"),13),
+                    choice(templates,selected_template,|t|Message::Manage(NewProjectTemplate(t.template))).width(iced::Length::Fill),
+                    muted(tr!(language,"只复制分类与识别定义，创建后独立修改，不随原项目变化。"=>"Copies categories and recognition definitions. Later changes stay independent."))
+                ].spacing(8),
                 column![
                     heading(tr!(language,"创建位置"=>"Create under"), 13),
                     choice(destinations, new_parent, |p| Message::Manage(NewParent(

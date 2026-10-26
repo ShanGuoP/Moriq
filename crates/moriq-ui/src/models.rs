@@ -12,6 +12,11 @@ impl App {
     pub(super) fn models(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let can_organize = self.library.is_some()
+            && (self.query.project.is_some()
+                || self
+                    .library
+                    .as_ref()
+                    .is_some_and(|l| l.info.projects.is_empty()))
             && !self.switching
             && self.ai.models.iter().any(|model| model.installed);
         let categories = self.manager.organizer.ai_groups.iter().collect::<Vec<_>>();
@@ -99,8 +104,39 @@ impl App {
             category_rows =
                 category_rows.push(muted(tr!(language, "分类信息暂时无法读取，请重新打开资源库重试。" => "Categories are temporarily unavailable. Reopen the library to retry.")));
         }
+        let mut spaces = vec![manage::ProjectDestination {
+            id: None,
+            name: tr!(language,"全部素材 · 总览"=>"All assets · Overview").into(),
+        }];
+        if let Some(library) = &self.library {
+            spaces.extend(
+                library
+                    .info
+                    .projects
+                    .iter()
+                    .map(|p| manage::ProjectDestination {
+                        id: Some(p.id),
+                        name: manage::project_label(&library.info.projects, p.id),
+                    }),
+            );
+        }
+        let selected_space = spaces.iter().find(|p| p.id == self.query.project).cloned();
+        let space_picker=row![
+            heading(tr!(language,"整理空间"=>"Workspace"),13),
+            choice(spaces,selected_space,|p|Message::Ai(AiMessage::Workspace(p.id))).width(Length::Fill),
+            muted(tr!(language,"分类、人物与任务随项目切换"=>"Categories, people and tasks follow the project"))
+        ].spacing(12).align_y(Alignment::Center);
+        let category_action = Message::Ai(AiMessage::Categories(
+            crate::categories::CategoryMessage::Open,
+        ));
+        let category_label = if self.query.project.is_some() {
+            tr!(language,"项目分类"=>"Project categories")
+        } else {
+            tr!(language,"默认分类模板"=>"Default category template")
+        };
         let organization = container(
             column![
+                space_picker,
                 row![
                     icon(Icon::Network, 34.0, BLUE),
                     column![
@@ -132,8 +168,8 @@ impl App {
                     .padding([10, 14])
                     .style(secondary)
                     .on_press_maybe(can_organize.then_some(Message::Ai(AiMessage::Organize))),
-                    action(tr!(language,"自定义分类"=>"Customize categories"),Message::Ai(AiMessage::Categories(crate::categories::CategoryMessage::Open)))
-                        .on_press_maybe(self.library.as_ref().map(|_|Message::Ai(AiMessage::Categories(crate::categories::CategoryMessage::Open)))),
+                    action(category_label,category_action.clone())
+                        .on_press_maybe(self.library.as_ref().map(|_|category_action.clone())),
                     self.model_grouping()
                 ]
                 .spacing(15)

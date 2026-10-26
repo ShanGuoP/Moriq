@@ -11,12 +11,13 @@ pub struct References {
 }
 pub(crate) fn references(
     pool: &Arc<read_pool::ReadPool>,
+    scope: &str,
     cancel: &AtomicBool,
 ) -> Result<References> {
     let directory = tempfile::tempdir()?;
     let lease = pool.checkout()?;
-    let rows = lease.connection()?.prepare("SELECT person_id,asset_id,version_id,box FROM (SELECT f.person_id,v.asset_id,f.version_id,f.box,row_number() OVER(PARTITION BY f.person_id ORDER BY f.manual DESC,json_extract(f.box,'$[2]')*json_extract(f.box,'$[3]') DESC,f.id) rank FROM detected_faces f JOIN asset_versions v ON v.id=f.version_id JOIN assets a ON a.display_version_id=v.id WHERE a.deleted_at IS NULL AND f.person_id IS NOT NULL) WHERE rank=1 ORDER BY person_id")?
-        .query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?
+    let rows = lease.connection()?.prepare("SELECT person_id,asset_id,version_id,box FROM (SELECT f.person_id,v.asset_id,f.version_id,f.box,row_number() OVER(PARTITION BY f.person_id ORDER BY f.manual DESC,json_extract(f.box,'$[2]')*json_extract(f.box,'$[3]') DESC,f.id) rank FROM detected_faces f JOIN asset_versions v ON v.id=f.version_id JOIN assets a ON a.display_version_id=v.id WHERE a.deleted_at IS NULL AND f.person_id IS NOT NULL AND coalesce((SELECT workspace FROM workspace_people WHERE person_id=f.person_id),'')=?1) WHERE rank=1 ORDER BY person_id")?
+        .query_map([scope], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?
         .collect::<std::result::Result<Vec<_>,_>>()?;
     drop(lease);
     let mut items = Vec::new();
@@ -59,6 +60,7 @@ pub(crate) fn store(
     revision: &str,
     result: &serde_json::Value,
 ) -> Result<()> {
+    let scope = workspace::version_scope(db, version)?;
     let faces = result["faces"]
         .as_array()
         .ok_or_else(|| Error::Invalid("Qwen 人脸回执缺少 faces".into()))?;
@@ -134,7 +136,7 @@ pub(crate) fn store(
         }
         let candidate = face["person"].as_str();
         let person = if let Some(candidate) = candidate.filter(|id| !used_people.contains(*id)) {
-            db.query_row("SELECT id FROM people WHERE id=?1", [candidate], |r| {
+            db.query_row("SELECT id FROM people WHERE id=?1 AND coalesce((SELECT workspace FROM workspace_people WHERE person_id=people.id),'')=?2", params![candidate,scope], |r| {
                 r.get::<_, String>(0)
             })
             .optional()?
@@ -149,6 +151,7 @@ pub(crate) fn store(
                 "INSERT INTO people VALUES(?1,'未命名人物',?2,?3)",
                 params![person, revision, now_ms()?],
             )?;
+            workspace::own_person(db, &person, &scope)?;
             person
         };
         used_people.insert(person.clone());
@@ -209,7 +212,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lib.faces(assets[0].id).unwrap()[0].name, "人物甲");
-        let refs = references(&lib.readers, &AtomicBool::new(false)).unwrap();
+        let refs = references(&lib.readers, "", &AtomicBool::new(false)).unwrap();
         assert_eq!(refs.items.len(), 1);
         assert_eq!(
             image::image_dimensions(&refs.items[0].1).unwrap(),
@@ -218,7 +221,7 @@ mod tests {
         lib.edit(&[assets[0].id, assets[1].id], &Edit::Trash(true))
             .unwrap();
         assert!(
-            references(&lib.readers, &AtomicBool::new(false))
+            references(&lib.readers, "", &AtomicBool::new(false))
                 .unwrap()
                 .items
                 .is_empty()

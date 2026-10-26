@@ -211,6 +211,16 @@ pub fn card_cover(root: &Path) -> Result<Option<Pixels>> {
     reader.limits(limits);
     Ok(Some(pixels(resize::fit(&reader.decode()?, 320)?)))
 }
+
+/// Read-only card metadata; never opens a library for migration or writes.
+pub fn card_summary(root: &Path) -> Result<(u64, u64)> {
+    let db = Connection::open_with_flags(
+        safe_path(root, "catalog.db")?,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    db.busy_timeout(std::time::Duration::from_millis(100))?;
+    Ok(db.query_row("SELECT (SELECT count(*) FROM assets WHERE deleted_at IS NULL),updated_at FROM library_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?)))?)
+}
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

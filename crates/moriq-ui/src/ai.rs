@@ -61,6 +61,7 @@ impl std::fmt::Display for PersonChoice {
 }
 #[derive(Debug, Clone)]
 pub enum AiMessage {
+    Workspace(Option<ProjectId>),
     Categories(crate::categories::CategoryMessage),
     Group(String),
     SwitchLibrary(PathBuf),
@@ -143,6 +144,15 @@ impl App {
                 .as_ref()
                 .is_some_and(|a| self.ai.category_version == Some(a.version_id));
         match event {
+            AiMessage::Workspace(project) => {
+                self.query = Query {
+                    project,
+                    ..Default::default()
+                };
+                self.manager.panel = None;
+                self.screen = Screen::Models;
+                return Task::batch([self.reset_query(), self.refresh_visuals()]);
+            }
             AiMessage::Categories(event) => return self.category_message(event),
             AiMessage::Group(id) => {
                 let Some(group) = self.manager.organizer.ai_groups.iter().find(|g| g.id == id)
@@ -289,6 +299,16 @@ impl App {
                 return task;
             }
             AiMessage::Organize => {
+                if self.query.project.is_none()
+                    && self
+                        .library
+                        .as_ref()
+                        .is_some_and(|l| !l.info.projects.is_empty())
+                {
+                    self.status =
+                        tr!(language,"请先选择要整理的项目"=>"Select a project to organize").into();
+                    return Task::none();
+                }
                 let Some(library) = &self.library else {
                     return Task::none();
                 };
@@ -335,6 +355,9 @@ impl App {
                 }));
             }
             AiMessage::Refresh => {
+                if self.ai.loading {
+                    return Task::none();
+                }
                 self.ai.loading = true;
                 return Task::perform(async move { service.models().await }, |r| {
                     Message::Ai(AiMessage::Loaded(r))
@@ -403,6 +426,7 @@ impl App {
                     return Task::none();
                 }
                 self.query = Query {
+                    project: self.query.project,
                     category,
                     ..Query::default()
                 };
@@ -437,6 +461,7 @@ impl App {
             AiMessage::Name(name) => self.ai.person_name = name,
             AiMessage::PersonFilter(person) => {
                 self.query = Query {
+                    project: self.query.project,
                     person: Some(person),
                     ..Query::default()
                 };
@@ -748,6 +773,11 @@ impl App {
         use crate::theme::{BLUE, MUTED, TEXT};
         use iced::widget::{Space, row};
         use iced::{Alignment, Length};
+        if let Some(project) = self.manager.details.projects.first().copied()
+            && self.query.project != Some(project)
+        {
+            return column![muted(tr!(language,"此素材使用所属项目的分类和人物规则。"=>"This asset uses its project's categories and people.")),action(tr!(language,"进入所属项目整理"=>"Open owning project"),Message::Project(project))].spacing(10).into();
+        }
         let video = self
             .viewer
             .selected
