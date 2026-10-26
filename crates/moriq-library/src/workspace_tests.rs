@@ -71,6 +71,17 @@ fn fixture() -> (
 }
 
 #[test]
+fn default_layout_query_respects_the_selected_workspace() {
+    let (_dir, mut lib, a, b, _, _) = fixture();
+    for project in [a, b] {
+        lib.set_workspace(Some(project));
+        assert_eq!(lib.layout_sizes(&Query::default()).unwrap().len(), 1);
+    }
+    lib.set_workspace(None);
+    assert_eq!(lib.layout_sizes(&Query::default()).unwrap().len(), 2);
+}
+
+#[test]
 fn project_profiles_labels_search_tags_and_statistics_stay_independent_after_reopen() {
     let (_dir, mut lib, a, b, first, second) = fixture();
     for (project, asset) in [(a, &first), (b, &second)] {

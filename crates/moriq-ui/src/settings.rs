@@ -17,21 +17,12 @@ impl App {
         self.preferences.reduced_motion = enabled;
         self.gallery_feedback.clear();
         self.surface_motion = None;
-        let pending = self
-            .transition
-            .take()
-            .and_then(|mut transition| transition.pending.take());
-        let navigation = pending
-            .map(|message| self.commit_navigation(*message))
-            .unwrap_or_else(Task::none);
+        self.transition = None;
         let service = self.service.clone();
-        Task::batch([
-            navigation,
-            Task::perform(
-                async move { service.reduced_motion(enabled).await },
-                Message::SettingsLoaded,
-            ),
-        ])
+        Task::perform(
+            async move { service.reduced_motion(enabled).await },
+            Message::SettingsLoaded,
+        )
     }
 
     pub(super) fn set_language(&mut self, language: Language) -> Task<Message> {

@@ -9,7 +9,14 @@ pub struct LibraryCard {
 
 impl Service {
     pub async fn library_card_details(&self, paths: Vec<PathBuf>) -> Result<Vec<LibraryCard>> {
+        let slot = self
+            .read_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
         tokio::task::spawn_blocking(move || {
+            let _slot = slot;
             paths
                 .into_iter()
                 .map(|path| LibraryCard {
@@ -53,21 +60,12 @@ impl Service {
         &self,
         paths: Vec<PathBuf>,
     ) -> Result<Vec<(PathBuf, Option<Pixels>)>> {
-        tokio::task::spawn_blocking(move || {
-            paths
-                .into_iter()
-                .map(|path| {
-                    let cover =
-                        moriq_library::settings::card_cover(&path).unwrap_or_else(|error| {
-                            tracing::debug!(%error, "library card cover unavailable");
-                            None
-                        });
-                    (path, cover)
-                })
-                .collect()
-        })
-        .await
-        .map_err(|e| e.to_string())
+        Ok(self
+            .library_card_details(paths)
+            .await?
+            .into_iter()
+            .map(|card| (card.path, card.cover))
+            .collect())
     }
     pub async fn synco_preferences(&self, value: SyncoPreferences) -> Result<UserSettings> {
         self.call(move |_| {

@@ -27,6 +27,50 @@ fn fixture() -> (tempfile::TempDir, Library, Asset) {
     let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
     (dir, lib, asset)
 }
+
+#[test]
+fn page_tag_batch_preserves_per_asset_visibility_deduplication_and_paging() {
+    let (dir, mut lib, a) = fixture();
+    let input = dir.path().join("other.png");
+    image::RgbImage::from_pixel(6, 3, image::Rgb([1, 2, 3]))
+        .save(&input)
+        .unwrap();
+    lib.import(&input, None).unwrap();
+    let b = lib
+        .page(&Query::default(), 0, 2)
+        .unwrap()
+        .assets
+        .into_iter()
+        .find(|asset| asset.id != a.id)
+        .unwrap();
+    lib.set_tags(a.id, &["manual".into(), "shared".into()])
+        .unwrap();
+    describe(
+        &mut lib,
+        &a,
+        "batch-a",
+        "first",
+        &["shared", "hidden", "auto-a"],
+    );
+    describe(
+        &mut lib,
+        &b,
+        "batch-b",
+        "second",
+        &["shared", "hidden", "auto-b"],
+    );
+    edit(&mut lib, &a, AiEdit::RejectTag("hidden".into()));
+    let page = lib.page(&Query::default(), 0, 2).unwrap();
+    let first = page.assets.iter().find(|asset| asset.id == a.id).unwrap();
+    let second = page.assets.iter().find(|asset| asset.id == b.id).unwrap();
+    assert_eq!(first.tags, vec!["auto-a", "manual", "shared"]);
+    assert_eq!(second.tags, vec!["auto-b", "hidden", "shared"]);
+    for (offset, expected) in page.assets.iter().enumerate() {
+        let one = lib.page(&Query::default(), offset, 1).unwrap();
+        assert_eq!(one.assets[0].id, expected.id);
+        assert_eq!(one.assets[0].tags, expected.tags);
+    }
+}
 fn classify(lib: &mut Library, a: &Asset, revision: &str, medium: &str, themes: &[&str]) {
     save(
         lib,

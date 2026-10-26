@@ -68,19 +68,27 @@ impl Library {
         Ok(())
     }
     pub fn project_covers(&self) -> Result<Vec<(ProjectId, Option<AssetVersionId>)>> {
-        self.db.prepare("SELECT p.id,(SELECT a.display_version_id FROM assets a JOIN project_assets pa ON pa.asset_id=a.id \
-                WHERE pa.project_id=p.id AND a.deleted_at IS NULL ORDER BY a.imported_at DESC LIMIT 1) FROM \
-                projects p ORDER BY p.name LIMIT 32")?
-            .query_map([],
-|r|Ok((r.get::<_,
-String>(0)?,
-r.get::<_,
-Option<String>>(1)?)))?.map(|r|{
-let(id,
-v)=r?;
-Ok((ProjectId(parse_id(&id)?),
-v.map(|v|parse_id(&v).map(AssetVersionId)).transpose()?))}
-).collect()
+        let mut statement = self.db.prepare_cached(
+            "SELECT p.id,(
+                SELECT a.display_version_id FROM assets a
+                JOIN project_assets pa ON pa.asset_id=a.id
+                WHERE pa.project_id=p.id AND a.deleted_at IS NULL
+                ORDER BY a.imported_at DESC LIMIT 1
+             ) FROM projects p ORDER BY p.name LIMIT 32",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (project, version) = row?;
+            Ok((
+                ProjectId(parse_id(&project)?),
+                version
+                    .map(|id| parse_id(&id).map(AssetVersionId))
+                    .transpose()?,
+            ))
+        })
+        .collect()
     }
     pub fn recover_imports(&mut self) -> Result<ImportReport> {
         let records=self.db.prepare("SELECT j.id,j.path,c.platform,c.source,c.project_id,c.referenced,c.relative_path FROM \

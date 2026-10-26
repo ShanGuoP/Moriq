@@ -215,6 +215,21 @@ impl App {
         }
     }
     pub(super) fn commit_navigation(&mut self, message: Message) -> Task<Message> {
+        if matches!(
+            &message,
+            Message::Navigate(_)
+                | Message::Back
+                | Message::Forward
+                | Message::ShowLibraries
+                | Message::WindowClose
+                | Message::OpenRecent(_)
+                | Message::Ai(AiMessage::SwitchLibrary(_))
+        ) {
+            if self.responsiveness.pending() {
+                self.loading = false;
+            }
+            self.responsiveness.cancel();
+        }
         let models_switch = matches!(&message, Message::Ai(AiMessage::LibraryOpened(_)));
         let navigating = matches!(
             message,

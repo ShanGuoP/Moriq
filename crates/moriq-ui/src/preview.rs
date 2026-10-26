@@ -55,6 +55,14 @@ impl App {
             .unwrap_or_else(|| self.grid().visible(self.total as usize, self.scroll_y))
     }
     pub(super) fn rebuild_masonry(&mut self) -> Task<Message> {
+        if !self.masonry_mode
+            || self.list
+            || self.screen != Screen::Assets
+            || self.library_picker
+            || self.responsiveness.pending()
+        {
+            return Task::none();
+        }
         if let Some(handle) = self.masonry_task.take() {
             handle.abort();
         }

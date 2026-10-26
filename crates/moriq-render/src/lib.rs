@@ -67,8 +67,13 @@ impl MasonryIndex {
             .collect()
     }
     pub fn page_range(&self, top: f32, height: f32) -> Range<usize> {
-        let visible = self.visible(top, height);
-        let mut indices = visible.iter().flatten().map(|p| p.index);
+        let start = (top - self.width * 1.5).max(0.0);
+        let end = top + height + self.width * 1.5;
+        let mut indices = self.columns.iter().flat_map(|column| {
+            let first = column.partition_point(|item| item.top + item.height < start);
+            let last = column.partition_point(|item| item.top < end);
+            column[first..last].iter().map(|item| item.index)
+        });
         let Some(first) = indices.next() else {
             return 0..0;
         };

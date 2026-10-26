@@ -556,7 +556,7 @@ fn reduced_motion_navigation_commits_immediately_and_does_not_leave_stale_action
     let mut app = crate::tests::app();
     app.screen = Screen::Assets;
     drop(app.update(Message::Navigate(2)));
-    assert!(app.transition.as_ref().unwrap().pending.is_some());
+    assert_eq!(app.screen, Screen::Models);
     drop(app.update(Message::ReducedMotion(true)));
     assert_eq!(app.screen, Screen::Models);
     assert!(app.transition.is_none());

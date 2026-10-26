@@ -758,7 +758,7 @@ rusqlite::params_from_iter(values))?;
     }
 
     fn read_assets(&self, sql: &str, parameters: impl rusqlite::Params) -> Result<Vec<Asset>> {
-        let mut stmt = self.db.prepare(sql)?;
+        let mut stmt = self.db.prepare_cached(sql)?;
         let rows = stmt.query_map(parameters, |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -777,12 +777,6 @@ rusqlite::params_from_iter(values))?;
         for row in rows {
             let (id, version, name, format, width, height, bytes, favorite, rating, imported_at) =
                 row?;
-            let mut tags = self
-                .db
-                .prepare("SELECT name FROM effective_asset_tags WHERE asset_id=?1 ORDER BY name")?;
-            let tags = tags
-                .query_map([&id], |r| r.get(0))?
-                .collect::<std::result::Result<Vec<String>, _>>()?;
             assets.push(Asset {
                 id: AssetId(parse_id(&id)?),
                 version_id: AssetVersionId(parse_id(&version)?),
@@ -793,11 +787,42 @@ rusqlite::params_from_iter(values))?;
                 bytes,
                 favorite,
                 rating,
-                tags,
+                tags: Vec::new(),
                 imported_at,
             });
         }
+        if !assets.is_empty() {
+            self.load_page_tags(&mut assets)?;
+        }
         Ok(assets)
+    }
+
+    /// Read tags for the bounded page together, rather than expanding AI views per tile.
+    fn load_page_tags(&self, assets: &mut [Asset]) -> Result<()> {
+        let ids: Vec<_> = assets.iter().map(|asset| asset.id.to_string()).collect();
+        let ids = serde_json::to_string(&ids).map_err(|e| Error::Invalid(e.to_string()))?;
+        let mut statement = self.db.prepare_cached(
+            "WITH selected AS MATERIALIZED (
+                SELECT id,display_version_id FROM assets WHERE id IN (SELECT value FROM json_each(?1))
+             )
+             SELECT s.id,t.name FROM selected s JOIN asset_tags a ON a.asset_id=s.id
+                JOIN tags t ON t.id=a.tag_id
+             UNION SELECT s.id,t.name FROM selected s JOIN ai_visible_tags t
+                ON t.version_id=s.display_version_id
+             ORDER BY 1,2",
+        )?;
+        let rows = statement.query_map([ids], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut tags = std::collections::HashMap::<AssetId, Vec<String>>::new();
+        for row in rows {
+            let (id, tag) = row?;
+            tags.entry(AssetId(parse_id(&id)?)).or_default().push(tag);
+        }
+        for asset in assets {
+            asset.tags = tags.remove(&asset.id).unwrap_or_default();
+        }
+        Ok(())
     }
 
     pub fn import(&mut self, source: &Path, project: Option<ProjectId>) -> Result<bool> {
@@ -805,8 +830,9 @@ rusqlite::params_from_iter(values))?;
         self.import_inner(source, project, false, false, None)
     }
     pub fn layout_sizes(&mut self, query: &Query) -> Result<Vec<(u32, u32)>> {
-        self.page(query, 0, 0)?;
-        let (table, order) = if *query == Query::default() {
+        let query = self.workspace_query(query)?;
+        self.page(&query, 0, 0)?;
+        let (table, order) = if query == Query::default() {
             ("asset_order", "DESC")
         } else {
             ("query_snapshot", "ASC")

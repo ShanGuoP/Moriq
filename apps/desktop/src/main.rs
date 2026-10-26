@@ -46,30 +46,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let icon =
         image::load_from_memory(include_bytes!(concat!(env!("OUT_DIR"), "/moriq.png")))?.to_rgba8();
     launch.window_icon = Some(iced::window::icon::from_rgba(icon.into_raw(), 256, 256)?);
-    let mut arguments = std::env::args_os().skip(1);
+    parse_arguments(&mut launch, std::env::args_os().skip(1))?;
+    moriq_ui::run(launch)?;
+    Ok(())
+}
+
+fn parse_arguments(
+    launch: &mut moriq_ui::LaunchOptions,
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
-            Some("--library")=>launch.library=Some(arguments.next().ok_or("--library requires a folder")?.into()),
-            Some("--import")=>launch.import_paths.push(arguments.next().ok_or("--import requires a file or folder")?.into()),
+            Some("--library") => {
+                launch.library = Some(arguments.next().ok_or("--library requires a folder")?.into());
+            }
+            Some("--import") => {
+                launch.import_paths.push(arguments.next().ok_or("--import requires a file or folder")?.into());
+            }
             #[cfg(feature = "capture")]
-            Some("--panel")=>launch.panel=Some(arguments.next().ok_or("--panel requires a panel name")?.into_string().map_err(|_|"invalid panel name")?),
+            Some("--panel") => {
+                let panel = arguments.next().ok_or("--panel requires a panel name")?
+                    .into_string().map_err(|_| "invalid panel name")?;
+                launch.panel = Some(panel);
+            }
             #[cfg(feature = "capture")]
-            Some("--capture")=>launch.capture=Some(arguments.next().ok_or("--capture requires a PNG path")?.into()),
+            Some("--capture") => {
+                launch.capture = Some(arguments.next().ok_or("--capture requires a PNG path")?.into());
+            }
             #[cfg(feature = "capture")]
-            Some("--screen")=>launch.screen=match arguments.next().and_then(|s|s.into_string().ok()).as_deref(){
-Some("assets")=>1,
-Some("models")=>2,
-Some("overview")=>0,
-_=>return Err("--screen expects overview, assets or models".into())}
-,
-
+            Some("--screen") => {
+                launch.screen = match arguments.next().and_then(|s| s.into_string().ok()).as_deref() {
+                    Some("assets") => 1,
+                    Some("models") => 2,
+                    Some("overview") => 0,
+                    _ => return Err("--screen expects overview, assets or models".into()),
+                };
+            }
             #[cfg(feature = "capture")]
-            Some("--exit-after-capture")=>launch.exit_after_capture=true,
+            Some("--exit-after-capture") => launch.exit_after_capture = true,
             #[cfg(feature = "capture")]
-            Some("--select-first")=>launch.select_first=true,
-            _=>return Err("Unknown argument. Use --library PATH or --import PATH. Diagnostic flags require the capture feature.".into()),
+            Some("--select-first") => launch.select_first = true,
+            _ => return Err("Unknown argument. Use --library PATH or --import PATH. Diagnostic flags require the capture feature.".into()),
         }
     }
-    moriq_ui::run(launch)?;
     Ok(())
 }

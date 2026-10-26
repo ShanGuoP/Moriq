@@ -1,7 +1,6 @@
 //! Page-only transitions. Chrome and layout stay fixed; no screenshot or media allocation.
 use super::*;
 use std::time::Instant;
-pub(super) const FADE_OUT: Duration = Duration::from_millis(50);
 pub(super) const FADE_IN: Duration = Duration::from_millis(130);
 pub(super) struct Entrance {
     pub started: Instant,
@@ -35,25 +34,14 @@ impl Entrance {
     }
 }
 pub(super) struct PageTransition {
-    pub pending: Option<Box<Message>>,
     pub started: Instant,
     pub sampled: Instant,
     from: f32,
     offset_from: f32,
 }
 impl PageTransition {
-    pub fn outgoing(message: Message, now: Instant, from: f32, offset: f32) -> Self {
-        Self {
-            pending: Some(Box::new(message)),
-            started: now,
-            sampled: now,
-            from: from.clamp(0.0, 1.0),
-            offset_from: offset,
-        }
-    }
     pub fn incoming(now: Instant, from: f32) -> Self {
         Self {
-            pending: None,
             started: now,
             sampled: now,
             from: from.clamp(0.0, 1.0),
@@ -64,25 +52,14 @@ impl PageTransition {
         self.sampled.saturating_duration_since(self.started)
     }
     fn progress(&self) -> f32 {
-        let duration = if self.pending.is_some() {
-            FADE_OUT
-        } else {
-            FADE_IN
-        };
-        let t = (self.elapsed().as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
+        let t = (self.elapsed().as_secs_f32() / FADE_IN.as_secs_f32()).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     }
     pub fn offset(&self) -> f32 {
-        let target = if self.pending.is_some() { -2.0 } else { 0.0 };
-        self.offset_from + (target - self.offset_from) * self.progress()
+        self.offset_from * (1.0 - self.progress())
     }
     pub fn alpha(&self) -> f32 {
-        let eased = self.progress();
-        if self.pending.is_some() {
-            self.from + (1.0 - self.from) * eased
-        } else {
-            self.from * (1.0 - eased)
-        }
+        self.from * (1.0 - self.progress())
     }
 }
 impl App {
@@ -150,12 +127,7 @@ impl App {
                 return Task::none();
             };
             transition.sampled = now;
-            if transition.pending.is_some() && transition.elapsed() >= FADE_OUT {
-                if let Some(pending) = transition.pending.take() {
-                    self.transition = Some(PageTransition::incoming(now, 1.0));
-                    return self.commit_navigation(*pending);
-                }
-            } else if transition.pending.is_none() && transition.elapsed() >= FADE_IN {
+            if transition.elapsed() >= FADE_IN {
                 return Task::none();
             }
             self.transition = Some(transition);
@@ -168,39 +140,11 @@ impl App {
         if matches!(message, Message::ShowLibraries) {
             self.transition = None;
         }
-        if !self.preferences.reduced_motion
-            && self.library.is_some()
+        // Commit the destination on the click; only its entrance is animated.
+        let page_changed = self.library.is_some()
             && Self::is_page_navigation(&message)
-        {
-            if self.page_changes(&message) {
-                if let Some(transition) = &mut self.transition
-                    && transition.pending.is_some()
-                {
-                    // Keep opacity continuous, replacing only the destination on rapid navigation.
-                    transition.pending = Some(Box::new(message));
-                } else {
-                    let alpha = self.transition.as_ref().map_or(0.0, PageTransition::alpha);
-                    let offset = self.transition.as_ref().map_or(0.0, PageTransition::offset);
-                    self.transition = Some(PageTransition::outgoing(
-                        message,
-                        Instant::now(),
-                        alpha,
-                        offset,
-                    ));
-                }
-                return Task::none();
-            } else if self
-                .transition
-                .as_ref()
-                .is_some_and(|t| t.pending.is_some())
-            {
-                let alpha = self.transition.as_ref().map_or(0.0, PageTransition::alpha);
-                let offset = self.transition.as_ref().map_or(0.0, PageTransition::offset);
-                let mut transition = PageTransition::incoming(Instant::now(), alpha);
-                transition.offset_from = offset;
-                self.transition = Some(transition);
-            }
-        }
+            && self.page_changes(&message);
+        let animation = self.transition.as_ref().map(|t| (t.alpha(), t.offset()));
         let before = (self.content_screen(), self.model_tab);
         if Self::is_page_navigation(&message) {
             self.gallery_feedback.clear();
@@ -240,10 +184,12 @@ impl App {
                 .filter(|_| !self.preferences.reduced_motion)
                 .map(|_| PageTransition::incoming(Instant::now(), 0.8));
         } else if !self.preferences.reduced_motion
-            && before != (self.content_screen(), self.model_tab)
+            && (page_changed || before != (self.content_screen(), self.model_tab))
         {
-            // Global destinations also animate, replacing stale outgoing actions.
-            self.transition = Some(PageTransition::incoming(Instant::now(), 0.8));
+            let (alpha, offset) = animation.unwrap_or((0.65, 3.9));
+            let mut entrance = PageTransition::incoming(Instant::now(), alpha);
+            entrance.offset_from = offset;
+            self.transition = Some(entrance);
         }
         task
     }
@@ -258,7 +204,7 @@ mod tests {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
         drop(app.update(Message::Navigate(2)));
-        assert!(app.transition.as_ref().unwrap().pending.is_some());
+        assert_eq!(app.screen, Screen::Models);
         drop(app.update(Message::ShowLibraries));
         assert!(app.library_picker);
         let start = app.transition.as_ref().unwrap().started;
@@ -268,7 +214,7 @@ mod tests {
         assert!(app.transition.is_none());
         drop(app.update(Message::Navigate(0)));
         let start = app.transition.as_ref().unwrap().started;
-        drop(app.update(Message::TransitionFrame(start + FADE_OUT)));
+        drop(app.update(Message::TransitionFrame(start + FADE_IN)));
         assert!(!app.library_picker);
     }
     #[test]
@@ -284,7 +230,7 @@ mod tests {
         assert!((app.surface_offset() - 1.25).abs() < 0.01);
         drop(app.update(Message::TransitionFrame(start + Duration::from_millis(160))));
         assert!(app.surface_motion.is_none());
-        assert_eq!(app.screen, Screen::Assets);
+        assert_eq!(app.screen, Screen::Models);
         drop(app.update(Message::HideCreate));
         assert_eq!(app.surface_offset(), 0.0);
         assert!(app.dialog.is_none());
@@ -308,7 +254,7 @@ mod tests {
         assert_eq!(next.offset(), offset);
         drop(app.update(Message::Navigate(1)));
         let cancelled = app.transition.as_ref().unwrap();
-        assert!(cancelled.pending.is_none());
+        assert_eq!(app.screen, Screen::Assets);
         assert_eq!(cancelled.alpha(), alpha);
         assert_eq!(cancelled.offset(), offset);
     }

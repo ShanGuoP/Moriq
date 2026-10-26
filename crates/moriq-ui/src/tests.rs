@@ -199,36 +199,26 @@ fn page_chrome_is_identical_and_global_navigation_has_no_delayed_action() {
     drop(app.update(Message::Navigate(0)));
     drop(app.update(Message::Navigate(2)));
     assert_eq!(app.screen, Screen::Models);
-    assert!(app.transition.as_ref().unwrap().pending.is_none());
+    assert!(app.transition.is_some());
 }
 #[test]
-fn rapid_page_navigation_retargets_without_jumps_or_committing_old_destinations() {
-    use crate::transition::{FADE_IN, FADE_OUT};
+fn rapid_page_navigation_commits_immediately_and_old_frames_cannot_retarget() {
+    use crate::transition::FADE_IN;
     let mut app = app();
     app.screen = Screen::Overview;
     drop(app.update(Message::Navigate(2)));
+    assert_eq!(app.screen, Screen::Models);
     let start = app.transition.as_ref().unwrap().started;
-    assert_eq!(app.screen, Screen::Overview);
-    drop(app.update(Message::TransitionFrame(start + FADE_OUT / 2)));
+    drop(app.update(Message::TransitionFrame(start + FADE_IN / 2)));
     let alpha = app.transition.as_ref().unwrap().alpha();
-    assert!((alpha - 0.5).abs() < 0.01);
     drop(app.update(Message::Navigate(1)));
-    assert_eq!(app.transition.as_ref().unwrap().alpha(), alpha);
-    drop(app.update(Message::TransitionFrame(start + FADE_OUT)));
     assert_eq!(app.screen, Screen::Assets);
-    assert_eq!(app.transition.as_ref().unwrap().alpha(), 1.0);
-    drop(app.update(Message::TransitionFrame(start + FADE_OUT + FADE_IN)));
-    assert!(app.transition.is_none());
-    drop(app.update(Message::Navigate(2)));
-    let start = app.transition.as_ref().unwrap().started;
-    drop(app.update(Message::TransitionFrame(start + FADE_OUT / 2)));
-    drop(app.update(Message::Navigate(1)));
-    assert!(app.transition.as_ref().unwrap().pending.is_none());
-    let start = app.transition.as_ref().unwrap().started;
-    drop(app.update(Message::TransitionFrame(start + FADE_IN)));
+    assert_eq!(app.transition.as_ref().unwrap().alpha(), alpha);
+    drop(app.update(Message::TransitionFrame(start + FADE_IN * 2)));
     assert!(app.transition.is_none());
     assert_eq!(app.screen, Screen::Assets);
 }
+
 #[test]
 fn old_query_results_cannot_replace_new_view() {
     let mut app = app();
@@ -288,6 +278,7 @@ fn large_displays_keep_viewport_inside_page_budget() {
 #[test]
 fn scroll_moved_during_load_requests_current_viewport() {
     let mut app = app();
+    app.screen = Screen::Assets;
     app.generation = 3;
     app.loading = true;
     app.scroll_y = 90000.0;
@@ -306,6 +297,7 @@ fn scroll_moved_during_load_requests_current_viewport() {
 #[test]
 fn saved_edit_survives_query_change_but_rejects_other_library() {
     let mut app = app();
+    app.screen = Screen::Assets;
     app.generation = 8;
     let current = app.library.as_ref().unwrap().info.id;
     drop(app.update(Message::Saved(
