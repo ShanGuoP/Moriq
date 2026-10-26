@@ -692,8 +692,8 @@ impl App {
         let language = self.preferences.language;
         let logo = container(
             mouse_area(
-                row![icon(Icon::Logo, 34.0, BLUE), heading("Moriq Space", 18)]
-                    .spacing(7)
+                row![icon(Icon::Logo, 29.0, BLUE), heading("Moriq Space", 17)]
+                    .spacing(10)
                     .align_y(Alignment::Center),
             )
             .on_press(Message::WindowDrag),
@@ -832,12 +832,28 @@ impl App {
             }
         }
         if self.screen == Screen::Overview {
+            let can_open = !self.switching
+                && self.import.is_none()
+                && !self.manager.busy
+                && !self.libraries.busy;
             content = content
                 .push(
                     row![
-                        heading(tr!(language, "我的资源库" => "My libraries"), 13),
+                        muted(tr!(language, "我的资源库" => "My libraries")).size(11),
                         Space::new().width(Length::Fill),
-                        icon_button(Icon::More, Message::Open)
+                        iced::widget::tooltip(
+                            button(icon(Icon::Folder, 15.0, ICON))
+                                .padding(7)
+                                .width(30)
+                                .height(30)
+                                .style(library_action)
+                                .on_press_maybe(can_open.then_some(Message::Open)),
+                            container(text(tr!(language, "打开资源库" => "Open library")).size(12))
+                                .padding([7, 10])
+                                .style(library_hint),
+                            iced::widget::tooltip::Position::Right
+                        )
+                        .delay(Duration::from_millis(650))
                     ]
                     .align_y(Alignment::Center),
                 )
@@ -849,48 +865,56 @@ impl App {
                                 .size(13)
                                 .style(crate::theme::text_color(BLUE))
                         ]
-                        .spacing(7)
+                        .spacing(9)
                         .align_y(Alignment::Center),
                     )
-                    .on_press(Message::ShowCreate)
-                    .padding(9)
+                    .on_press_maybe(can_open.then_some(Message::ShowCreate))
+                    .padding([10, 12])
                     .width(Length::Fill)
                     .style(secondary),
                 );
             if let Some(library) = &self.library {
                 let name = &library.info.name;
                 let count = library.info.count;
-                let thumbnail = self.tiles.first().and_then(|tile| tile.handle.as_ref());
+                let thumbnail = self.library_cover_for(&library.root);
                 content = content.push(
                     button(
                         row![
-                            photo(thumbnail, Length::Fixed(48.0), 48.0),
+                            photo(thumbnail, Length::Fixed(40.0), 40.0),
                             column![
-                                heading(format!("{name}.moriq"), 13),
-                                muted(trf!(language, "{} 张" => "{} photos", number(count)))
+                                heading(compact(name, 9), 13)
+                                    .width(Length::Fill)
+                                    .height(19)
+                                    .wrapping(text::Wrapping::None),
+                                muted(trf!(language, "{} 张素材" => "{} assets", number(count)))
+                                    .size(11)
                             ]
-                            .spacing(6)
+                            .spacing(4)
+                            .width(Length::Fill),
+                            container(icon(Icon::Right, 13.0, BLUE)).center_y(40)
                         ]
                         .spacing(10)
                         .align_y(Alignment::Center),
                     )
-                    .padding([7, 8])
+                    .padding([10, 10])
                     .width(Length::Fill)
-                    .style(theme::nav(true))
-                    .on_press(Message::Navigate(0)),
+                    .style(theme::library_entry(true))
+                    .on_press_maybe(can_open.then_some(Message::Navigate(0))),
                 );
             }
             content = content.push(
                 button(
                     row![
                         icon(Icon::Folder, 16.0, MUTED),
-                        muted(tr!(language, "打开已有资源库…" => "Open an existing library…"))
+                        muted(tr!(language, "打开资源库" => "Open library")).size(12)
                     ]
-                    .spacing(10),
+                    .spacing(9)
+                    .align_y(Alignment::Center),
                 )
-                .on_press(Message::Open)
-                .padding(10)
-                .style(flat),
+                .on_press_maybe(can_open.then_some(Message::Open))
+                .padding([10, 12])
+                .width(Length::Fill)
+                .style(library_action),
             );
         } else if self.library.is_some() {
             content = content.push(

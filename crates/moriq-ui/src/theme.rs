@@ -278,6 +278,53 @@ pub fn flat(theme: &Theme, status: button::Status) -> button::Style {
         ..Default::default()
     }
 }
+/// Quiet, consistently sized controls for library management and sidebar actions.
+pub fn library_action(theme: &Theme, status: button::Status) -> button::Style {
+    let mut style = flat(theme, status);
+    style.border.radius = 9.0.into();
+    style.background = Some(
+        adaptive(
+            theme,
+            match status {
+                button::Status::Hovered => Color::from_rgb8(233, 239, 248),
+                button::Status::Pressed => Color::from_rgb8(222, 232, 248),
+                _ => Color::from_rgb8(246, 248, 251),
+            },
+        )
+        .into(),
+    );
+    style
+}
+pub fn library_hint(theme: &Theme) -> container::Style {
+    container::Style {
+        border: Border {
+            radius: 8.0.into(),
+            color: adaptive(theme, LINE),
+            width: 1.0,
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba8(25, 39, 65, 0.06),
+            offset: iced::Vector::new(0.0, 3.0),
+            blur_radius: 10.0,
+        },
+        ..panel(theme)
+    }
+}
+pub fn library_entry(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let mut style = nav(active)(theme, status);
+        style.border = Border {
+            radius: 11.0.into(),
+            color: if active {
+                adaptive(theme, BLUE).scale_alpha(0.15)
+            } else {
+                Color::TRANSPARENT
+            },
+            width: 1.0,
+        };
+        style
+    }
+}
 pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| button::Style {
         background: Some(

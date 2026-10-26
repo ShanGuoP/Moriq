@@ -3,6 +3,22 @@ use super::*;
 impl App {
     pub(super) fn capture_tick(&mut self) -> Task<Message> {
         self.capture_ticks = self.capture_ticks.saturating_add(1);
+        if self.capture_ticks == 2
+            && matches!(
+                self.launch.panel.as_deref(),
+                Some("library-picker" | "library-picker-compact")
+            )
+        {
+            let show = self.update(Message::ShowLibraries);
+            if self.launch.panel.as_deref() == Some("library-picker-compact") {
+                return Task::batch([
+                    show,
+                    iced::window::oldest()
+                        .and_then(|id| iced::window::resize(id, Size::new(1180.0, 740.0))),
+                ]);
+            }
+            return show;
+        }
         if self.launch.panel.as_deref() == Some("responsiveness") {
             match self.capture_ticks {
                 2 => return self.update(Message::Navigate(2)),

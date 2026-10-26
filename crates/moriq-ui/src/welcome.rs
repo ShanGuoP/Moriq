@@ -65,16 +65,26 @@ impl App {
     }
 }
 impl App {
+    pub(super) fn library_cover_for(&self, path: &std::path::Path) -> Option<&image::Handle> {
+        self.library_covers.get(path).or_else(|| {
+            // Windows may return the opened root with an extended-path prefix.
+            // Match cached presentation data without filesystem work during layout.
+            let location = display_path(path);
+            self.library_covers.iter().find_map(|(candidate, cover)| {
+                (display_path(candidate) == location).then_some(cover)
+            })
+        })
+    }
     fn library_picker_cards(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let can_open =
             !self.switching && self.import.is_none() && !self.manager.busy && !self.libraries.busy;
         let width = library_card_width(self.viewport.width - self.sidebar_width() - 88.0);
-        let cover_height = (width - 20.0) * 0.48;
+        let cover_height = (width - 20.0) * 0.52;
         let mut cards = Row::new().spacing(20);
         for (name, path) in &self.preferences.recent {
             let (kind, accent, tint) = library_accent(name, path);
-            let cover: Element<'_, Message> = if let Some(handle) = self.library_covers.get(path) {
+            let cover: Element<'_, Message> = if let Some(handle) = self.library_cover_for(path) {
                 let mut photo = image(handle.clone())
                     .width(Length::Fill)
                     .height(cover_height)
@@ -83,7 +93,7 @@ impl App {
                 if let image::Handle::Rgba { width, height, .. } = handle
                     && height > width
                 {
-                    let crop_height = (*width as f32 * 0.48).round().max(1.0) as u32;
+                    let crop_height = (*width as f32 * 0.52).round().max(1.0) as u32;
                     let y = ((*height - crop_height) as f32 * 0.22).round() as u32;
                     photo = photo.crop(iced::Rectangle {
                         x: 0,
@@ -116,25 +126,20 @@ impl App {
             .style(library_open_style)
             .width(Length::Fill)
             .on_press_maybe(can_open.then(|| Message::OpenRecent(path.clone())));
-            let badge = container(library_badge(kind, accent))
-                .center_x(58)
-                .center_y(58)
+            let badge = container(icon(kind, 21.0, accent))
+                .center_x(40)
+                .center_y(40)
                 .style(move |theme| container::Style {
                     background: Some(adaptive(theme, tint).into()),
                     border: Border {
-                        radius: 17.0.into(),
-                        color: if theme.extended_palette().is_dark {
-                            Color::from_rgb8(33, 41, 55)
-                        } else {
-                            Color::WHITE
-                        },
-                        width: 2.0,
+                        radius: 11.0.into(),
+                        ..Default::default()
                     },
                     ..Default::default()
                 });
             let location = display_path(path.parent().unwrap_or(path));
-            let name_limit = (((width - 113.0) / 15.0) as usize).max(2);
-            let path_limit = (((width - 113.0) / 9.0) as usize).max(2);
+            let name_limit = (((width - 122.0) / 15.0) as usize).max(2);
+            let path_limit = (((width - 122.0) / 7.5) as usize).max(2);
             let identity = button(
                 row![
                     badge,
@@ -149,56 +154,55 @@ impl App {
                             .wrapping(text::Wrapping::None)
                     ]
                     .spacing(3)
-                    .padding(iced::Padding {
-                        top: 24.0,
-                        right: 0.0,
-                        bottom: 0.0,
-                        left: 0.0
-                    })
                     .width(Length::Fill)
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
             )
-            .padding(0)
+            .padding([6, 4])
             .style(library_open_style)
             .width(Length::Fill)
             .on_press_maybe(can_open.then(|| Message::OpenRecent(path.clone())));
-            let menu = button(icon(Icon::More, 19.0, MUTED))
-                .padding([9, 7])
-                .style(library_manage_style)
-                .on_press_maybe(can_open.then(|| {
-                    Message::Libraries(crate::libraries::LibraryMessage::Open(path.clone()))
-                }));
+            let menu = tooltip(
+                button(icon(Icon::More, 18.0, ICON))
+                    .padding(8)
+                    .width(34)
+                    .height(34)
+                    .style(library_action)
+                    .on_press_maybe(can_open.then(|| {
+                        Message::Libraries(crate::libraries::LibraryMessage::Open(path.clone()))
+                    })),
+                container(text(tr!(language, "管理资源库" => "Manage library")).size(12))
+                    .padding([7, 10])
+                    .style(library_hint),
+                tooltip::Position::Top,
+            )
+            .delay(Duration::from_millis(650));
             let identity = row![
                 tooltip(
                     identity,
                     container(
-                        column![heading(name.clone(), 13), text(display_path(path)).size(12)]
-                            .spacing(5)
+                        column![
+                            heading(name.clone(), 12),
+                            text(display_path(path))
+                                .size(11)
+                                .style(text_color(MUTED))
+                                .wrapping(text::Wrapping::Glyph)
+                        ]
+                        .spacing(4)
                     )
-                    .padding(10)
-                    .width(360)
-                    .style(panel),
+                    .padding([8, 10])
+                    .max_width(300)
+                    .style(library_hint),
                     tooltip::Position::Bottom
                 )
-                .delay(Duration::from_millis(450))
+                .delay(Duration::from_millis(900))
                 .snap_within_viewport(true),
                 menu
             ]
             .spacing(5)
             .align_y(Alignment::Center);
-            let body = iced::widget::stack![
-                column![cover, Space::new().height(54)],
-                container(identity)
-                    .padding(iced::Padding {
-                        top: cover_height - 15.0,
-                        right: 7.0,
-                        bottom: 0.0,
-                        left: 10.0
-                    })
-                    .width(Length::Fill)
-            ];
+            let body = column![cover, container(identity).padding([6, 4])].spacing(6);
             let summary = self
                 .library
                 .as_ref()
@@ -228,21 +232,10 @@ impl App {
                 .spacing(5)
                 .align_y(Alignment::Center),
             )
-            .padding([8, 10])
+            .padding([8, 8])
             .width(Length::Fill)
             .style(|theme| container::Style {
-                border: Border {
-                    radius: 11.0.into(),
-                    ..Default::default()
-                },
-                background: Some(
-                    if theme.extended_palette().is_dark {
-                        Color::from_rgb8(39, 48, 63)
-                    } else {
-                        Color::from_rgb8(246, 248, 251)
-                    }
-                    .into(),
-                ),
+                text_color: Some(adaptive(theme, MUTED)),
                 ..Default::default()
             });
             cards = cards.push(
@@ -254,13 +247,17 @@ impl App {
         }
         let new_cover = container(
             column![
-                container(library_badge_size(
-                    Icon::Folder,
-                    Color::from_rgb8(76, 156, 213),
-                    58.0
-                ))
-                .center_x(70)
-                .center_y(70),
+                container(icon(Icon::Folder, 34.0, BLUE))
+                    .center_x(70)
+                    .center_y(70)
+                    .style(|theme| container::Style {
+                        background: Some(adaptive(theme, PALE).into()),
+                        border: Border {
+                            radius: 20.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
                 muted(tr!(language,"收好每一份新的灵感"=>"Make room for new inspiration")).size(13)
             ]
             .spacing(12)
@@ -282,20 +279,20 @@ impl App {
             },
             ..Default::default()
         });
-        let new_badge = container(library_badge(Icon::Plus, Color::from_rgb8(60, 185, 202)))
-            .center_x(58)
-            .center_y(58)
+        let new_badge = container(icon(Icon::Plus, 21.0, BLUE))
+            .center_x(40)
+            .center_y(40)
             .style(|theme| container::Style {
                 background: Some(
                     if theme.extended_palette().is_dark {
-                        Color::from_rgb8(34, 67, 78)
+                        Color::from_rgb8(34, 53, 78)
                     } else {
-                        Color::from_rgb8(221, 247, 251)
+                        PALE
                     }
                     .into(),
                 ),
                 border: Border {
-                    radius: 17.0.into(),
+                    radius: 11.0.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -312,17 +309,7 @@ impl App {
         ]
         .spacing(10)
         .align_y(Alignment::Center);
-        let new_body = iced::widget::stack![
-            column![new_cover, Space::new().height(54)],
-            container(new_identity)
-                .padding(iced::Padding {
-                    top: cover_height - 15.0,
-                    right: 12.0,
-                    bottom: 0.0,
-                    left: 10.0
-                })
-                .width(Length::Fill)
-        ];
+        let new_body = column![new_cover, container(new_identity).padding([12, 8])].spacing(6);
         let new_card = button(column![new_body, Space::new().height(29)].spacing(5))
             .padding(10)
             .width(width)
@@ -334,7 +321,10 @@ impl App {
                 container(
                     column![
                         row![
-                            heading(tr!(language,"我的资源库"=>"My libraries"), 25),
+                            column![
+                                heading(tr!(language,"我的资源库"=>"My libraries"), 24),
+                                muted(tr!(language,"让灵感有序，让创作继续。"=>"Keep inspiration organized. Keep creating.")).size(12)
+                            ].spacing(8),
                             Space::new().width(Length::Fill),
                             action(
                                 tr!(language,"打开已有资源库"=>"Open an existing library"),
@@ -346,7 +336,7 @@ impl App {
                         .align_y(Alignment::Center),
                         cards.wrap()
                     ]
-                    .spacing(22),
+                    .spacing(26),
                 )
                 .padding(32)
                 .width(Length::Fill),
@@ -379,9 +369,9 @@ fn cover_gradient(theme: &Theme, tones: (Color, Color)) -> iced::Background {
     let mix = |color: Color| {
         let weight = if dark { 0.22 } else { 0.18 };
         Color::from_rgb(
-            base.r * (1.0 - weight) + color.r * weight,
-            base.g * (1.0 - weight) + color.g * weight,
-            base.b * (1.0 - weight) + color.b * weight,
+            base.r * (1.0 - weight) + if dark { 0.18 } else { color.r } * weight,
+            base.g * (1.0 - weight) + if dark { 0.30 } else { color.g } * weight,
+            base.b * (1.0 - weight) + if dark { 0.42 } else { color.b } * weight,
         )
     };
     iced::Background::Gradient(iced::Gradient::Linear(
@@ -389,39 +379,6 @@ fn cover_gradient(theme: &Theme, tones: (Color, Color)) -> iced::Background {
             .add_stop(0.0, mix(tones.0))
             .add_stop(1.0, mix(tones.1)),
     ))
-}
-fn library_badge(kind: Icon, color: Color) -> Element<'static, Message> {
-    library_badge_size(kind, color, 31.0)
-}
-fn library_badge_size(kind: Icon, color: Color, size: f32) -> Element<'static, Message> {
-    let body = match kind {
-        Icon::Landscape => {
-            r#"<circle cx="23" cy="9" r="3" opacity=".55"/><path d="M3 26 12 9l8 17Z"/><path d="m14 26 8-13 8 13Z" opacity=".55"/>"#
-        }
-        Icon::Camera => {
-            r#"<path d="m10 8 2-4h8l2 4h5a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V11a3 3 0 0 1 3-3Z"/><circle cx="16" cy="18" r="7" fill="white" opacity=".9"/><circle cx="16" cy="18" r="4"/><circle cx="25" cy="12" r="1.5" fill="white"/>"#
-        }
-        Icon::Sparkles => {
-            r#"<path d="M16 2C8 2 2 8 2 16s6 14 14 14h2c4 0 5-4 2-6-2-2-1-5 2-5h3c4 0 6-3 5-7C28 6 22 2 16 2Z"/><circle cx="10" cy="10" r="2" fill="white"/><circle cx="18" cy="8" r="2" fill="white"/><circle cx="24" cy="13" r="2" fill="white"/><circle cx="7" cy="18" r="2" fill="white"/>"#
-        }
-        Icon::Star => {
-            r#"<path d="M16 2a11 11 0 0 0-8 19c2 2 2 3 2 5h12c0-2 0-3 2-5a11 11 0 0 0-8-19Z"/><rect x="11" y="28" width="10" height="3" rx="1.5"/><path d="m11 13 5 5 5-5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"/>"#
-        }
-        Icon::Plus => r#"<path d="M12 3h8v9h9v8h-9v9h-8v-9H3v-8h9Z"/>"#,
-        _ => {
-            r#"<path d="M3 6a3 3 0 0 1 3-3h7l4 5h9a3 3 0 0 1 3 3v15a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z" opacity=".58"/><path d="M2 12a3 3 0 0 1 3-3h22a3 3 0 0 1 3 3v14a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3Z"/>"#
-        }
-    };
-    let r = (color.r * 255.0) as u8;
-    let g = (color.g * 255.0) as u8;
-    let b = (color.b * 255.0) as u8;
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><defs><linearGradient id="color" x2="0" y2="1"><stop stop-color="rgb({r},{g},{b})" stop-opacity=".7"/><stop offset="1" stop-color="rgb({r},{g},{b})"/></linearGradient></defs><g fill="url(#color)">{body}</g></svg>"##
-    );
-    iced::widget::svg(iced::widget::svg::Handle::from_memory(svg.into_bytes()))
-        .width(size)
-        .height(size)
-        .into()
 }
 fn library_accent(name: &str, path: &std::path::Path) -> (Icon, Color, Color) {
     let key = path
@@ -465,7 +422,10 @@ fn library_accent(name: &str, path: &std::path::Path) -> (Icon, Color, Color) {
     }
 }
 fn library_new_style(theme: &Theme, status: button::Status) -> button::Style {
-    let card = library_card_style(theme);
+    let mut card = library_card_style(theme);
+    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+        card.border.color = adaptive(theme, BLUE).scale_alpha(0.4);
+    }
     button::Style {
         background: card.background,
         border: card.border,
@@ -481,18 +441,18 @@ fn library_card_width(available: f32) -> f32 {
 fn library_card_style(theme: &Theme) -> container::Style {
     container::Style {
         border: Border {
-            radius: 24.0.into(),
+            radius: 18.0.into(),
             color: if theme.extended_palette().is_dark {
                 Color::from_rgb8(47, 58, 76)
             } else {
-                Color::WHITE
+                Color::from_rgb8(231, 235, 242)
             },
             width: 1.0,
         },
         shadow: iced::Shadow {
-            color: Color::from_rgba8(25, 39, 65, 0.05),
-            offset: iced::Vector::new(0.0, 5.0),
-            blur_radius: 20.0,
+            color: Color::from_rgba8(25, 39, 65, 0.025),
+            offset: iced::Vector::new(0.0, 3.0),
+            blur_radius: 12.0,
         },
         background: Some(
             if theme.extended_palette().is_dark {
@@ -521,24 +481,6 @@ fn library_open_style(theme: &Theme, status: button::Status) -> button::Style {
         ..Default::default()
     }
 }
-fn library_manage_style(theme: &Theme, status: button::Status) -> button::Style {
-    button::Style {
-        background: Some(
-            if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                adaptive(theme, BG)
-            } else {
-                Color::TRANSPARENT
-            }
-            .into(),
-        ),
-        text_color: adaptive(theme, MUTED),
-        border: Border {
-            radius: 10.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
 pub(super) fn compact(value: &str, limit: usize) -> String {
     if value.chars().count() <= limit {
         return value.to_owned();
@@ -549,6 +491,28 @@ pub(super) fn compact(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn sidebar_cover_matches_extended_root_without_using_unrelated_covers() {
+        let mut app = crate::tests::app();
+        let path = PathBuf::from(r"D:\photos\中文目录\library.moriq");
+        let extended = PathBuf::from(r"\\?\D:\photos\中文目录\library.moriq");
+        app.library_covers.insert(
+            path.clone(),
+            image::Handle::from_rgba(1, 1, vec![40, 80, 120, 255]),
+        );
+        assert!(std::ptr::eq(
+            app.library_cover_for(&extended).unwrap(),
+            app.library_covers.get(&path).unwrap()
+        ));
+        assert!(
+            app.library_cover_for(std::path::Path::new(r"D:\other.moriq"))
+                .is_none()
+        );
+        app.library_covers.remove(&path);
+        assert!(app.library_cover_for(&extended).is_none());
+    }
 
     #[test]
     fn library_cards_stay_compact_and_fit_responsive_columns() {
@@ -597,13 +561,13 @@ mod tests {
         assert!(app.library.is_none());
         for appearance in [Appearance::Light, Appearance::Dark] {
             let theme = application_theme(appearance);
-            assert_eq!(library_card_style(&theme).border.radius, 24.0.into());
+            assert_eq!(library_card_style(&theme).border.radius, 18.0.into());
             for status in [
                 button::Status::Active,
                 button::Status::Hovered,
                 button::Status::Disabled,
             ] {
-                assert!(library_manage_style(&theme, status).background.is_some());
+                assert!(library_action(&theme, status).background.is_some());
             }
         }
     }
