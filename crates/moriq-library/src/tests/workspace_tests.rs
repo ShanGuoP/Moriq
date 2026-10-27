@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+/// 验证项目首屏快速查询与通用筛选保持相同的范围、顺序和分页边界。
+fn plain_project_pages_match_general_filters_and_invalidate_after_edits() {
+    let (_dir, mut lib, first_project, second_project, first, second) = fixture();
+    lib.set_workspace(None);
+    let child = lib
+        .create_project_configured("child", Some(first_project), ProjectTemplate::Default)
+        .unwrap();
+    lib.copy_to_project(&[second.id], child, true).unwrap();
+    for project in [first_project, second_project, child] {
+        lib.set_workspace(Some(project));
+        for (offset, limit) in [(0, 128), (0, 0), (0, 1), (1, 1), (99, 10)] {
+            let quick = lib.page(&Query::default(), offset, limit).unwrap();
+            let general = lib
+                .page(
+                    &Query {
+                        min_width: 1,
+                        ..Default::default()
+                    },
+                    offset,
+                    limit,
+                )
+                .unwrap();
+            assert_eq!(quick.total, general.total);
+            assert_eq!(quick.offset, general.offset);
+            assert_eq!(
+                quick
+                    .assets
+                    .iter()
+                    .map(|asset| asset.id)
+                    .collect::<Vec<_>>(),
+                general
+                    .assets
+                    .iter()
+                    .map(|asset| asset.id)
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+    lib.set_workspace(Some(first_project));
+    assert_eq!(lib.page(&Query::default(), 0, 10).unwrap().total, 1);
+    lib.edit(&[first.id], &Edit::Trash(true)).unwrap();
+    assert_eq!(lib.page(&Query::default(), 0, 10).unwrap().total, 0);
+    lib.edit(&[first.id], &Edit::Trash(false)).unwrap();
+    assert_eq!(
+        lib.page(&Query::default(), 0, 10).unwrap().assets[0].id,
+        first.id
+    );
+}
+
+#[test]
 fn retrieval_plans_freeze_the_project_and_never_accept_other_project_inputs() {
     let (dir, mut lib, a, b, first, second) = fixture();
     let source = dir.path().join("near.png");

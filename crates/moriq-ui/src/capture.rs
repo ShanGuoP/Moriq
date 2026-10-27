@@ -118,7 +118,7 @@ impl App {
         if self.capture_ticks == 2
             && matches!(
                 self.launch.panel.as_deref(),
-                Some("workspace-models" | "workspace-categories")
+                Some("workspace-models" | "workspace-categories" | "workspace-assets")
             )
             && let Some(project) = self
                 .library
@@ -126,6 +126,9 @@ impl App {
                 .and_then(|l| l.info.projects.first())
                 .map(|p| p.id)
         {
+            if self.launch.panel.as_deref() == Some("workspace-assets") {
+                return self.update(Message::Project(project));
+            }
             return self.ai_message(AiMessage::Workspace(Some(project)));
         }
         if self.capture_ticks == 5 && self.launch.panel.as_deref() == Some("workspace-categories") {

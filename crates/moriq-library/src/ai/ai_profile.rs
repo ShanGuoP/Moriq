@@ -143,11 +143,42 @@ impl Library {
     /// 汇总当前项目可见的 AI 分类分组和素材数量。
     pub fn ai_groups(&self) -> Result<Vec<AiGroup>> {
         let profile = self.ai_profile()?;
-        // Materialize effective content once. The old implementation expanded the
-        // full content views independently for every sidebar category and cover.
-        let rows = self.db.prepare("WITH live AS MATERIALIZED (SELECT a.id,a.display_version_id,a.imported_at,e.medium,e.themes FROM assets a JOIN ai_effective_content e ON e.version_id=a.display_version_id WHERE a.deleted_at IS NULL AND e.workspace=?1), entries AS (SELECT 'medium:'||medium key,id,display_version_id,imported_at FROM live WHERE medium<>'' UNION ALL SELECT 'theme:'||j.value,l.id,l.display_version_id,l.imported_at FROM live l,json_each(l.themes) j UNION ALL SELECT 'legacy:'||c.category,l.id,l.display_version_id,l.imported_at FROM live l JOIN asset_classification c ON c.asset_id=l.id WHERE c.manual=1 OR l.medium='' UNION ALL SELECT '_unclassified',l.id,l.display_version_id,l.imported_at FROM live l LEFT JOIN asset_classification c ON c.asset_id=l.id WHERE (l.medium='' AND c.category IS NULL) OR c.category='未分类'), ranked AS (SELECT key,display_version_id,count(*) OVER(PARTITION BY key) n,row_number() OVER(PARTITION BY key ORDER BY imported_at DESC,id DESC) rank FROM entries) SELECT key,n,display_version_id FROM ranked WHERE rank=1")?
-            .query_map([self.workspace_key()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u64>(1)?,r.get::<_,String>(2)?)))?
-            .collect::<std::result::Result<Vec<_>,_>>()?;
+        // Read classification sources only and resolve enabled themes once per workspace.
+        // Description/tag projections are independent of the category counters.
+        let rows = self.db.prepare(
+            "WITH vocabulary AS MATERIALIZED (
+                SELECT id FROM workspace_vocabulary
+                WHERE workspace=?1 AND kind='theme' AND enabled=1
+             ), live AS MATERIALIZED (
+                SELECT a.id,a.display_version_id,a.imported_at,
+                    coalesce(o.medium,json_extract(r.data,'$.medium'),'') medium,
+                    coalesce(o.themes,json_extract(r.data,'$.themes'),'[]') themes
+                FROM assets a LEFT JOIN ai_overrides o ON o.version_id=a.display_version_id
+                LEFT JOIN ai_effective_results p
+                    ON p.version_id=a.display_version_id AND p.task='qwen_classification'
+                LEFT JOIN ai_analysis_runs r ON r.id=p.run_id
+                WHERE a.deleted_at IS NULL
+                    AND coalesce((SELECT min(project_id) FROM project_assets WHERE asset_id=a.id),'')=?1
+             ), entries AS (
+                SELECT 'medium:'||medium key,id,display_version_id,imported_at FROM live WHERE medium<>''
+                UNION ALL SELECT 'theme:'||j.value,l.id,l.display_version_id,l.imported_at
+                    FROM live l,json_each(l.themes) j JOIN vocabulary v ON v.id=j.value
+                UNION ALL SELECT 'legacy:'||c.category,l.id,l.display_version_id,l.imported_at
+                    FROM live l JOIN asset_classification c ON c.asset_id=l.id
+                    WHERE c.manual=1 OR l.medium=''
+                UNION ALL SELECT '_unclassified',l.id,l.display_version_id,l.imported_at
+                    FROM live l LEFT JOIN asset_classification c ON c.asset_id=l.id
+                    WHERE (l.medium='' AND c.category IS NULL) OR c.category='未分类'
+             ), ranked AS (
+                SELECT key,display_version_id,count(*) OVER(PARTITION BY key) n,
+                    row_number() OVER(PARTITION BY key ORDER BY imported_at DESC,id DESC) rank FROM entries
+             )
+             SELECT key,n,display_version_id FROM ranked WHERE rank=1",
+        )?
+        .query_map([self.workspace_key()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?, r.get::<_, String>(2)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut counts = std::collections::BTreeMap::new();
         for (key, n, version) in rows {
             counts.insert(key, (n, AssetVersionId(parse_id(&version)?)));
@@ -234,6 +265,15 @@ impl Library {
     /// 统计需要按当前分类配置重新分析的素材数量。
     pub fn outdated_ai_count(&self) -> Result<u64> {
         let hash = classification_hash(&self.ai_profile()?)?;
-        Ok(self.db.query_row("SELECT count(*) FROM assets a JOIN ai_effective_results e ON e.version_id=a.display_version_id AND e.task='qwen_classification' JOIN ai_analysis_runs r ON r.id=e.run_id WHERE a.deleted_at IS NULL AND coalesce(json_extract(r.data,'$.profile_hash'),'')<>?1 AND (SELECT workspace FROM asset_workspaces WHERE asset_id=a.id)=?2",params![hash,self.workspace_key()],|r| r.get(0))?)
+        // Start with effective classifications, not every unanalysed asset in the library.
+        Ok(self.db.query_row(
+            "SELECT count(*) FROM ai_effective_results e JOIN ai_analysis_runs r ON r.id=e.run_id
+             CROSS JOIN assets a ON a.display_version_id=e.version_id
+             WHERE e.task='qwen_classification' AND a.deleted_at IS NULL
+             AND coalesce(json_extract(r.data,'$.profile_hash'),'')<>?1
+             AND coalesce((SELECT min(project_id) FROM project_assets WHERE asset_id=a.id),'')=?2",
+            params![hash, self.workspace_key()],
+            |r| r.get(0),
+        )?)
     }
 }

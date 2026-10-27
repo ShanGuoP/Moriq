@@ -13,7 +13,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const SCHEMA: u32 = 26;
+const SCHEMA: u32 = 27;
 mod retrieval;
 pub use moriq_retrieval::QueryScope;
 // Library

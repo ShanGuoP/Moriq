@@ -251,6 +251,11 @@ impl Library {
             if version <= 25 {
                 workspace::migrate(&mut db)?;
             }
+            if version <= 26 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("../database/migrations/migration_27.sql"))?;
+                tx.commit()?;
+            }
             Ok(())
         })();
         migrations.map_err(|error| {

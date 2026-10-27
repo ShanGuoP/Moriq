@@ -679,8 +679,8 @@ impl App {
             Task::none()
         };
         Task::batch([
-            workspace,
             page,
+            workspace,
             layout,
             iced::widget::operation::scroll_to(
                 "gallery",

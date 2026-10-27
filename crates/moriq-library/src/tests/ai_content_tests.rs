@@ -74,6 +74,63 @@ fn page_tag_batch_preserves_per_asset_visibility_deduplication_and_paging() {
         assert_eq!(one.assets[0].tags, expected.tags);
     }
 }
+
+#[test]
+/// 验证旧库标签视图升级保留有效结果、去重及人工排除，并先保存数据库备份。
+fn schema_26_tag_projection_upgrade_preserves_visibility_without_classification_reads() {
+    let (_dir, mut lib, asset) = fixture();
+    lib.set_tags(asset.id, &["manual".into(), "shared".into()])
+        .unwrap();
+    describe(&mut lib, &asset, "old", "old", &["obsolete"]);
+    describe(
+        &mut lib,
+        &asset,
+        "current",
+        "current",
+        &["shared", "rejected", "visible"],
+    );
+    edit(&mut lib, &asset, AiEdit::RejectTag("rejected".into()));
+    lib.db.execute_batch(
+        "DROP VIEW ai_visible_tags;
+         CREATE VIEW ai_visible_tags AS
+         SELECT DISTINCT e.version_id,trim(j.value) name
+         FROM ai_effective_content e,json_each(e.tags) j
+         WHERE j.type='text' AND trim(j.value)<>'' AND NOT EXISTS(
+             SELECT 1 FROM ai_rejected_tags r WHERE r.version_id=e.version_id AND r.name=trim(j.value));
+         PRAGMA user_version=26;",
+    ).unwrap();
+    let expected = lib.page(&Query::default(), 0, 1).unwrap().assets[0]
+        .tags
+        .clone();
+    assert_eq!(expected, vec!["manual", "shared", "visible"]);
+    let root = lib.root.clone();
+    drop(lib);
+    let mut lib = Library::open(&root).unwrap();
+    assert_eq!(
+        lib.page(&Query::default(), 0, 1).unwrap().assets[0].tags,
+        expected
+    );
+    assert!(fs::read_dir(root.join("backups")).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("schema-26-")
+    }));
+    // Tags must remain readable without expanding the independent classification view.
+    lib.db
+        .execute_batch("DROP VIEW ai_effective_content;")
+        .unwrap();
+    let tags = lib
+        .db
+        .prepare("SELECT name FROM ai_visible_tags ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(tags, vec!["shared", "visible"]);
+}
 /// 为测试素材提交指定模型修订与分类结果。
 fn classify(lib: &mut Library, a: &Asset, revision: &str, medium: &str, themes: &[&str]) {
     save(

@@ -149,7 +149,7 @@ impl Library {
     pub(crate) fn workspace_filter(&self, asset: &str) -> String {
         match self.workspace {
             Some(project) => format!(
-                "EXISTS(SELECT 1 FROM project_assets wp WHERE wp.asset_id={asset} AND wp.project_id='{project}')"
+                "{asset} IN(SELECT asset_id FROM project_assets WHERE project_id='{project}')"
             ),
             None => "1=1".into(),
         }

@@ -134,9 +134,28 @@ impl Library {
                 NULL); CREATE UNIQUE INDEX IF NOT EXISTS query_snapshot_asset ON query_snapshot(asset_id); DELETE \
                 FROM query_snapshot;")?;
 
-            self.db.execute(&format!("INSERT INTO query_snapshot SELECT row_number() OVER(ORDER BY {order_by})-1,a.id FROM assets a LEFT \
+            if let Some(project) = query.project
+                && *query
+                    == (Query {
+                        project: Some(project),
+                        project_exact: true,
+                        ..Default::default()
+                    })
+            {
+                // The plain project page needs membership and order only. Avoid planning
+                // unused AI/search views for the many optional filter conditions.
+                self.db.execute(
+                    "INSERT INTO query_snapshot
+                     SELECT row_number() OVER(ORDER BY a.imported_at DESC,a.id DESC)-1,a.id
+                     FROM project_assets p JOIN assets a ON a.id=p.asset_id
+                     WHERE p.project_id=?1 AND a.deleted_at IS NULL",
+                    [project.to_string()],
+                )?;
+            } else {
+                self.db.execute(&format!("INSERT INTO query_snapshot SELECT row_number() OVER(ORDER BY {order_by})-1,a.id FROM assets a LEFT \
                 JOIN asset_order o ON o.asset_id=a.id JOIN asset_versions v ON v.id=a.display_version_id {condition}"),
 rusqlite::params_from_iter(values))?;
+            }
 
             let count = self
                 .db
