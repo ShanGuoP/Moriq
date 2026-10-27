@@ -1,5 +1,6 @@
 use super::*;
 
+/// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
 fn fixture() -> (tempfile::TempDir, Library, PathBuf, ProjectId, ProjectId) {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source.png");
@@ -11,6 +12,7 @@ fn fixture() -> (tempfile::TempDir, Library, PathBuf, ProjectId, ProjectId) {
     let b = lib.create_project("项目二").unwrap();
     (dir, lib, source, a, b)
 }
+/// 从独立测试资源库读取指定样本素材。
 fn asset(lib: &mut Library, project: ProjectId) -> Asset {
     lib.page(
         &Query {
@@ -26,6 +28,7 @@ fn asset(lib: &mut Library, project: ProjectId) -> Asset {
 }
 
 #[test]
+/// 验证相同内容在不同项目导入后身份、元数据、回收站与文件独立。
 fn same_content_imports_have_independent_identity_metadata_trash_and_bytes() {
     for referenced in [false, true] {
         let (_dir, mut lib, source, a, b) = fixture();
@@ -86,6 +89,7 @@ fn same_content_imports_have_independent_identity_metadata_trash_and_bytes() {
 }
 
 #[test]
+/// 验证复制到项目保留有效 AI 与人工覆盖，重复操作保持幂等。
 fn adding_to_another_project_copies_effective_ai_and_overrides_and_is_idempotent() {
     let (_dir, mut lib, source, a, b) = fixture();
     lib.import(&source, Some(a)).unwrap();
@@ -140,6 +144,7 @@ fn adding_to_another_project_copies_effective_ai_and_overrides_and_is_idempotent
 }
 
 #[test]
+/// 验证版本 24 共享素材升级持久拆分并备份，失败时回滚。
 fn schema_24_shared_assets_split_durably_with_backup_and_failure_rolls_back() {
     let (_dir, mut lib, source, a, b) = fixture();
     lib.import(&source, Some(a)).unwrap();
@@ -194,6 +199,7 @@ fn schema_24_shared_assets_split_durably_with_backup_and_failure_rolls_back() {
 }
 
 #[test]
+/// 验证项目复制失败清理部分文件，并回滚整批修改。
 fn project_copy_failure_removes_partial_files_and_rolls_back_batch() {
     let (_dir, mut lib, source, a, b) = fixture();
     lib.import(&source, Some(a)).unwrap();
@@ -227,6 +233,7 @@ fn project_copy_failure_removes_partial_files_and_rolls_back_batch() {
 }
 
 #[test]
+/// 验证排队执行的项目复制提交后仍保持状态独立。
 fn queued_batch_project_copy_remains_independent_after_commit() {
     let (_dir, mut lib, source, a, b) = fixture();
     lib.import(&source, Some(a)).unwrap();
@@ -252,6 +259,7 @@ fn queued_batch_project_copy_remains_independent_after_commit() {
 }
 
 #[test]
+/// 验证共享回收站素材升级后不会重新出现在有效图库。
 fn upgrading_shared_trashed_assets_never_adds_them_back_to_the_live_gallery() {
     let (_dir, mut lib, source, a, b) = fixture();
     lib.import(&source, Some(a)).unwrap();

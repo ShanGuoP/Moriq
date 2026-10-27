@@ -163,6 +163,7 @@ pub(crate) enum Message {
     ),
     Search(String),
     SearchReady(u64),
+    CancelSearch,
     GeometryReady(u64),
     Favorites,
     AllAssets,
@@ -236,6 +237,8 @@ pub(crate) enum Message {
     LiquidFrame(u8, iced::window::Screenshot),
     #[cfg(feature = "capture")]
     VideoProof(iced::window::Screenshot),
+    #[cfg(feature = "capture")]
+    InteractionSnapshot(iced::window::Screenshot),
     #[cfg(feature = "capture")]
     CaptureSaved(Result<(), String>),
     MasonryLoaded(
@@ -376,6 +379,7 @@ pub(crate) struct App {
     model_filter: u8,
 }
 
+/// 根据平台构造原生窗口标题栏及边框配置。
 fn native_window_style() -> iced::window::settings::PlatformSpecific {
     #[cfg(target_os = "windows")]
     {
@@ -391,9 +395,11 @@ fn native_window_style() -> iced::window::settings::PlatformSpecific {
     }
 }
 
+/// 取得当前诊断日志配置，供启动和事件记录使用。
 pub fn diagnostic_logging_enabled() -> bool {
     moriq_app::diagnostic_logging_enabled()
 }
+/// 建立 Iced 应用与窗口设置，绑定状态更新、视图和事件订阅。
 pub fn run(launch: LaunchOptions) -> iced::Result {
     let initial_size = Size::new(1660.0, 940.0);
     let window_icon = launch.window_icon.clone();
@@ -427,6 +433,7 @@ pub fn run(launch: LaunchOptions) -> iced::Result {
     .run()
 }
 impl App {
+    /// 初始化应用状态、服务及启动任务，不在界面线程执行媒体读取。
     fn new(service: Service, launch: LaunchOptions) -> (Self, Task<Message>) {
         let settings_service = service.clone();
         let settings = Task::perform(
@@ -539,6 +546,7 @@ impl App {
             ]),
         )
     }
+    /// 根据当前布局参数构造固定网格索引。
     fn grid(&self) -> Grid {
         let available = self.gallery_width();
         let viewport_height = (self.viewport.height - 250.0).max(300.0);
@@ -563,6 +571,7 @@ impl App {
             columns -= 1;
         }
     }
+    /// 把界面所选项目同步到服务句柄，保持后续请求的项目范围一致。
     fn sync_project_workspace(&mut self) -> bool {
         if self.service.workspace_project() == self.query.project {
             return false;
@@ -590,8 +599,12 @@ impl App {
         };
         true
     }
+    /// 发起当前可见页读取，并绑定查询及库身份以拒绝旧回执。
     fn refresh(&mut self) -> Task<Message> {
         if self.responsiveness.pending() || self.screen != Screen::Assets || self.library_picker {
+            return Task::none();
+        }
+        if self.responsiveness.replacing() && self.page_task.is_some() {
             return Task::none();
         }
         if let Some(handle) = self.page_task.take() {
@@ -602,7 +615,11 @@ impl App {
         };
         self.generation += 1;
         let generation = self.generation;
-        let range = self.visible_range();
+        let range = if self.responsiveness.replacing() {
+            self.grid().visible(self.total as usize, 0.0)
+        } else {
+            self.visible_range()
+        };
 
         let service = self.service.clone();
         let id = library.info.id;
@@ -620,6 +637,7 @@ impl App {
         self.page_task = Some(handle);
         task
     }
+    /// 异步刷新资源库基本资料。
     fn refresh_info(&self) -> Task<Message> {
         let Some(library) = self.library.as_ref() else {
             return Task::none();
@@ -631,6 +649,7 @@ impl App {
             Message::InfoLoaded(generation, result)
         })
     }
+    /// 切换查询时清理相关加载与选择状态，防止旧位置套到新查询。
     fn reset_query(&mut self) -> Task<Message> {
         self.responsiveness.cancel();
         self.invalidate_catalog_loads();
@@ -664,6 +683,7 @@ impl App {
             ),
         ])
     }
+    /// 封装数据修改任务及完成消息，供各界面操作复用。
     fn mutation(
         &self,
         f: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
@@ -674,6 +694,7 @@ impl App {
         let id = library.info.id;
         Task::perform(f, move |result| Message::Saved(id, result))
     }
+    /// 按当前活动状态订阅窗口、键盘、轮询和动画事件。
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             if self.transition.is_some()
@@ -827,6 +848,7 @@ impl App {
             }),
         ])
     }
+    /// 处理应用业务消息与异步回执，维护页面、资源库和素材请求的状态归属。
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         let language = self.preferences.language;
         match message {
@@ -1492,6 +1514,7 @@ impl App {
                 return self.search_changed(value);
             }
             Message::SearchReady(request) => return self.search_ready(request),
+            Message::CancelSearch => return self.cancel_search(),
             Message::GeometryReady(request) => return self.geometry_ready(request),
             Message::AllAssets => {
                 self.query = Query::default();
@@ -1709,6 +1732,10 @@ impl App {
                 return self.liquid_proof_frame(step, screenshot);
             }
             #[cfg(feature = "capture")]
+            Message::InteractionSnapshot(screenshot) => {
+                return self.capture_search_snapshot(screenshot);
+            }
+            #[cfg(feature = "capture")]
             Message::Captured(screenshot) => {
                 if let Some(path) = self.launch.capture.take() {
                     let service = self.service.clone();
@@ -1770,6 +1797,22 @@ impl App {
                 self.loading = false;
                 match result {
                     Ok(page) => {
+                        let search_committed = self.responsiveness.commit_search();
+                        if search_committed {
+                            if self.viewer.selected.as_ref().is_some_and(|selected| {
+                                !page.tiles.iter().any(|tile| {
+                                    tile.asset.id == selected.id
+                                        && tile.asset.version_id == selected.version_id
+                                })
+                            }) {
+                                self.clear_browsing();
+                            }
+                            self.manager.selection.clear();
+                            self.masonry = None;
+                            self.scroll_y = 0.0;
+                            self.pending_scroll = Some(0.0);
+                            self.surfaces.restoring_gallery = None;
+                        }
                         self.total = page.total;
                         self.offset = page.offset;
                         let previous = std::mem::take(&mut self.tiles)
@@ -1823,10 +1866,30 @@ impl App {
                                 self.pending_scroll = Some(0.0);
                             }
                         }
+                        let neighbors = if search_committed {
+                            self.neighbors.clear();
+                            self.neighbor_position = None;
+                            self.viewer
+                                .selected
+                                .as_ref()
+                                .map(|selected| selected.id)
+                                .map(|id| self.load_neighborhood(id, 0))
+                                .unwrap_or_else(Task::none)
+                        } else {
+                            Task::none()
+                        };
                         let needed = self.visible_range();
                         if needed.start < self.offset || needed.end > self.offset + self.tiles.len()
                         {
-                            return self.refresh();
+                            return Task::batch([
+                                self.refresh(),
+                                neighbors,
+                                if search_committed {
+                                    self.rebuild_masonry()
+                                } else {
+                                    Task::none()
+                                },
+                            ]);
                         }
                         if self.launch.select_first
                             && let Some(tile) = self.tiles.first()
@@ -1835,7 +1898,18 @@ impl App {
                             self.launch.select_first = false;
                             return self.update(Message::Select(id));
                         }
-                        return self.restore_scroll();
+                        return Task::batch([
+                            self.restore_scroll(),
+                            neighbors,
+                            if search_committed {
+                                self.rebuild_masonry()
+                            } else {
+                                Task::none()
+                            },
+                        ]);
+                    }
+                    Err(error) if self.responsiveness.replacing() => {
+                        self.responsiveness.search_error = Some(error);
                     }
                     Err(error) => self.error = Some(error),
                 }
@@ -2057,11 +2131,18 @@ impl App {
                 if self.surface_open() {
                     return self.close_surface();
                 }
+                if self.responsiveness.replacing() {
+                    return self.cancel_search();
+                }
                 if self.viewer.preview_expanded {
                     return self.set_viewer(false);
                 }
-                self.clear_browsing();
-                return self.refresh();
+                // Escape dismisses the expanded viewer or overlay; a fitted selection stays put.
+                if let Some(task) = self.browse_task.take() {
+                    task.abort();
+                }
+                self.browse_request = self.browse_request.wrapping_add(1);
+                return Task::none();
             }
             Message::ExpandPreview => return self.set_viewer(!self.viewer.preview_expanded),
             Message::Favorite(asset, value) => {
@@ -2226,6 +2307,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建应用根视图及当前浮层。
     fn view(&self) -> Element<'_, Message> {
         self.shell()
     }

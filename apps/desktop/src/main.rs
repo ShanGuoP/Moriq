@@ -1,4 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+/// 运行桌面入口；启动失败时按既有错误出口报告问题。
 fn main() {
     if let Err(error) = run() {
         rfd::MessageDialog::new()
@@ -8,6 +9,7 @@ fn main() {
             .show();
     }
 }
+/// 解析启动参数并初始化日志、资源库打开请求与桌面界面。
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let diagnostic_logging = moriq_ui::diagnostic_logging_enabled();
     let log_root = if cfg!(target_os = "windows") {
@@ -51,6 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// 把命令行参数解析为启动及诊断选项，拒绝缺失参数和未知组合。
 fn parse_arguments(
     launch: &mut moriq_ui::LaunchOptions,
     arguments: impl IntoIterator<Item = std::ffi::OsString>,

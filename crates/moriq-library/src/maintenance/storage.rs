@@ -18,6 +18,7 @@ pub struct Plan {
     _lease: Arc<File>,
 }
 impl Library {
+    /// 冻结空间统计所需的目录、读取连接池与库身份。
     pub fn storage_plan(&self) -> Result<Plan> {
         Ok(Plan {
             readers: self.readers.clone(),
@@ -27,6 +28,7 @@ impl Library {
         })
     }
 }
+/// 将平台文件身份编码为可比较的键，供硬链接占用去重。
 fn identity_key(id: file_id::FileId) -> Vec<u8> {
     match id {
         file_id::FileId::Inode {
@@ -58,6 +60,7 @@ fn identity_key(id: file_id::FileId) -> Vec<u8> {
         .concat(),
     }
 }
+/// 按受管相对路径判断文件所属的空间统计分类。
 fn category(path: &Path) -> &'static str {
     match path
         .components()
@@ -75,6 +78,7 @@ fn category(path: &Path) -> &'static str {
         _ => "数据库与元数据",
     }
 }
+/// 判断文件是否是链接或重解析点，供统计流程排除外部目标。
 fn linked(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
@@ -90,12 +94,14 @@ fn linked(metadata: &fs::Metadata) -> bool {
     }
 }
 impl Plan {
+    /// 读取目标卷的总空间与可用空间信息。
     pub fn volume(&self) -> Result<(u64, u64)> {
         Ok((
             fs2::total_space(&self.root)?,
             fs2::available_space(&self.root)?,
         ))
     }
+    /// 遍历资源库并按文件身份统计占用，响应取消并避免重复计算硬链接。
     pub fn scan(self, control: &Control) -> Result<StorageStats> {
         let (volume_total, volume_available) = self.volume()?;
         let connection = self.readers.checkout()?;
@@ -206,6 +212,7 @@ r.get(1)?)))?;
 mod tests {
     use super::*;
     #[test]
+    /// 验证占用统计去重硬链接、单列外部引用，并支持停止。
     fn physical_storage_deduplicates_hardlinks_counts_references_separately_and_can_stop() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "空间").unwrap();

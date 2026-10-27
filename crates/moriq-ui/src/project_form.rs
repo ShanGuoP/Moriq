@@ -11,11 +11,13 @@ struct TemplateChoice {
     label: String,
 }
 impl std::fmt::Display for TemplateChoice {
+    /// 格式化项目创建配置选项的展示标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
 }
 impl App {
+    /// 构建项目创建或复制配置表单，保留独立父级目标和草稿。
     pub(super) fn project_form(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         use ManageMessage::*;

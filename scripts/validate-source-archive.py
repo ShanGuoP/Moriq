@@ -8,12 +8,14 @@ import hashlib
 import json
 import sys
 
+# 读取已显式审查的对应源码清单，逐项校验路径、文件存在性和内容摘要。
 root = Path(sys.argv[1]).resolve()
 manifest = json.loads((root / "verified.json").read_text(encoding="utf-8-sig"))
 required = {"ffmpeg", "libraw", "libvips"}
 components = manifest.get("components", [])
 if manifest.get("format") != 1 or not required <= {c.get("name") for c in components}:
     raise SystemExit("Source inventory must cover ffmpeg, libraw and libvips with enabled dependencies")
+# 每组组件必须包含审查人、时间、修订及依赖完整性声明，不能仅凭校验和推断完整。
 for component in components:
     if not component.get("reviewed_by") or not component.get("reviewed_at") or not component.get("revision"):
         raise SystemExit("Every source group requires an explicit review and upstream revision")

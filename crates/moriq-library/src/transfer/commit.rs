@@ -1,11 +1,13 @@
 use super::*;
 
 impl Library {
+    /// 导入单个来源文件并返回是否新增素材，同时使旧查询快照失效。
     pub fn import(&mut self, source: &Path, project: Option<ProjectId>) -> Result<bool> {
         self.snapshot = None;
         self.import_inner(source, project, false, false, None)
     }
 
+    /// 校验来源、暂存并安装素材；通过操作日志处理重复内容和中断恢复。
     pub(super) fn import_inner(
         &mut self,
         source: &Path,
@@ -98,6 +100,7 @@ impl Library {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// 根据暂存内容生成导入准备结果，再进入数据库与文件提交阶段。
     pub(super) fn install(
         &mut self,
         staged: &Path,
@@ -130,6 +133,7 @@ impl Library {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// 提交已准备的版本、缩略图和项目关联；重复内容与故障沿用恢复协议处理。
     pub(super) fn install_prepared(
         &mut self,
         staged: &Path,

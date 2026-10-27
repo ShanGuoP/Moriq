@@ -3,6 +3,7 @@ use super::*;
 use iced::futures::{StreamExt, stream};
 
 impl App {
+    /// 异步加载最近资源库卡片与封面，不在启动界面同步读取所有库。
     pub(super) fn load_library_cards(&mut self) -> Task<Message> {
         if let Some(task) = self.library_cards_task.take() {
             task.abort();

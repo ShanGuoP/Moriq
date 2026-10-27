@@ -2,6 +2,7 @@ use super::*;
 use std::{sync::mpsc, time::Duration};
 
 #[test]
+/// 验证慢速备份不占住写入端，切库后不会发布旧库副本。
 fn slow_snapshot_copy_leaves_writer_available_and_switching_library_rejects_publication() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();

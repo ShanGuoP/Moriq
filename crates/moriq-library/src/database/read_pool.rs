@@ -10,6 +10,7 @@ pub(crate) struct ReadLease {
     pool: Arc<ReadPool>,
 }
 impl ReadPool {
+    /// 借用读取连接并冻结版本来源，供媒体线程脱离写入端读取。
     pub fn media_source(
         self: &Arc<Self>,
         asset: AssetId,
@@ -24,6 +25,7 @@ impl ReadPool {
             version,
         )
     }
+    /// 建立共享读取连接池，并持有资源库租约以保护读取期间的库生命周期。
     pub fn new(root: PathBuf, lease: Arc<File>) -> Arc<Self> {
         Arc::new(Self {
             root,
@@ -31,6 +33,7 @@ impl ReadPool {
             idle: Mutex::new(Vec::new()),
         })
     }
+    /// 获取可用读取连接；必要时建立新连接并校验资源库身份。
     pub fn checkout(self: &Arc<Self>) -> Result<ReadLease> {
         let cached = self
             .idle
@@ -56,6 +59,7 @@ impl ReadPool {
     }
 }
 impl ReadLease {
+    /// 借用当前读取租约中的数据库连接，连接已释放时返回错误。
     pub fn connection(&self) -> Result<&Connection> {
         self.db
             .as_ref()
@@ -63,6 +67,7 @@ impl ReadLease {
     }
 }
 impl Drop for ReadLease {
+    /// 回滚遗留事务并清理临时表，再把可复用读取连接归还连接池。
     fn drop(&mut self) {
         let Some(db) = self.db.take() else { return };
         if !db.is_autocommit() && db.execute_batch("ROLLBACK").is_err() {

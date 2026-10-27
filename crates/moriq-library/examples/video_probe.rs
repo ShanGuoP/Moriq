@@ -2,6 +2,7 @@
 use moriq_domain::{ExportOptions, MediaKind, Query};
 use moriq_library::{Library, video};
 use std::{fs, path::PathBuf};
+/// 使用生成或显式提供的视频验证导入、探测、预览及导出流程。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parent = PathBuf::from(
         std::env::args_os()

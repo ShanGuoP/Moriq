@@ -7,6 +7,7 @@ use std::{
 };
 
 pub const EXTENSIONS: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "avi", "mts", "m2ts"];
+/// 识别受支持的视频扩展名，统一导入与播放判断。
 pub fn extension(path: &Path) -> Option<&'static str> {
     let value = path.extension()?.to_str()?;
     EXTENSIONS
@@ -14,6 +15,7 @@ pub fn extension(path: &Path) -> Option<&'static str> {
         .copied()
         .find(|e| value.eq_ignore_ascii_case(e))
 }
+/// 把固定视频格式列表转换为内部 SQL 筛选字面量。
 pub(crate) fn sql_formats() -> String {
     EXTENSIONS
         .iter()
@@ -21,6 +23,7 @@ pub(crate) fn sql_formats() -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
+/// 取得指定编解码工具路径，并沿用运行组件校验规则。
 pub fn tool(name: &str) -> Result<PathBuf> {
     if !["ffmpeg", "ffprobe"].contains(&name) {
         return Err(Error::Invalid("媒体工具名称无效".into()));
@@ -32,6 +35,7 @@ pub fn tool(name: &str) -> Result<PathBuf> {
     }
     Ok(path)
 }
+/// 定位并验证视频运行组件目录，拒绝损坏或不完整的组件。
 pub(crate) fn runtime_root() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let folder = exe
@@ -59,6 +63,7 @@ pub(crate) fn runtime_root() -> Result<PathBuf> {
     Ok(root.clone())
 }
 #[cfg(all(windows, bundled_video))]
+/// 定位当前平台的视频播放工作程序。
 fn playback_worker() -> Result<PathBuf> {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/video-worker.exe"));
     let root = std::env::temp_dir()
@@ -82,6 +87,7 @@ fn playback_worker() -> Result<PathBuf> {
     Ok(path)
 }
 #[cfg(not(all(windows, bundled_video)))]
+/// 定位当前平台的视频播放工作程序。
 fn playback_worker() -> Result<PathBuf> {
     Err(Error::Invalid("此构建尚未包含本平台的视频播放组件".into()))
 }
@@ -108,6 +114,7 @@ struct PlaybackFrames {
     duration: u64,
     error: Option<String>,
 }
+/// 从管道读取有界视频帧数据包，并用新帧替换旧缓冲及播放时钟。
 fn receive_frames(mut pipe: impl Read, frames: &Mutex<PlaybackFrames>) -> std::io::Result<()> {
     loop {
         let mut header = [0_u8; 32];
@@ -147,6 +154,7 @@ fn receive_frames(mut pipe: impl Read, frames: &Mutex<PlaybackFrames>) -> std::i
 #[allow(clippy::expect_used)]
 mod frame_tests {
     use super::*;
+    /// 构造带尺寸、播放时钟和 RGBA 内容的测试视频帧数据包。
     fn packet(width: u32, height: u32, position: u64, rgba: &[u8]) -> Vec<u8> {
         let mut bytes = b"MORIQFR1".to_vec();
         bytes.extend(width.to_le_bytes());
@@ -157,6 +165,7 @@ mod frame_tests {
         bytes
     }
     #[test]
+    /// 验证帧管道只保留最新像素，并正确传递 RGBA 和时钟。
     fn frame_pipe_replaces_old_pixels_and_preserves_rgba_and_clock() {
         let frames = Mutex::new(PlaybackFrames::default());
         let mut bytes = packet(1, 1, 40, &[255, 0, 0, 255]);
@@ -177,6 +186,7 @@ mod frame_tests {
         assert_eq!(frame.rgba, [0, 255, 0, 255, 0, 0, 255, 255]);
     }
     #[test]
+    /// 验证损坏或超预算帧在分配像素内存前被拒绝。
     fn frame_pipe_rejects_corrupt_and_oversized_packets_before_allocating() {
         for mut bytes in [
             packet(0, 1, 0, &[]),
@@ -201,6 +211,7 @@ mod frame_tests {
         assert!(frames.lock().expect("frame state").latest.is_none());
     }
 }
+/// 为身份已验证的受管视频建立硬链接快照，保护播放期间的内容。
 pub(crate) fn linked_snapshot(
     source: &Path,
     root: &Path,
@@ -221,6 +232,7 @@ pub(crate) fn linked_snapshot(
     }
     Ok(snapshot)
 }
+/// 把已打开的视频文件复制为临时快照，隔离外部路径变化。
 pub(crate) fn copied_snapshot(file: File) -> Result<tempfile::TempPath> {
     if fs2::available_space(std::env::temp_dir())
         .is_ok_and(|available| file.metadata().is_ok_and(|m| m.len() > available))
@@ -241,11 +253,13 @@ pub(crate) fn copied_snapshot(file: File) -> Result<tempfile::TempPath> {
     Ok(snapshot.into_temp_path())
 }
 impl std::fmt::Debug for Playback {
+    /// 输出播放会话的诊断摘要，不展开帧像素数据。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Playback")
     }
 }
 impl Drop for Playback {
+    /// 终止播放进程，再由后台线程等待退出并释放快照与租约，避免阻塞界面线程。
     fn drop(&mut self) {
         if let Some(mut child) = self.child.get_mut().ok().and_then(Option::take) {
             let _ = child.kill();
@@ -262,9 +276,11 @@ impl Drop for Playback {
     }
 }
 impl Playback {
+    /// 返回播放会话启动以来经过的毫秒数。
     pub fn elapsed_ms(&self) -> u128 {
         self.requested.elapsed().as_millis()
     }
+    /// 取走最新待显示帧；没有新帧时返回空值。
     pub fn take_frame(&self) -> Result<Option<PlaybackFrame>> {
         let mut frames = self
             .frames
@@ -275,6 +291,7 @@ impl Playback {
         }
         Ok(frames.latest.take())
     }
+    /// 读取播放位置与总时长，用于界面进度展示。
     pub fn progress(&self) -> (u64, u64) {
         self.frames
             .lock()
@@ -282,6 +299,8 @@ impl Playback {
             .unwrap_or_default()
     }
     /// Controls are tiny writes; callers execute them outside the UI thread.
+    ///
+    /// 向播放进程发送播放、跳转或音量等控制，并保持会话状态一致。
     pub fn control(
         &self,
         revision: u64,
@@ -311,6 +330,8 @@ impl Playback {
         Ok(())
     }
     /// Explicit shutdown runs on a blocking worker before the desktop exits.
+    ///
+    /// 请求播放工作程序停止，并回收相关管道与进程资源。
     pub fn stop(&self) -> Result<()> {
         let child = self
             .child
@@ -330,6 +351,7 @@ impl Playback {
         }
         Ok(())
     }
+    /// 检查播放子进程是否仍在运行。
     pub fn running(&self) -> Result<bool> {
         let mut child = self
             .child
@@ -343,6 +365,7 @@ impl Playback {
             .map(|status| status.is_none())
             .map_err(Error::from)
     }
+    /// 读取播放工作程序的诊断信息，供错误报告使用。
     pub fn diagnostics(&self) -> Result<String> {
         let mut text = format!("rust_prepare_spawn_ms={:.3}\n", self.prepare_spawn_ms);
         if let Ok(frames) = self.frames.lock() {
@@ -359,6 +382,7 @@ impl Playback {
             .read_to_string(&mut text)?;
         Ok(text)
     }
+    /// 以受保护快照启动播放程序，并建立帧接收、控制和诊断通道。
     pub(crate) fn start(
         snapshot: tempfile::TempPath,
         lease: Arc<File>,
@@ -423,6 +447,7 @@ impl Playback {
         }))
     }
 }
+/// 为编解码工具构造受控命令，沿用平台运行组件及进程预算。
 fn command(name: &str) -> Result<Command> {
     #[cfg(not(windows))]
     let mut cmd = Command::new(tool(name)?);
@@ -461,11 +486,13 @@ fn command(name: &str) -> Result<Command> {
 }
 struct Running(Child);
 impl Drop for Running {
+    /// 在命令守卫退出时终止并等待未完成的子进程。
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }
+/// 执行编解码命令，监控取消、超时和可选输出预算，确保异常时回收进程。
 fn run(mut cmd: Command, timeout: Duration, output: Option<(&Path, u64)>) -> Result<()> {
     let log = tempfile::NamedTempFile::new()?;
     cmd.stderr(Stdio::from(log.reopen()?));
@@ -505,6 +532,7 @@ pub struct Metadata {
     pub color_transfer: String,
     pub has_audio: bool,
 }
+/// 探测视频尺寸、方向、时长及音轨等元数据。
 pub fn probe(path: &Path) -> Result<Metadata> {
     let output = tempfile::NamedTempFile::new()?;
     let mut cmd = command("ffprobe")?;
@@ -577,6 +605,7 @@ pub fn probe(path: &Path) -> Result<Metadata> {
         has_audio: streams.iter().any(|s| s["codec_type"] == "audio"),
     })
 }
+/// 从视频中提取有界预览帧，同时返回探测到的媒体元数据。
 pub fn decode(path: &Path, edge: u32) -> Result<(crate::native::Decoded, Metadata)> {
     let metadata = probe(path)?;
     let output = tempfile::Builder::new()
@@ -632,6 +661,7 @@ pub fn decode(path: &Path, edge: u32) -> Result<(crate::native::Decoded, Metadat
         metadata,
     ))
 }
+/// 从已打开的视频文件生成预览帧，保留冻结读取语义。
 pub fn decode_file(file: File, edge: u32) -> Result<crate::native::Decoded> {
     let mut input = tempfile::NamedTempFile::new()?;
     if std::io::copy(

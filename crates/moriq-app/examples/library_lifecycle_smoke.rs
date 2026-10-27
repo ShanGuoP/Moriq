@@ -1,10 +1,12 @@
 //! Isolated APPDATA is required. Exercise the actual registry and application writer.
 use moriq_app::Service;
+/// 建立异步运行环境并执行隔离的资源库生命周期验证。
 fn main() -> Result<(), String> {
     tokio::runtime::Runtime::new()
         .map_err(|e| e.to_string())?
         .block_on(run())
 }
+/// 在隔离设置下验证资源库创建、关闭、移除和外部原片保留。
 async fn run() -> Result<(), String> {
     if std::env::var("MORIQ_ISOLATED_LIFECYCLE_PROBE").as_deref() != Ok("1") {
         return Err("isolated settings required".into());

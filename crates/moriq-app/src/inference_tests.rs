@@ -10,6 +10,7 @@ struct FakeRunner {
     mode: u8,
 }
 impl FakeRunner {
+    /// 构造当前隔离用例使用的可控替身或测试状态。
     fn new(mode: u8, release: bool) -> Arc<Self> {
         Arc::new(Self {
             entered: AtomicBool::new(false),
@@ -20,6 +21,7 @@ impl FakeRunner {
     }
 }
 impl InferenceRunner for FakeRunner {
+    /// 模拟人脸推理并暴露可控同步点，供调度与取消测试使用。
     fn qwen_faces(
         &self,
         image: &std::path::Path,
@@ -43,6 +45,7 @@ impl InferenceRunner for FakeRunner {
             data: serde_json::json!({"faces":[{"box":[0.1,0.1,0.5,0.5],"person":references.first().map(|p|p.0.as_str())}]}),
         })
     }
+    /// 模拟 Qwen 推理，记录输入配置并按用例安排返回或阻塞。
     fn qwen_infer(
         &self,
         _: &str,
@@ -86,12 +89,15 @@ impl InferenceRunner for FakeRunner {
             }),
         })
     }
+    /// 返回测试模型的固定修订，供回执身份校验使用。
     fn revision(&self, _: ModelId) -> TaskResult<String> {
         Ok("test-revision".into())
     }
+    /// 模拟测试模型可用性，不启动真实运行器。
     fn ready(&self, _: ModelId) -> TaskResult<()> {
         Ok(())
     }
+    /// 模拟模型推理并记录输入，供语义检索和取消验证使用。
     fn infer(
         &self,
         model: ModelId,
@@ -131,6 +137,7 @@ impl InferenceRunner for FakeRunner {
         })
     }
 }
+/// 在独立资源库登记测试素材及分析输入。
 fn seed() -> (tempfile::TempDir, PathBuf, AssetId) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("input.png");
@@ -142,6 +149,7 @@ fn seed() -> (tempfile::TempDir, PathBuf, AssetId) {
     let asset = library.page(&Query::default(), 0, 1).unwrap().assets[0].id;
     (dir, library.root().into(), asset)
 }
+/// 等待替身工作进入预期阶段，避免依赖不稳定的固定延时。
 async fn wait_entered(runner: &FakeRunner) {
     let started = Instant::now();
     while !runner.entered.load(Ordering::Acquire) {
@@ -149,6 +157,7 @@ async fn wait_entered(runner: &FakeRunner) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+/// 等待测试任务达到完成状态，并在超时后报告用例失败。
 async fn wait_completed(service: &Service, owner: LibraryId) -> BackgroundJob {
     let started = Instant::now();
     loop {
@@ -162,6 +171,7 @@ async fn wait_completed(service: &Service, owner: LibraryId) -> BackgroundJob {
 }
 
 #[test]
+/// 验证人脸推理经过实际调度器，取消后不会提交迟到结果。
 fn qwen_faces_run_through_the_scheduler_and_cancel_without_late_publication() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         for cancel in [false, true] {
@@ -200,6 +210,7 @@ fn qwen_faces_run_through_the_scheduler_and_cancel_without_late_publication() {
     });
 }
 #[test]
+/// 验证注入推理绑定实际修订，并支持文本及图片两种检索输入。
 fn injected_inference_binds_revision_and_supports_both_search_inputs_without_runtime() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let (_dir, root, asset) = seed();
@@ -228,6 +239,7 @@ fn injected_inference_binds_revision_and_supports_both_search_inputs_without_run
 }
 
 #[test]
+/// 验证自定义分类配置传至应用执行器，结果进入当前项目分类查询。
 fn custom_profile_reaches_the_application_runner_and_current_group_filter() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let (_dir, root, asset) = seed();
@@ -268,6 +280,7 @@ fn custom_profile_reaches_the_application_runner_and_current_group_filter() {
     });
 }
 #[test]
+/// 验证推理失败或身份不合法的回执会被记录，但不会产生有效分析结果。
 fn injected_failure_and_invalid_receipts_are_recorded_without_results() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         for mode in [1, 2, 3] {
@@ -293,6 +306,7 @@ fn injected_failure_and_invalid_receipts_are_recorded_without_results() {
     });
 }
 #[test]
+/// 验证取消与切库都会阻止交互推理提交迟到结果。
 fn cancelled_and_old_library_inference_never_publishes_late_results() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         for switch in [false, true] {
@@ -367,6 +381,7 @@ fn cancelled_and_old_library_inference_never_publishes_late_results() {
 }
 
 #[test]
+/// 验证 Qwen 暂停、恢复和永久停止保留进度并拒绝旧结果。
 fn qwen_pause_resume_and_permanent_stop_reject_late_outputs_without_losing_progress() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let (_dir, root, asset) = seed();

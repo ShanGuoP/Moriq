@@ -1,6 +1,7 @@
 //! Opt-in native GPU screenshots exercise the normal viewer and surface actions.
 use super::*;
 impl App {
+    /// 按显式诊断场景触发真实界面动作。
     pub(super) fn motion_proof_step(&mut self, step: u8) -> Task<Message> {
         let (action, delay, next) = match step {
             0 => (Some(Message::ExpandPreview), 250, 1),
@@ -44,6 +45,7 @@ impl App {
             .unwrap_or_else(Task::none);
         Task::batch([action, Self::motion_proof_after(delay, next)])
     }
+    /// 在动作完成后安排下一次诊断采样。
     fn motion_proof_after(delay: u64, next: u8) -> Task<Message> {
         Task::perform(
             async move {
@@ -52,6 +54,7 @@ impl App {
             move |_| Message::MotionProof(next),
         )
     }
+    /// 采集当前动画时刻的诊断帧和状态证据。
     pub(super) fn motion_proof_frame(
         &self,
         step: u8,

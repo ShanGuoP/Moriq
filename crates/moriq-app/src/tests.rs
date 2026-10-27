@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+/// 验证并发项目请求各自保留范围，聚合服务不会被项目调用污染。
 fn concurrent_project_requests_keep_frozen_context_and_leave_aggregate_service_unscoped() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -40,6 +41,7 @@ fn concurrent_project_requests_keep_frozen_context_and_leave_aggregate_service_u
     });
 }
 #[test]
+/// 验证封面持久化至卡片，并在等待预算期间切库后拒绝旧封面提交。
 fn asset_cover_persists_to_the_card_and_switching_library_during_budget_wait_rejects_commit() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -107,6 +109,7 @@ fn asset_cover_persists_to_the_card_and_switching_library_during_budget_wait_rej
     });
 }
 #[test]
+/// 验证命中缓存的原图图块使用较小交互内存预算。
 fn cached_original_tiles_fit_the_small_interactive_budget() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -167,6 +170,7 @@ fn cached_original_tiles_fit_the_small_interactive_budget() {
     });
 }
 #[test]
+/// 验证预览缓存命中使用较小预算，损坏时先升级预算再解码。
 fn cached_preview_uses_small_budget_and_corrupt_cache_escalates_before_decoding() {
     use std::time::Duration;
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -238,6 +242,7 @@ fn cached_preview_uses_small_budget_and_corrupt_cache_escalates_before_decoding(
     });
 }
 #[test]
+/// 验证分类封面来自实际匹配素材，空分类或切库后不会复用旧图。
 fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -320,6 +325,7 @@ fn category_covers_use_real_matching_assets_and_clear_for_empty_or_other_library
     });
 }
 #[test]
+/// 验证指定并发 JPEG 导入在共享内存预算内运行。
 fn ten_worker_jpeg_import_runs_concurrently_with_one_gib_budget() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -360,6 +366,7 @@ fn ten_worker_jpeg_import_runs_concurrently_with_one_gib_budget() {
     });
 }
 #[test]
+/// 验证阻塞媒体读取不占住写入端，取消后释放库读取租约。
 fn blocked_media_reads_leave_writer_responsive_and_cancellation_releases_library_lease() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -423,6 +430,7 @@ fn blocked_media_reads_leave_writer_responsive_and_cancellation_releases_library
         assert_eq!(lib.info().unwrap().count, 1);
     });
 }
+/// 生成并导入独立图片样本，供并发和取消场景复用。
 fn import_fixtures(dir: &std::path::Path) -> Vec<ImportFile> {
     std::fs::create_dir_all(dir).unwrap();
     (0..8)
@@ -440,6 +448,7 @@ fn import_fixtures(dir: &std::path::Path) -> Vec<ImportFile> {
         .collect()
 }
 #[test]
+/// 验证维护等待媒体预算时仍可取消且写入端保持可用。
 fn maintenance_waiting_for_media_budget_can_cancel_without_blocking_writer() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -486,6 +495,7 @@ fn maintenance_waiting_for_media_budget_can_cancel_without_blocking_writer() {
     });
 }
 #[test]
+/// 验证后台修复和永久删除保留外部原片，并拒绝旧库请求。
 fn background_repair_and_purge_keep_external_source_and_reject_stale_library() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -541,6 +551,7 @@ fn background_repair_and_purge_keep_external_source_and_reject_stale_library() {
     });
 }
 #[test]
+/// 验证并发导入去重、目录保留及所有工作线程正常收尾。
 fn concurrent_pipeline_deduplicates_preserves_paths_and_drains_workers() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -598,6 +609,7 @@ fn concurrent_pipeline_deduplicates_preserves_paths_and_drains_workers() {
     });
 }
 #[test]
+/// 验证停止导入后没有迟到写入或遗留工作线程。
 fn stopping_pipeline_leaves_no_late_writes_or_workers() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -636,6 +648,7 @@ fn stopping_pipeline_leaves_no_late_writes_or_workers() {
     });
 }
 #[test]
+/// 验证扫描流遇到坏媒体后继续导入，并正常结束扫描器。
 fn streaming_import_continues_after_bad_media_and_finishes_scanner() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -673,6 +686,7 @@ fn streaming_import_continues_after_bad_media_and_finishes_scanner() {
     });
 }
 #[test]
+/// 验证文件夹扫描保留根名称和嵌套结构。
 fn folder_scan_keeps_root_name_and_nested_structure() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -702,11 +716,13 @@ fn folder_scan_keeps_root_name_and_nested_structure() {
     });
 }
 #[test]
+/// 验证切库后的旧身份命令不会作用于当前资源库。
 fn stale_library_commands_are_rejected() {
     let mut active = None;
     assert!(check(&mut active, LibraryId::default()).is_err());
 }
 #[test]
+/// 验证切库拒绝旧任务，候选库打开失败时保留活动库。
 fn switching_libraries_rejects_old_jobs_and_preserves_active_on_open_failure() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {

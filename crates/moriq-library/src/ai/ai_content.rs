@@ -1,6 +1,7 @@
 //! Effective version-scoped content and explicit human overrides.
 use super::*;
 
+/// 追加版本绑定的 AI 分析回执并更新有效结果指针，保留历史分析记录。
 pub(crate) fn save_run(
     db: &Connection,
     version: &str,
@@ -18,6 +19,7 @@ pub(crate) fn save_run(
     Ok(())
 }
 
+/// 记录用户对自动标签的拒绝，防止重分析再次把该标签显示出来。
 pub(crate) fn reject_tag(db: &Connection, version: &str, tag: &str) -> Result<()> {
     db.execute(
         "INSERT OR IGNORE INTO ai_rejected_tags VALUES(?1,?2)",
@@ -27,6 +29,7 @@ pub(crate) fn reject_tag(db: &Connection, version: &str, tag: &str) -> Result<()
 }
 
 impl Library {
+    /// 将当前版本的有效 AI 内容及人工覆盖信息补充到详情结果。
     pub(crate) fn content_details(&self, version: &str, details: &mut AssetDetails) -> Result<()> {
         self.db.query_row("SELECT medium,themes,description,manual_medium,manual_themes,manual_description FROM ai_effective_content WHERE version_id=?1", [version], |r| {
             details.medium = r.get(0)?;
@@ -48,6 +51,7 @@ impl Library {
         Ok(())
     }
 
+    /// 事务性保存人工分类、描述和标签取舍，避免覆盖其他版本或其他项目的数据。
     pub fn edit_ai_content(
         &mut self,
         asset: AssetId,

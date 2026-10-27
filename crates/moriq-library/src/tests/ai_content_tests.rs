@@ -1,5 +1,6 @@
 use super::*;
 
+/// 把独立测试数据库还原为版本 22 结构，供迁移兼容验证。
 pub(crate) fn downgrade_to_22(db: &Connection) {
     db.execute_batch(
         "DROP VIEW IF EXISTS workspace_vocabulary; DROP TABLE IF EXISTS project_ai_profiles;",
@@ -16,6 +17,7 @@ pub(crate) fn downgrade_to_22(db: &Connection) {
     db.execute_batch("DROP VIEW ai_search_source; DROP VIEW asset_ai_categories; DROP VIEW effective_asset_tags; DROP VIEW ai_visible_tags; DROP VIEW ai_effective_content; DROP TABLE ai_effective_results; DROP TABLE ai_analysis_runs; DROP TABLE ai_overrides; DROP TABLE ai_rejected_tags; DROP TABLE ai_vocabulary; PRAGMA user_version=22;").unwrap();
 }
 
+/// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
 fn fixture() -> (tempfile::TempDir, Library, Asset) {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("plain.png");
@@ -29,6 +31,7 @@ fn fixture() -> (tempfile::TempDir, Library, Asset) {
 }
 
 #[test]
+/// 验证分页批量标签读取保留逐素材可见性、去重和页边界。
 fn page_tag_batch_preserves_per_asset_visibility_deduplication_and_paging() {
     let (dir, mut lib, a) = fixture();
     let input = dir.path().join("other.png");
@@ -71,6 +74,7 @@ fn page_tag_batch_preserves_per_asset_visibility_deduplication_and_paging() {
         assert_eq!(one.assets[0].tags, expected.tags);
     }
 }
+/// 为测试素材提交指定模型修订与分类结果。
 fn classify(lib: &mut Library, a: &Asset, revision: &str, medium: &str, themes: &[&str]) {
     save(
         lib,
@@ -80,6 +84,7 @@ fn classify(lib: &mut Library, a: &Asset, revision: &str, medium: &str, themes: 
         serde_json::json!({"medium":medium,"themes":themes}),
     );
 }
+/// 为测试素材提交描述及自动标签结果。
 fn describe(lib: &mut Library, a: &Asset, revision: &str, description: &str, tags: &[&str]) {
     save(
         lib,
@@ -89,6 +94,7 @@ fn describe(lib: &mut Library, a: &Asset, revision: &str, description: &str, tag
         serde_json::json!({"description":description,"tags":tags}),
     );
 }
+/// 按指定任务和修订写入测试分析回执。
 fn save(lib: &mut Library, a: &Asset, revision: &str, task: &'static str, data: serde_json::Value) {
     let value = analysis::qwen_payload(task, data).unwrap();
     let tx = lib.db.transaction().unwrap();
@@ -103,9 +109,11 @@ fn save(lib: &mut Library, a: &Asset, revision: &str, task: &'static str, data: 
     tx.commit().unwrap();
     lib.snapshot = None;
 }
+/// 返回测试查询匹配的素材总数。
 fn count(lib: &mut Library, query: Query) -> u64 {
     lib.page(&query, 0, 10).unwrap().total
 }
+/// 构造文本查询并返回匹配数量。
 fn text(lib: &mut Library, s: &str) -> u64 {
     count(
         lib,
@@ -115,11 +123,13 @@ fn text(lib: &mut Library, s: &str) -> u64 {
         },
     )
 }
+/// 为测试素材提交人工 AI 内容修改。
 fn edit(lib: &mut Library, a: &Asset, value: AiEdit) {
     lib.edit_ai_content(a.id, a.version_id, value).unwrap();
 }
 
 #[test]
+/// 验证媒介和多个主题独立匹配，同一素材不会重复计数。
 fn medium_and_multiple_themes_match_independently_and_count_once() {
     let (_dir, mut lib, a) = fixture();
     classify(&mut lib, &a, "r1", "photography", &["portrait", "cosplay"]);
@@ -177,6 +187,7 @@ fn medium_and_multiple_themes_match_independently_and_count_once() {
 }
 
 #[test]
+/// 验证 AI 标签立即可见，支持精确查询、规则与导出。
 fn ai_tags_are_immediately_visible_exact_searchable_and_used_by_rules_and_export() {
     let (dir, mut lib, a) = fixture();
     describe(
@@ -255,6 +266,7 @@ fn ai_tags_are_immediately_visible_exact_searchable_and_used_by_rules_and_export
 }
 
 #[test]
+/// 验证重新分析替换当前搜索文本，保留历史及另一类任务结果。
 fn reruns_replace_search_terms_without_discarding_history_or_the_other_task() {
     let (_dir, mut lib, a) = fixture();
     classify(&mut lib, &a, "r1", "photography", &["portrait"]);
@@ -277,6 +289,7 @@ fn reruns_replace_search_terms_without_discarding_history_or_the_other_task() {
 }
 
 #[test]
+/// 验证人工编辑、标签拒绝和转为人工标签后在重分析与重开时仍保留。
 fn human_edits_rejections_and_promotions_survive_reanalysis_and_reopening() {
     let (_dir, mut lib, a) = fixture();
     classify(&mut lib, &a, "r1", "photography", &["portrait", "cosplay"]);
@@ -320,6 +333,7 @@ fn human_edits_rejections_and_promotions_survive_reanalysis_and_reopening() {
 }
 
 #[test]
+/// 验证合并标签编辑和全局标签管理保留来源并记住移除的 AI 标签。
 fn merged_tag_editor_and_global_tag_management_preserve_sources_and_reject_removed_ai() {
     let (_dir, mut lib, a) = fixture();
     describe(&mut lib, &a, "r1", "", &["自动甲", "自动乙"]);
@@ -341,6 +355,7 @@ fn merged_tag_editor_and_global_tag_management_preserve_sources_and_reject_remov
 }
 
 #[test]
+/// 验证分析与人工覆盖绑定展示版本，清理分析保留人工内容。
 fn results_and_overrides_are_bound_to_display_version_and_clear_preserves_human_content() {
     let (_dir, mut lib, a) = fixture();
     describe(&mut lib, &a, "r1", "旧版结果", &["旧版标签"]);
@@ -367,6 +382,7 @@ fn results_and_overrides_are_bound_to_display_version_and_clear_preserves_human_
 }
 
 #[test]
+/// 验证版本 22 升级转换已有 Qwen 分类，保留旧 OCR 与人工分类。
 fn schema_22_migration_converts_actual_qwen_labels_preserves_legacy_ocr_and_manual_category() {
     let (_dir, mut lib, a) = fixture();
     downgrade_to_22(&lib.db);
@@ -407,6 +423,7 @@ fn schema_22_migration_converts_actual_qwen_labels_preserves_legacy_ocr_and_manu
 }
 
 #[test]
+/// 验证结构或字段非法的输出不会成为有效分析结果。
 fn malformed_outputs_do_not_become_effective_results() {
     assert!(
         analysis::qwen_payload(

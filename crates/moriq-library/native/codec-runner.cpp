@@ -1,13 +1,15 @@
-// Job lifetime and resource limits also cover abrupt application exit.
+﻿// Job lifetime and resource limits also cover abrupt application exit.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <string>
 #include <thread>
+// 按 Windows 命令行规则转义单个参数，保留引号前与末尾反斜线。
 static std::wstring quote(const wchar_t* argument){
     std::wstring result=L"\"";unsigned slashes=0;
     for(const wchar_t* p=argument;*p;++p){if(*p==L'\\'){++slashes;continue;}if(*p==L'\"'){result.append(slashes*2+1,L'\\');result+=L'\"';}else{result.append(slashes,L'\\');result+=*p;}slashes=0;}
     result.append(slashes*2,L'\\');return result+L"\"";
 }
+// 在作业对象内启动工具并限制资源；父进程退出时终止整组进程并回收句柄。
 int wmain(int argc,wchar_t** argv){
     if(argc<3)return 2;
     const bool ai=argc>3&&std::wstring(argv[2])==L"--ai";

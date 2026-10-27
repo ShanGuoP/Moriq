@@ -11,6 +11,7 @@ pub const FIELDS: &[&str] = &[
     "latitude_e6",
     "longitude_e6",
 ];
+/// 有界读取 EXIF 并规范化常用字段；无法解析元数据时返回空对象。
 pub fn read(file: File) -> Result<serde_json::Value> {
     let mut bytes = Vec::new();
     file.take(32 * 1024 * 1024).read_to_end(&mut bytes)?;
@@ -90,6 +91,7 @@ pub fn read(file: File) -> Result<serde_json::Value> {
     output.insert("tags".into(), tags.into());
     Ok(output.into())
 }
+/// 仅为仍存在的版本写入 EXIF，防止后台结果重建已永久删除的版本。
 pub(crate) fn store(db: &Connection, version: &str, data: &serde_json::Value) -> Result<()> {
     // The version may have been permanently deleted while analysis ran off the writer.
     // Keep the existence check in the same transaction as the result/checkpoint commit.
@@ -104,6 +106,7 @@ pub(crate) fn store(db: &Connection, version: &str, data: &serde_json::Value) ->
 
     Ok(())
 }
+/// 校验元数据筛选字段和范围，生成 SQL 条件与绑定参数。
 pub(crate) fn compile(
     predicates: &[MetadataPredicate],
     values: &mut Vec<rusqlite::types::Value>,

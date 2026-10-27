@@ -9,6 +9,7 @@ type SavedReceipt = (
     Option<String>,
 );
 impl Library {
+    /// 读取尚待发送或处理的 Synco 任务。
     pub fn synco_pending(&self) -> Result<Vec<SyncoTask>> {
         self.db.prepare("SELECT t.id,a.name,t.state,t.error,t.request,t.ack FROM synco_tasks t JOIN assets a ON \
                 a.id=t.asset_id WHERE t.state IN ('queued','importing','editing','rendering','ready') OR t.ack IS \
@@ -23,6 +24,7 @@ ack:r.get(5)?}
 ))?.collect::<std::result::Result<_,
 _>>().map_err(Error::from)
     }
+    /// 查询指定素材的版本历史及当前展示关系。
     pub fn versions(&self, id: AssetId) -> Result<Vec<AssetVersion>> {
         let rows=self.db.prepare("SELECT id,origin,parent_version_id FROM asset_versions WHERE asset_id=?1 ORDER BY rowid")?
             .query_map([id.to_string()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<std::result::Result<Vec<_>,_>>()?;
@@ -38,6 +40,7 @@ _>>().map_err(Error::from)
             })
             .collect()
     }
+    /// 校验版本属于该素材后切换展示版本，并刷新查询状态。
     pub fn display_version(&mut self, asset: AssetId, version: AssetVersionId) -> Result<()> {
         let exists: bool = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM asset_versions WHERE id=?1 AND asset_id=?2)",
@@ -54,6 +57,7 @@ _>>().map_err(Error::from)
         self.snapshot = None;
         Ok(())
     }
+    /// 读取当前项目可见的 Synco 任务列表。
     pub fn synco_tasks(&self) -> Result<Vec<SyncoTask>> {
         self.db.prepare(&format!("SELECT t.id,a.name,t.state,t.error,t.request,t.ack FROM synco_tasks t JOIN assets a ON a.id=t.asset_id WHERE {} ORDER BY t.created_at DESC LIMIT 100",self.workspace_filter("a.id")))?
             .query_map([],
@@ -67,6 +71,7 @@ ack:r.get(5)?}
 ))?.collect::<std::result::Result<_,
 _>>().map_err(Error::from)
     }
+    /// 冻结所选素材版本并建立发送任务与受管传输副本。
     pub fn prepare_synco(&mut self, ids: &[AssetId], project: Option<ProjectId>) -> Result<()> {
         if ids.is_empty() || ids.len() > 100 {
             return Err(Error::Invalid("每批请选择 1～100 张素材发送 Synco".into()));
@@ -130,6 +135,7 @@ r.get(2)?)))?;
         }
         Ok(())
     }
+    /// 记录任务失败；通过返回值表明该错误是否仍适用于当前任务状态。
     pub fn synco_error(&self, task: &str, error: &str) -> Result<bool> {
         let updated = self.db.execute(
             "UPDATE synco_tasks SET error=?1 WHERE id=?2",
@@ -137,6 +143,7 @@ r.get(2)?)))?;
         )?;
         Ok(updated > 0)
     }
+    /// 登记远端已接受确认，并安排传输副本清理。
     pub fn synco_acked(&self, task: &str) -> Result<()> {
         self.db.execute("UPDATE synco_tasks SET ack=NULL,state=CASE WHEN state='ready' THEN 'delivered' ELSE state \
                 END,error=CASE WHEN state IN('ready','delivered') THEN '' ELSE error END WHERE id=?1",
@@ -145,6 +152,7 @@ r.get(2)?)))?;
         self.cleanup_synco_copy(task)?;
         Ok(())
     }
+    /// 清理指定任务已不再需要的受管传输副本。
     fn cleanup_synco_copy(&self, task: &str) -> Result<()> {
         if Uuid::parse_str(task).is_err() {
             return Err(Error::Invalid("交接任务身份无效".into()));
@@ -177,6 +185,7 @@ r.get(2)?)))?;
             .execute("UPDATE synco_tasks SET copy_removed=1 WHERE id=?1", [task])?;
         Ok(())
     }
+    /// 重试清理已结束任务的传输副本，并返回处理数量。
     pub fn cleanup_synco_copies(&self) -> Result<usize> {
         let tasks = self
             .db
@@ -196,6 +205,7 @@ r.get(2)?)))?;
         }
         Ok(cleaned)
     }
+    /// 基于旧任务建立新的重试请求，避免复用已结束任务身份。
     pub fn retry_synco(&mut self, old_task: &str) -> Result<String> {
         let (asset,
 version,
@@ -252,6 +262,8 @@ r.get(2)?)))?;
         Ok(task)
     }
     /// Persist receipt and immutable version before the coordinator is allowed to ACK.
+    ///
+    /// 校验返回文件、任务身份和元数据，幂等登记新版本并生成确认回执。
     pub fn receive_synco(&mut self, task: &str, response: &Value) -> Result<Option<Value>> {
         let row:Option<SavedReceipt>=self.db.query_row("SELECT asset_id,sent_version_id,request,result_id,returned_version_id,ack FROM synco_tasks WHERE id=?1",
 [task],
@@ -465,6 +477,7 @@ task])?;
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    /// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
     fn fixture() -> (tempfile::TempDir, Library, AssetId, SyncoTask, Value) {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("原片.png");
@@ -479,6 +492,7 @@ mod tests {
         let request: Value = serde_json::from_str(&task.request).unwrap();
         (dir, library, asset, task, request)
     }
+    /// 准备当前用例可接收回执的状态或已就绪的替身响应。
     fn ready(dir: &Path, request: &Value) -> Value {
         let source = dir.join("interop/returns/result-fixture.png");
         fs::create_dir_all(source.parent().unwrap()).unwrap();
@@ -497,6 +511,7 @@ mod tests {
         result
     }
     #[test]
+    /// 验证 Synco 回执、重开及确认重试不会覆盖或重复创建版本。
     fn receipt_reopen_and_ack_retry_never_overwrite_or_duplicate_a_version() {
         let (dir, mut library, asset, task, request) = fixture();
         let original = library.asset_path(asset).unwrap();
@@ -537,6 +552,7 @@ mod tests {
         assert!(library.receive_synco(&task.id, &conflicting).is_err());
     }
     #[test]
+    /// 验证身份、校验和、尺寸不符或远端失败不会创建版本或确认。
     fn wrong_identity_hash_dimensions_and_failure_never_create_version_or_ack() {
         let (dir, mut library, asset, task, request) = fixture();
         let response = ready(dir.path(), &request);

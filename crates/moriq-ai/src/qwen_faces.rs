@@ -6,6 +6,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// 构造人脸检测的结构化输出约束，限制坐标与结果格式。
 fn detection_schema() -> Value {
     json!({"type":"object","properties":{"faces":{"type":"array","maxItems":32,"items":{
         "type":"object","properties":{
@@ -13,6 +14,7 @@ fn detection_schema() -> Value {
           "confidence":{"type":"number","minimum":0,"maximum":1}},
         "required":["box","confidence"],"additionalProperties":false}}},"required":["faces"],"additionalProperties":false})
 }
+/// 校验并规范化模型返回的人脸框，剔除无效或不确定的检测。
 fn boxes(value: &Value) -> Result<Vec<[f32; 4]>> {
     let faces = value["faces"].as_array().ok_or("Qwen 人脸回执缺少 faces")?;
     if faces.len() > 32 {
@@ -51,6 +53,7 @@ fn boxes(value: &Value) -> Result<Vec<[f32; 4]>> {
     }
     Ok(result)
 }
+/// 按有效人脸框生成供身份比较使用的有界裁剪图。
 fn crop(image: &image::RgbaImage, bounds: [f32; 4]) -> image::RgbaImage {
     let width = image.width() as f32;
     let height = image.height() as f32;
@@ -65,6 +68,7 @@ fn crop(image: &image::RgbaImage, bounds: [f32; 4]) -> image::RgbaImage {
     let face = image::imageops::crop_imm(image, x, y, edge, edge).to_image();
     image::imageops::resize(&face, 256, 256, image::imageops::FilterType::Triangle)
 }
+/// 先检测人脸，再与提供的人物参考比较；全程沿用取消控制。
 pub fn infer(
     image_path: &Path,
     references: &[(String, PathBuf)],
@@ -151,6 +155,7 @@ pub fn infer(
 mod tests {
     use super::*;
     #[test]
+    /// 验证人脸坐标规范化，以及无效或不确定检测的剔除。
     fn detector_coordinates_are_normalized_and_invalid_or_uncertain_faces_are_rejected() {
         let faces = boxes(&json!({"faces":[{"box":[100,200,400,600],"confidence":0.95}]})).unwrap();
         for (value, expected) in faces[0].iter().zip([0.1, 0.2, 0.3, 0.4]) {

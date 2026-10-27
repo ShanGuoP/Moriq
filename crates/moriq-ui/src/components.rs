@@ -5,6 +5,7 @@ use iced::widget::{Space, button, column, container, image, row, scrollable, svg
 use iced::{Alignment, Border, Color, ContentFit, Font, Length, font};
 type Choice<'a, T> = iced::widget::PickList<'a, T, Vec<T>, T, Message>;
 
+/// 构建统一样式的选择控件，并把选中值映射为消息。
 pub fn choice<'a, T: ToString + PartialEq + Clone + 'a>(
     values: Vec<T>,
     selected: Option<T>,
@@ -41,6 +42,7 @@ pub fn choice<'a, T: ToString + PartialEq + Clone + 'a>(
             },
         })
 }
+/// 生成使用统一字号和前景色的标题文本。
 pub fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
     text(value.into())
         .size(size)
@@ -50,15 +52,18 @@ pub fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a
             ..Font::DEFAULT
         })
 }
+/// 生成弱化颜色的辅助说明文本。
 pub fn muted<'a>(value: impl Into<String>) -> iced::widget::Text<'a> {
     text(value.into()).size(12).style(text_color(MUTED))
 }
+/// 构建带统一外观和反馈的常规操作按钮。
 pub fn action<'a>(label: &str, message: Message) -> iced::widget::Button<'a, Message> {
     button(text(label.to_owned()).size(13))
         .padding([8, 12])
         .style(secondary)
         .on_press(message)
 }
+/// 构建表单底部操作按钮，保持提交与取消的样式一致。
 pub fn form_action<'a>(
     kind: Icon,
     label: &str,
@@ -75,6 +80,7 @@ pub fn form_action<'a>(
     .style(if prominent { primary } else { secondary })
     .on_press(message)
 }
+/// 构建表单中的图标元素。
 pub fn form_icon<'a>(kind: Icon, large: bool) -> Element<'a, Message> {
     let side = if large { 52 } else { 42 };
     container(icon(kind, if large { 26.0 } else { 22.0 }, BLUE))
@@ -90,6 +96,7 @@ pub fn form_icon<'a>(kind: Icon, large: bool) -> Element<'a, Message> {
         })
         .into()
 }
+/// 构建表单标题与辅助信息区域。
 pub fn form_heading<'a>(kind: Icon, title: &str, description: &str) -> Element<'a, Message> {
     row![
         form_icon(kind, false),
@@ -101,6 +108,7 @@ pub fn form_heading<'a>(kind: Icon, title: &str, description: &str) -> Element<'
     .align_y(Alignment::Center)
     .into()
 }
+/// 把内容包装为统一边距和背景的表单卡片。
 pub fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content)
         .padding(18)
@@ -108,6 +116,7 @@ pub fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Me
         .style(theme::form_card_style)
         .into()
 }
+/// 包装详情区域中的一组相关字段。
 pub fn detail_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content)
         .padding(12)
@@ -115,18 +124,21 @@ pub fn detail_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, 
         .style(theme::form_card_style)
         .into()
 }
+/// 构建详情分组标题。
 pub fn detail_heading<'a>(kind: Icon, title: &str) -> Element<'a, Message> {
     row![icon(kind, 17.0, BLUE), heading(title, 14)]
         .spacing(8)
         .align_y(Alignment::Center)
         .into()
 }
+/// 构建带提示和消息的图标按钮，保留有效点击范围。
 pub fn icon_button<'a>(kind: Icon, message: Message) -> iced::widget::Button<'a, Message> {
     button(icon(kind, 18.0, ICON))
         .padding(9)
         .style(flat)
         .on_press(message)
 }
+/// 把图片句柄包装为指定尺寸与裁剪方式的图片控件。
 pub fn photo<'a>(
     handle: Option<&image::Handle>,
     width: Length,
@@ -147,6 +159,7 @@ pub fn photo<'a>(
             .into()
     }
 }
+/// 构建紧凑的标签或状态标记。
 pub fn chip<'a>(label: impl Into<String>, color: Color) -> Element<'a, Message> {
     container(text(label.into()).size(11).style(text_color(color)))
         .padding([3, 9])
@@ -160,6 +173,7 @@ pub fn chip<'a>(label: impl Into<String>, color: Color) -> Element<'a, Message> 
         })
         .into()
 }
+/// 构建带标题的内容分组。
 pub fn section<'a>(language: Language, title: &str, message: Message) -> Element<'a, Message> {
     row![
         heading(title, 17),
@@ -181,6 +195,7 @@ pub fn section<'a>(language: Language, title: &str, message: Message) -> Element
     .align_y(Alignment::Center)
     .into()
 }
+/// 构建统一颜色和尺寸的分隔线。
 pub fn separator<'a>() -> Element<'a, Message> {
     container(Space::new().height(1))
         .width(Length::Fill)
@@ -190,6 +205,7 @@ pub fn separator<'a>() -> Element<'a, Message> {
         })
         .into()
 }
+/// 包装统一滚动样式的内容区域。
 pub fn scroll<'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> iced::widget::Scrollable<'a, Message> {
@@ -202,6 +218,7 @@ pub fn scroll<'a>(
         ))
         .style(theme::scroll_style)
 }
+/// 构建元数据名称和值的展示行。
 pub fn metadata<'a>(kind: Icon, label: &str, value: impl Into<String>) -> Element<'a, Message> {
     row![
         icon(kind, 14.0, MUTED),
@@ -216,6 +233,7 @@ pub fn metadata<'a>(kind: Icon, label: &str, value: impl Into<String>) -> Elemen
     .align_y(Alignment::Center)
     .into()
 }
+/// 将字节数量转换为便于阅读的容量文本。
 pub fn size(bytes: u64) -> String {
     if bytes >= 1_000_000_000 {
         format!("{:.1} GB", bytes as f64 / 1e9)
@@ -227,6 +245,7 @@ pub fn size(bytes: u64) -> String {
         format!("{bytes} B")
     }
 }
+/// 把登记时间转换为界面显示文本。
 pub fn date(timestamp: u64) -> String {
     chrono::DateTime::from_timestamp_millis(timestamp as i64)
         .map(|time| {
@@ -236,14 +255,17 @@ pub fn date(timestamp: u64) -> String {
         })
         .unwrap_or_else(|| "—".into())
 }
+/// 将本机路径转换为可显示的文本，处理平台路径前缀。
 pub fn display_path(path: &std::path::Path) -> String {
     path.to_string_lossy()
         .trim_start_matches(r"\\?\")
         .to_string()
 }
+/// 绘制容量或分类占比的环形图。
 pub fn donut<'a>(value: String, caption: &str, filled: f32) -> Element<'a, Message> {
     ring(value, caption, filled, 140.0)
 }
+/// 构建指定直径、填充比例和中心说明的环形统计控件。
 pub fn ring<'a>(value: String, caption: &str, filled: f32, diameter: f32) -> Element<'a, Message> {
     let mut label = column![heading(value, if diameter < 100.0 { 13 } else { 18 })]
         .spacing(3)
@@ -267,6 +289,7 @@ pub fn ring<'a>(value: String, caption: &str, filled: f32, diameter: f32) -> Ele
     .into()
 }
 
+/// 为数值添加分组间隔，便于阅读较大计数。
 pub(super) fn grouped_number(value: u64) -> String {
     let s = value.to_string();
     let mut out = String::new();
@@ -285,15 +308,18 @@ pub struct LocalizedOption<T> {
     label: String,
 }
 impl<T: PartialEq> PartialEq for LocalizedOption<T> {
+    /// 按选择项的稳定值比较相等性，不依赖翻译后的标签。
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
 impl<T> std::fmt::Display for LocalizedOption<T> {
+    /// 输出选择项的可读标签，供选择控件展示。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
 }
+/// 按当前语言构建选择项显示值，保留内部稳定身份。
 pub fn localized_choice<'a, T: ToString + PartialEq + Clone + 'a>(
     language: Language,
     values: Vec<T>,
@@ -307,6 +333,7 @@ pub fn localized_choice<'a, T: ToString + PartialEq + Clone + 'a>(
         changed,
     )
 }
+/// 为一组固定选择值生成本地化标签。
 pub fn choice_labels<'a, T: PartialEq + Clone + 'a>(
     values: Vec<T>,
     selected: Option<T>,

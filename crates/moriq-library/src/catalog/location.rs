@@ -1,5 +1,6 @@
 use super::*;
 impl Library {
+    /// 读取素材当前展示版本的人工地点，缺少记录时返回空值。
     pub(super) fn manual_location(&self, asset: AssetId) -> Result<Option<AssetLocation>> {
         Ok(self
             .db
@@ -17,6 +18,7 @@ impl Library {
             )
             .optional()?)
     }
+    /// 校验经纬度和文本，保存或清除当前版本地点并刷新相关查询。
     pub fn set_location(
         &mut self,
         asset: AssetId,
@@ -57,6 +59,7 @@ value.label])?;
         Ok(())
     }
 }
+/// 从 EXIF GPS 有理数及方向字段解析经纬度，无需网络定位。
 pub(super) fn exif_location(data: &exif::Exif) -> Option<AssetLocation> {
     let coordinate = |tag, reference, negative: u8, limit: f64| -> Option<f64> {
         let exif::Value::Rational(values) = &data.get_field(tag, exif::In::PRIMARY)?.value else {
@@ -106,6 +109,7 @@ pub(super) fn exif_location(data: &exif::Exif) -> Option<AssetLocation> {
 mod tests {
     use super::*;
     #[test]
+    /// 验证人工地点按版本保存、可撤销并校验输入，且不修改原片。
     fn manual_location_is_version_scoped_reversible_validated_and_preserves_original_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("原图.png");
@@ -172,6 +176,7 @@ asset.version_id.to_string()]).unwrap();
         );
     }
     #[test]
+    /// 验证 GPS 有理数和半球方向解析正确，无需网络访问。
     fn gps_rationals_are_decoded_with_hemispheres_without_network_access() {
         let mut tiff = b"II\x2a\0\x08\0\0\0".to_vec();
         tiff.extend_from_slice(&1u16.to_le_bytes());

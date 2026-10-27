@@ -1,3 +1,4 @@
+-- 增加回收站、笔记、评分索引、智能集合及活动记录。
 ALTER TABLE assets ADD COLUMN deleted_at INTEGER;
 ALTER TABLE assets ADD COLUMN notes TEXT NOT NULL DEFAULT '';
 ALTER TABLE assets ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0;

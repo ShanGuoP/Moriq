@@ -19,6 +19,7 @@ pub enum Builtin {
     Video,
 }
 impl Builtin {
+    /// 从当前筛选草稿构造素材查询。
     pub fn query(self, now: u64) -> Query {
         let mut q = Query::default();
         match self {
@@ -82,6 +83,7 @@ pub enum ColorChoice {
     Pink,
 }
 impl ColorChoice {
+    /// 取得指定筛选字段当前的类型化值。
     fn value(self) -> &'static str {
         match self {
             Self::All => "",
@@ -114,6 +116,7 @@ pub enum FilterChange {
     Storage(StorageChoice),
 }
 impl FilterChange {
+    /// 把筛选选项写入查询或草稿，保留其他条件。
     pub fn apply(self, q: &mut Query, now: u64) {
         match self {
             Self::Medium(id) => {
@@ -179,6 +182,7 @@ impl FilterChange {
             }
         }
     }
+    /// 判断某个筛选选项是否为当前选中值。
     fn selected(self, q: &Query, now: u64) -> bool {
         match self {
             Self::Imported(period) => match period {
@@ -195,6 +199,7 @@ impl FilterChange {
     }
 }
 impl std::fmt::Display for FilterChange {
+    /// 格式化筛选选项的显示标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match *self {
             Self::Medium("") => "全部媒介",
@@ -228,6 +233,7 @@ impl std::fmt::Display for FilterChange {
         })
     }
 }
+/// 构建素材筛选表单的选项行。
 pub(super) fn rows(q: &Query) -> Vec<(&'static str, Vec<FilterChange>, Option<FilterChange>)> {
     use FilterChange::*;
     let media = [
@@ -327,6 +333,7 @@ pub(super) fn rows(q: &Query) -> Vec<(&'static str, Vec<FilterChange>, Option<Fi
 mod tests {
     use super::*;
     #[test]
+    /// 验证筛选修改保留其他条件，月份选择往返一致。
     fn filter_values_preserve_other_fields_and_month_remains_selected() {
         let mut q = Query {
             text: "kept".into(),

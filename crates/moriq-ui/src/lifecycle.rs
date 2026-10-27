@@ -12,6 +12,7 @@ pub(super) struct LifecycleState {
     new_root: String,
 }
 impl LifecycleState {
+    /// 向备份或克隆工作发出取消，等待实际完成回执后再释放忙碌状态。
     pub fn cancel_copy(&mut self) {
         if let Some(control) = self.copy.take() {
             control.cancel.store(true, Ordering::Release);
@@ -40,6 +41,7 @@ pub enum LifecycleMessage {
     Reconnected(LibraryId, Result<(u64, u64), String>),
 }
 impl App {
+    /// 构建孤立文件检查、隔离和恢复操作入口。
     fn orphan_controls<'a>(
         &'a self,
         mut view: iced::widget::Column<'a, Message>,
@@ -100,6 +102,7 @@ impl App {
         }
         view.into()
     }
+    /// 处理重连、备份、克隆和检查修复的状态及回执。
     pub(super) fn lifecycle_message(&mut self, event: LifecycleMessage) -> Task<Message> {
         let Some(library) = &self.library else {
             return Task::none();
@@ -250,6 +253,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建资源库生命周期维护面板与进度反馈。
     pub(super) fn lifecycle_panel(&self) -> Element<'_, Message> {
         let description = "独立克隆可与原库分别使用；迁移副本保留资源库身份，切换前需关闭原库。\
             原库会保留，外部引用文件需另行迁移。";

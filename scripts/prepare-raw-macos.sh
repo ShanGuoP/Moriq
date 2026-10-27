@@ -1,4 +1,5 @@
 #!/bin/sh
+# 下载并校验固定 LibRaw 源码，在独立临时目录构建静态组件并保留来源说明。
 set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 codec_root="$project_root/target/codecs"
@@ -14,6 +15,7 @@ if [ ! -f "$archive" ]; then
 fi
 actual=$(shasum -a 256 "$archive" | cut -d ' ' -f 1)
 [ "$actual" = "$expected" ] || { echo 'LibRaw checksum mismatch' >&2; exit 1; }
+# 仅清理本次创建且位于 target/codecs 内的临时构建目录。
 build_root=$(mktemp -d "$codec_root/libraw-build.XXXXXX")
 # The build directory is a verified child of target/codecs; no source checkout is removed.
 trap 'case "$build_root" in "$codec_root"/libraw-build.*) rm -rf -- "$build_root" ;; esac' EXIT HUP INT TERM
@@ -22,6 +24,7 @@ cd "$build_root/LibRaw-0.22.2"
 # The baseline has no runtime Homebrew dependency. Lossy DNG/JPEG and LCMS plugins
 # require separately built static dependencies and are excluded from this baseline.
 ./configure --prefix="$prefix" --enable-static --disable-shared --disable-examples --disable-openmp --disable-jpeg --disable-lcms
+# 使用本机处理器并行编译，再安装到项目自有的静态运行组件目录。
 make -j "$(sysctl -n hw.logicalcpu)"
 make install
 mkdir -p "$prefix/source" "$prefix/licenses"

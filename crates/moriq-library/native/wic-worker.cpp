@@ -1,4 +1,4 @@
-// Small, isolated Windows codec adapter. No network or database access.
+﻿// Small, isolated Windows codec adapter. No network or database access.
 #define NOMINMAX
 #include <windows.h>
 #include <wincodec.h>
@@ -11,6 +11,7 @@
 #include <vector>
 #include <thread>
 using Microsoft::WRL::ComPtr;
+// 限制隔离图像进程资源并监视父进程，避免程序退出后解码器继续运行。
 static void guard(DWORD parent) {
     HANDLE handle=OpenProcess(SYNCHRONIZE,FALSE,parent);
     if (!handle) ExitProcess(3);
@@ -23,6 +24,7 @@ static void guard(DWORD parent) {
     if (!job || !SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)) || !AssignProcessToJobObject(job,GetCurrentProcess())) ExitProcess(3);
     // The process owns the job handle for its entire lifetime.
 }
+// 解析全图或区域请求，用 WIC 解码、处理方向和色彩，再写出尺寸及像素数据。
 int wmain(int argc,wchar_t** argv) {
     if(argc!=5&&argc!=9) return 2;
     const bool region=argc==9;

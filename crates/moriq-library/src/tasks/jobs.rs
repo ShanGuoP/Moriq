@@ -21,19 +21,24 @@ pub struct Outcome {
     revision: Option<String>,
 }
 impl Work {
+    /// 安装取消作用域后运行冻结任务，返回供写入端处理的结果。
     pub fn run_cancelable(self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Outcome {
         let _scope = crate::cancel::Scope::enter(flag.clone());
         self.run_controlled(&flag)
     }
+    /// 返回任务身份与世代号，供失败处理拒绝过期任务回执。
     pub fn abort_token(&self) -> (String, i64) {
         (self.job.clone(), self.generation)
     }
+    /// 返回此任务已计算的媒体内存预算。
     pub fn memory_mib(&self) -> u32 {
         self.kind.memory_mib()
     }
+    /// 使用默认取消控制执行当前任务。
     pub fn run(self) -> Outcome {
         self.run_controlled(&std::sync::atomic::AtomicBool::new(false))
     }
+    /// 执行媒体读取或分析准备，并定期检查取消而不直接提交数据库结果。
     pub fn run_controlled(mut self, cancel: &std::sync::atomic::AtomicBool) -> Outcome {
         if cancel.load(std::sync::atomic::Ordering::Acquire) {
             return Outcome {
@@ -121,12 +126,14 @@ pub struct InferenceWork {
     model: ModelId,
 }
 impl InferenceWork {
+    /// 读取推理所需的人脸参考，并沿用任务冻结的项目范围。
     pub fn face_references(
         &self,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<crate::qwen_faces::References> {
         crate::qwen_faces::references(&self.work.readers, &self.work.workspace, cancel)
     }
+    /// 将人脸推理结果封装为带任务与版本身份的完成回执。
     pub fn complete_faces(self, result: TaskResult<analysis::InferenceResult>) -> Outcome {
         let mut revision = None;
         let result = result
@@ -143,15 +150,19 @@ impl InferenceWork {
             revision,
         }
     }
+    /// 借用任务冻结的分类配置，保证推理使用领取时的词表。
     pub fn profile(&self) -> Option<&AiProfile> {
         self.work.profile.as_ref()
     }
+    /// 返回本次任务指定的模型身份。
     pub fn model(&self) -> ModelId {
         self.model
     }
+    /// 返回已准备的推理图片路径。
     pub fn image_path(&self) -> &Path {
         self.image.path()
     }
+    /// 把模型推理结果转换为版本绑定的任务完成回执。
     pub fn complete(self, result: TaskResult<analysis::InferenceResult>) -> Outcome {
         let mut revision = None;
         let result = result
@@ -177,6 +188,7 @@ impl InferenceWork {
             revision,
         }
     }
+    /// 按任务分类配置校验 Qwen 结果，并生成待提交的完成回执。
     pub fn complete_qwen(
         self,
         task: &'static str,
@@ -202,9 +214,11 @@ impl InferenceWork {
     }
 }
 impl Work {
+    /// 返回本次执行对应的后台任务种类。
     pub fn kind(&self) -> JobKind {
         self.kind
     }
+    /// 执行冻结任务并转换为普通媒体结果或待外部推理的执行状态。
     pub fn execute(mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Execution {
         let _scope = crate::cancel::Scope::enter(cancel.clone());
         if cancel.load(std::sync::atomic::Ordering::Acquire) {
@@ -248,6 +262,7 @@ impl Work {
             }),
         }
     }
+    /// 准备 Qwen 输入和配置，把模型调用交给应用层推理执行器。
     fn execute_qwen(mut self) -> Execution {
         let source = std::mem::replace(&mut self.source, Ok(None));
         let image = match source {
@@ -283,11 +298,13 @@ impl Work {
     }
 }
 impl Library {
+    /// 记录失败原因并暂停相关任务，保留已完成检查点。
     pub fn pause_jobs_after_error(&mut self, error: &str) -> Result<()> {
         let error = error.chars().take(4096).collect::<String>();
         self.db.execute("UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1,error=?1 WHERE state IN('queued','running')",[error])?;
         Ok(())
     }
+    /// 读取指定任务逐项失败记录，供重试或界面展示。
     pub fn job_failures(&self, job: &str) -> Result<Vec<JobFailure>> {
         let mut stmt=self.db.prepare("SELECT a.id,coalesce(a.name,e.version_id),e.message FROM background_job_errors e LEFT JOIN \
                 asset_versions v ON v.id=e.version_id LEFT JOIN assets a ON a.id=v.asset_id WHERE e.job_id=?1 ORDER \
@@ -312,6 +329,7 @@ impl Library {
             })
             .collect()
     }
+    /// 仅为旧任务失败项建立重试任务，保留原任务历史。
     fn retry_failed_job(&mut self, old: &str) -> Result<String> {
         self.require_workspace_object("jobs", old)?;
         let tx = self.db.transaction()?;
@@ -354,6 +372,7 @@ old])?;
         tx.commit()?;
         Ok(id)
     }
+    /// 按任务身份和世代撤销当前领取，避免旧工作覆盖新一轮执行。
     pub fn abort_job(&self, job: &str, generation: i64, error: &str) -> Result<()> {
         self.db.execute("UPDATE background_jobs SET state='paused',inflight=0,generation=generation+1,error=?3 WHERE id=?1 \
                 AND generation=?2 AND inflight=1",
@@ -363,6 +382,7 @@ error.chars().take(2000).collect::<String>()])?;
 
         Ok(())
     }
+    /// 冻结当前项目范围并登记指定种类、优先级的媒体任务。
     pub fn enqueue_media_job(&mut self, kind: JobKind, priority: i32) -> Result<String> {
         let profile = if kind == JobKind::QwenClassification {
             Some(self.ai_profile()?)
@@ -412,6 +432,7 @@ params![id,scope])?;
         tx.commit()?;
         Ok(id)
     }
+    /// 读取当前项目后台任务的持久化状态与进度。
     pub fn background_jobs(&self) -> Result<Vec<BackgroundJob>> {
         self.db.prepare("SELECT id,kind,state,priority,checkpoint,total,failed,error FROM background_jobs WHERE (?1='' OR id IN(SELECT job_id FROM workspace_jobs WHERE workspace=?1)) ORDER BY CASE WHEN \
                 state IN('queued','running') THEN 0 WHEN state='paused' THEN 1 ELSE 2 END,created_at DESC LIMIT 100")?.query_map([self.workspace_key()],
@@ -427,6 +448,7 @@ error:r.get(7)?}
 ))?.collect::<std::result::Result<Vec<_>,
 _>>().map_err(Error::from)
     }
+    /// 批量暂停、恢复或停止模型任务，返回需要取消的执行身份。
     pub fn control_model_jobs(&mut self, command: JobCommand) -> Result<Vec<String>> {
         let sql = match command {
             JobCommand::Pause => {
@@ -447,6 +469,7 @@ _>>().map_err(Error::from)
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Error::from)
     }
+    /// 更新单项任务状态与世代，保留可恢复任务的检查点。
     pub fn control_job(&mut self, id: &str, command: JobCommand) -> Result<()> {
         self.require_workspace_object("jobs", id)?;
         if matches!(command, JobCommand::RetryFailed) {
@@ -469,6 +492,7 @@ p])?,
         }
         Ok(())
     }
+    /// 按优先级领取下一项任务工作，冻结版本、项目、模型和内存预算。
     pub fn claim_job_step(&mut self) -> Result<Option<Work>> {
         let next:Option<(String,
 String,
@@ -590,6 +614,7 @@ r.get(1)?))).optional()?;
             source,
         }))
     }
+    /// 提交任务结果并处理错误，维持结果和检查点的一致性。
     pub fn finish_job_step(&mut self, outcome: Outcome) -> Result<()> {
         if outcome.work.library != self.id() || outcome.work.root != self.root {
             return Err(Error::Invalid("后台任务所属资源库已改变".into()));
@@ -603,6 +628,7 @@ r.get(1)?))).optional()?;
         }
         result
     }
+    /// 复核任务世代、版本和项目配置后，在事务中应用结果并推进检查点。
     fn finish_job_step_inner(&mut self, outcome: Outcome) -> Result<()> {
         if outcome.work.library != self.id() || outcome.work.root != self.root {
             return Err(Error::Invalid("后台任务所属资源库已改变".into()));
@@ -717,6 +743,7 @@ failure])?;
     }
 }
 
+/// 把数据库协议文本解析为类型化值，并将未知值报告为存储错误。
 fn parse_protocol<T: std::str::FromStr<Err = &'static str>>(
     value: String,
     column: usize,
@@ -735,6 +762,7 @@ fn parse_protocol<T: std::str::FromStr<Err = &'static str>>(
 mod tests {
     use super::*;
     #[test]
+    /// 验证版本删除后的元数据完成回执只推进检查点，不重建版本。
     fn metadata_completion_after_purge_advances_without_recreating_the_version() {
         use image::ImageEncoder;
         let dir = tempfile::tempdir().unwrap();
@@ -787,6 +815,7 @@ mod tests {
         assert_eq!(count, 0);
         assert!(source.exists());
     }
+    /// 建立任务测试所需的独立资源库及初始素材。
     fn library(dir: &Path) -> Library {
         let mut lib = Library::create(dir, "任务").unwrap();
         for n in 0..3 {
@@ -799,6 +828,7 @@ mod tests {
         lib
     }
     #[test]
+    /// 验证任务优先级、暂停重开恢复和取消均拒绝旧媒体结果。
     fn priority_pause_reopen_resume_and_cancel_reject_late_media() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = library(dir.path());
@@ -850,6 +880,7 @@ mod tests {
         assert_eq!(complete.failed, 0);
     }
     #[test]
+    /// 验证崩溃领取可重新排队，错误库或缺失来源不会卡住调度。
     fn crashed_claim_is_requeued_and_wrong_library_and_missing_sources_do_not_stall() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = library(dir.path());
@@ -885,6 +916,7 @@ mod tests {
         assert_eq!(result.failed, 1);
     }
     #[test]
+    /// 验证批量模型控制保留检查点且不影响其他任务。
     fn bulk_model_controls_preserve_checkpoints_and_leave_other_jobs_alone() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "controls").unwrap();

@@ -12,6 +12,7 @@ mod tests {
     use super::*;
     use crate::manage::Panel;
     #[test]
+    /// 验证 MOV 扩展名不同大小写均进入视频播放器。
     fn mov_opens_the_video_player_for_all_extension_cases() {
         for format in ["mov", "MOV", "mOv"] {
             let mut app = crate::tests::app();
@@ -30,6 +31,7 @@ mod tests {
         }
     }
     #[test]
+    /// 验证标签筛选使用精确匹配，更多入口返回原查询。
     fn tag_filter_uses_exact_tag_and_more_returns_to_the_same_query() {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
@@ -52,6 +54,7 @@ mod tests {
         assert_eq!(app.query.min_rating, 3);
     }
     #[test]
+    /// 验证嵌套面板和对话框按真实进入顺序返回。
     fn nested_panels_and_dialogs_return_to_their_actual_entry_in_order() {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
@@ -84,6 +87,7 @@ mod tests {
         assert!(app.can_go_back());
     }
     #[test]
+    /// 验证查看器返回恢复锚点，忽略控件重挂载的临时零滚动事件。
     fn viewer_back_restores_anchor_and_ignores_remount_zero_scroll_events() {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
@@ -117,6 +121,7 @@ mod tests {
         assert!(app.manager.notes_dirty);
     }
     #[test]
+    /// 验证页面历史恢复模型页滚动及活动入口。
     fn page_history_restores_models_scroll_and_activity_origin() {
         let mut app = crate::tests::app();
         app.screen = Screen::Models;
@@ -139,6 +144,7 @@ mod tests {
         assert!(app.surfaces.page_restore.is_none());
     }
     #[test]
+    /// 验证工具面板返回原工具页，保留查询和选择。
     fn routed_panels_return_to_tools_and_do_not_change_query_or_selection() {
         for (event, panel) in [
             (ManageMessage::Filters, Panel::Filters),
@@ -172,6 +178,7 @@ mod tests {
         }
     }
     #[test]
+    /// 验证各表单草稿独立，嵌套规则保留未保存筛选。
     fn form_drafts_are_independent_and_nested_rules_keep_unsaved_filter_values() {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
@@ -196,6 +203,7 @@ mod tests {
         assert!(app.query.rule.is_none());
     }
     #[test]
+    /// 验证从活动进入素材后可返回原活动面板。
     fn activity_asset_navigation_can_return_to_the_original_activity_panel() {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
@@ -239,18 +247,22 @@ pub(super) struct Surfaces {
     pub page_restore: Option<(u8, f32)>,
 }
 impl App {
+    /// 取得当前面板与对话框的组合身份。
     pub(super) fn surface(&self) -> Surface {
         Surface {
             panel: self.manager.panel,
             dialog: self.dialog,
         }
     }
+    /// 判断当前是否存在管理面板或对话框。
     pub(super) fn surface_open(&self) -> bool {
         self.dialog.is_some() || self.manager.panel.is_some()
     }
+    /// 判断当前浮层是否有可返回的父级表面。
     pub(super) fn surface_has_parent(&self) -> bool {
         !self.surfaces.stack.is_empty()
     }
+    /// 结合查看器、浮层和页面历史判断后退是否可用。
     pub(super) fn can_go_back(&self) -> bool {
         !self.libraries.busy
             && !(self.manager.panel == Some(manage::Panel::Delete) && self.manager.busy)
@@ -259,6 +271,7 @@ impl App {
                 || self.history.can_back()
                 || (self.library.is_some() && !self.library_picker))
     }
+    /// 同步浮层身份与返回栈，保留实际打开来源。
     pub(super) fn sync_surface(
         &mut self,
         before: Surface,
@@ -330,6 +343,7 @@ impl App {
             },
         )
     }
+    /// 恢复浮层打开前的页面上下文。
     pub(super) fn restore_page(&mut self) -> Task<Message> {
         let (index, id) = match self.screen {
             Screen::Overview => (0, "overview"),
@@ -340,6 +354,7 @@ impl App {
         self.surfaces.page_restore = Some((index as u8, y));
         iced::widget::operation::scroll_to(id, scrollable::AbsoluteOffset { x: 0.0, y })
     }
+    /// 关闭当前浮层并返回其实际入口，保留其他页面状态。
     pub(super) fn close_surface(&mut self) -> Task<Message> {
         if self.libraries.busy {
             return Task::none();
@@ -354,12 +369,14 @@ impl App {
         self.manager.panel = None;
         Task::none()
     }
+    /// 停止查看器媒体资源和相关异步请求。
     pub(super) fn stop_viewer(&mut self) {
         self.viewer.close();
         if let Some(y) = self.surfaces.viewer_y.take() {
             self.scroll_y = y;
         }
     }
+    /// 切换查看器展开状态，并协调媒体资源生命周期。
     pub(super) fn set_viewer(&mut self, open: bool) -> Task<Message> {
         if open {
             if !self.viewer.preview_expanded {

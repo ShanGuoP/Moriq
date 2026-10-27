@@ -32,6 +32,7 @@ impl Kind {
         Self::Raw,
         Self::Location,
     ];
+    /// 从规则编辑草稿构造类型化规则树。
     fn rule(self) -> Rule {
         match self {
             Self::All => Rule::All(vec![Rule::Favorite]),
@@ -48,6 +49,7 @@ impl Kind {
     }
 }
 impl std::fmt::Display for Kind {
+    /// 格式化规则运算或字段选项的显示标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::All => "全部满足",
@@ -74,6 +76,7 @@ pub enum RuleMessage {
     Apply,
     Clear,
 }
+/// 按编辑路径定位规则节点，避免修改兄弟节点。
 fn at<'a>(rule: &'a mut Rule, path: &[usize]) -> Option<&'a mut Rule> {
     if path.is_empty() {
         return Some(rule);
@@ -84,6 +87,7 @@ fn at<'a>(rule: &'a mut Rule, path: &[usize]) -> Option<&'a mut Rule> {
         _ => None,
     }
 }
+/// 统计规则树深度与节点数量，供编辑时控制预算。
 fn budget(rule: &Rule, depth: usize, count: &mut usize) -> bool {
     *count += 1;
     depth <= 8
@@ -97,6 +101,7 @@ fn budget(rule: &Rule, depth: usize, count: &mut usize) -> bool {
         }
 }
 impl App {
+    /// 处理规则节点增删和字段编辑，保留未提交草稿。
     pub(super) fn rule_message(&mut self, event: RuleMessage) -> Task<Message> {
         let language = self.preferences.language;
         use RuleMessage::*;
@@ -209,6 +214,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建规则筛选编辑面板及保存入口。
     pub(super) fn rules_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut view=Column::new().spacing(12).push(muted(tr!(language, "这些组合条件与现有筛选同时生效。应用后可保存为智能集合；地点条件仅检查手动补充的地点。" => "Combined rules apply alongside current filters. Save them as a smart collection after applying. Location conditions check only manually added locations.")));
@@ -229,6 +235,7 @@ impl App {
         .into()
     }
 }
+/// 递归构建单个规则节点及其子节点编辑控件。
 fn node(
     language: Language,
     rule: &Rule,
@@ -311,6 +318,7 @@ fn node(
 mod tests {
     use super::*;
     #[test]
+    /// 验证嵌套规则编辑保留兄弟节点并遵守树预算。
     fn nested_edit_paths_preserve_siblings_and_enforce_tree_budget() {
         let mut draft = Rule::All(vec![
             Rule::Not(Box::new(Rule::Any(vec![Rule::Favorite, Rule::Raw]))),

@@ -1,4 +1,5 @@
 use super::*;
+/// 构造未连接用户生产数据的应用状态，供界面消息和视图测试使用。
 pub(super) fn app() -> App {
     let (mut app, task) = App::new(Service::start().unwrap(), LaunchOptions::default());
     drop(task);
@@ -19,6 +20,7 @@ pub(super) fn app() -> App {
     app
 }
 #[test]
+/// 验证未打开资源库也可管理模型，资源库操作保持独立。
 fn global_models_open_without_library_and_keep_library_actions_separate() {
     let mut app = app();
     app.library = None;
@@ -45,6 +47,7 @@ fn global_models_open_without_library_and_keep_library_actions_separate() {
     assert_eq!(app.content_screen(), Some(Screen::Models));
 }
 #[test]
+/// 验证模型侧栏展示全部资源库，切换时保留全局模型状态。
 fn model_sidebar_has_all_libraries_and_switch_keeps_global_model_state() {
     let mut app = app();
     app.screen = Screen::Models;
@@ -90,6 +93,7 @@ fn model_sidebar_has_all_libraries_and_switch_keeps_global_model_state() {
     assert!(!app.switching);
 }
 #[test]
+/// 验证更改模型加载策略不会重置下载来源。
 fn changing_model_load_policy_keeps_selected_download_source() {
     let mut app = app();
     assert!(app.preferences.ai.use_mirror);
@@ -100,6 +104,7 @@ fn changing_model_load_policy_keeps_selected_download_source() {
     assert!(!app.preferences.ai.use_mirror);
 }
 #[test]
+/// 验证分类封面拒绝其他库结果，分类为空时清除图片。
 fn category_covers_reject_other_libraries_and_clear_when_category_is_empty() {
     use moriq_app::LoadedOverview;
     let mut app = app();
@@ -135,6 +140,7 @@ fn category_covers_reject_other_libraries_and_clear_when_category_is_empty() {
     assert!(app.manager.category_covers.is_empty());
 }
 #[test]
+/// 验证资源库选择器保留图库状态，并可通过历史返回。
 fn library_picker_keeps_gallery_state_and_returns_through_history() {
     let mut app = app();
     app.screen = Screen::Assets;
@@ -155,6 +161,7 @@ fn library_picker_keeps_gallery_state_and_returns_through_history() {
     assert_eq!(app.screen, Screen::Models);
 }
 #[test]
+/// 验证旧库维护和删除回执不会重置新库选择。
 fn maintenance_and_purge_receipts_cannot_reset_another_library_selection() {
     let mut app = app();
     let control = moriq_app::MaintenanceControl::default();
@@ -183,6 +190,7 @@ fn maintenance_and_purge_receipts_cannot_reset_another_library_selection() {
     assert!(control.cancel.load(Ordering::Relaxed));
 }
 #[test]
+/// 验证各页外壳一致，全局导航不留下延迟动作。
 fn page_chrome_is_identical_and_global_navigation_has_no_delayed_action() {
     let mut app = app();
     let mut metrics = Vec::new();
@@ -202,6 +210,7 @@ fn page_chrome_is_identical_and_global_navigation_has_no_delayed_action() {
     assert!(app.transition.is_some());
 }
 #[test]
+/// 验证快速导航即时提交，旧动画帧不能改变目标。
 fn rapid_page_navigation_commits_immediately_and_old_frames_cannot_retarget() {
     use crate::transition::FADE_IN;
     let mut app = app();
@@ -220,6 +229,7 @@ fn rapid_page_navigation_commits_immediately_and_old_frames_cannot_retarget() {
 }
 
 #[test]
+/// 验证旧查询回执不能替换新查询画面。
 fn old_query_results_cannot_replace_new_view() {
     let mut app = app();
     app.generation = 3;
@@ -236,6 +246,7 @@ fn old_query_results_cannot_replace_new_view() {
     assert_eq!(app.generation, 3);
 }
 #[test]
+/// 验证范围选择回执同时匹配库与查询身份。
 fn range_selection_receipts_obey_library_and_query_identity() {
     let mut app = app();
     let library = app.library.as_ref().unwrap().info.id;
@@ -264,6 +275,7 @@ fn range_selection_receipts_obey_library_and_query_identity() {
     assert!(app.manager.selection.anchor.is_none());
 }
 #[test]
+/// 验证大显示区域仍遵守有界分页预算。
 fn large_displays_keep_viewport_inside_page_budget() {
     let mut app = app();
     for (width, height) in [(1360.0, 800.0), (3840.0, 2160.0), (7680.0, 4320.0)] {
@@ -276,6 +288,7 @@ fn large_displays_keep_viewport_inside_page_budget() {
     }
 }
 #[test]
+/// 验证加载期间滚动变化后请求当前视口范围。
 fn scroll_moved_during_load_requests_current_viewport() {
     let mut app = app();
     app.screen = Screen::Assets;
@@ -295,6 +308,7 @@ fn scroll_moved_during_load_requests_current_viewport() {
     assert_eq!(app.generation, 4);
 }
 #[test]
+/// 验证编辑保存跨同库查询切换有效，但拒绝其他库回执。
 fn saved_edit_survives_query_change_but_rejects_other_library() {
     let mut app = app();
     app.screen = Screen::Assets;
@@ -310,6 +324,7 @@ fn saved_edit_survives_query_change_but_rejects_other_library() {
     assert!(app.loading);
 }
 #[test]
+/// 验证后台保存完成不会关闭设置对话框。
 fn background_save_does_not_close_settings_dialog() {
     let mut app = app();
     let id = app.library.as_ref().unwrap().info.id;
@@ -317,6 +332,7 @@ fn background_save_does_not_close_settings_dialog() {
     drop(app.update(Message::Saved(id, Ok(()))));
     assert_eq!(app.dialog, Some(Dialog::Settings));
 }
+/// 向测试应用放入可选择素材，供手势和详情验证。
 pub(super) fn selected_asset() -> Asset {
     Asset {
         id: AssetId::default(),
@@ -333,6 +349,7 @@ pub(super) fn selected_asset() -> Asset {
     }
 }
 #[test]
+/// 验证图片手势作用于实际点击卡片，缺失或被浮层阻挡时拒绝。
 fn image_gestures_target_clicked_card_and_reject_missing_or_modal_targets() {
     let mut app = app();
     app.screen = Screen::Assets;
@@ -371,6 +388,7 @@ fn image_gestures_target_clicked_card_and_reject_missing_or_modal_targets() {
     assert!(app.manager.panel.is_none());
 }
 #[test]
+/// 验证活动分页与关联素材导航拒绝旧回执。
 fn journal_pages_and_related_asset_navigation_reject_stale_receipts() {
     let mut app = app();
     let id = app.library.as_ref().unwrap().info.id;
@@ -421,6 +439,7 @@ fn journal_pages_and_related_asset_navigation_reject_stale_receipts() {
     assert!(!app.query.trash);
 }
 #[test]
+/// 验证项目菜单保留图库上下文，取消或过期删除不改数据。
 fn project_menu_keeps_gallery_context_and_cancelled_or_stale_delete_preserves_data() {
     let mut app = app();
     let project = ProjectId::default();
@@ -461,6 +480,7 @@ fn project_menu_keeps_gallery_context_and_cancelled_or_stale_delete_preserves_da
     assert!(!app.manager.busy);
     assert_eq!(app.viewer.selected.as_ref().unwrap().id, id);
 }
+/// 推进测试界面至预期静止状态，供后续导航断言使用。
 fn settle(app: &mut App) {
     if let Some(t) = &app.transition {
         let start = t.started;
@@ -469,6 +489,7 @@ fn settle(app: &mut App) {
     app.transition = None;
 }
 #[test]
+/// 验证历史恢复查询、滚动、选择与草稿，新导航清除前进分支。
 fn history_restores_query_scroll_selection_and_draft_then_truncates_forward() {
     let mut app = app();
     app.screen = Screen::Assets;
@@ -504,6 +525,7 @@ fn history_restores_query_scroll_selection_and_draft_then_truncates_forward() {
     assert!(!app.history.can_forward());
 }
 #[test]
+/// 验证连续搜索合并历史，切到新库清空前后栈。
 fn search_history_is_coalesced_and_new_library_clears_both_stacks() {
     let mut app = app();
     app.screen = Screen::Assets;
@@ -523,6 +545,7 @@ fn search_history_is_coalesced_and_new_library_clears_both_stacks() {
     assert!(app.pending_scroll.is_none());
 }
 #[test]
+/// 验证相邻浏览拒绝旧请求、旧查询和其他库回执。
 fn neighborhood_receipts_reject_old_requests_queries_and_libraries() {
     let mut app = app();
     app.screen = Screen::Assets;
@@ -564,13 +587,13 @@ fn neighborhood_receipts_reject_old_requests_queries_and_libraries() {
         5,
         Ok(Some(result.clone())),
     )));
-    assert!(app.viewer.selected.is_none());
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, id);
     drop(app.update(Message::Search("新的查询".into())));
     drop(app.update(Message::NeighborhoodLoaded(library, 5, Ok(Some(result)))));
-    assert!(app.viewer.selected.is_none());
-    assert!(app.neighbors.is_empty());
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, id);
 }
 #[test]
+/// 验证查询变化使旧布局失效，版本回执不会重新选择素材。
 fn changing_query_invalidates_pending_layout_and_version_receipt_does_not_reselect() {
     let mut app = app();
     let asset = selected_asset();
@@ -599,6 +622,7 @@ fn changing_query_invalidates_pending_layout_and_version_receipt_does_not_resele
     assert!(app.masonry.is_none());
 }
 #[test]
+/// 验证旧版本预览不能替换当前版本图像。
 fn old_version_preview_cannot_replace_the_new_version() {
     let mut app = app();
     let id = app.library.as_ref().unwrap().info.id;
@@ -617,6 +641,7 @@ fn old_version_preview_cannot_replace_the_new_version() {
     assert!(app.viewer.preview.is_none());
 }
 #[test]
+/// 验证后台详情和保存回执保留用户较新的未保存笔记。
 fn background_details_and_save_receipts_preserve_newer_unsaved_notes() {
     let mut app = app();
     let id = app.library.as_ref().unwrap().info.id;

@@ -1,4 +1,5 @@
 use super::*;
+/// 校验批量修改字段的长度、取值和数量，拒绝没有实际修改内容的请求。
 fn validate(patch: &BatchPatch) -> Result<()> {
     if patch.rating.is_some_and(|n| n > 5)
         || patch.notes.as_ref().is_some_and(|s| s.len() > 65536)
@@ -28,6 +29,7 @@ fn validate(patch: &BatchPatch) -> Result<()> {
     Ok(())
 }
 impl Library {
+    /// 冻结选择范围和修改内容，将批量编辑登记为可跟踪的后台任务。
     pub fn enqueue_batch(&mut self, scope: BatchScope, patch: BatchPatch) -> Result<String> {
         validate(&patch)?;
         let table = match &scope {
@@ -90,6 +92,7 @@ impl Library {
         Ok(id)
     }
 }
+/// 在给定数据库事务中应用单个素材的批量修改，沿用标签与项目归属约束。
 pub(crate) fn apply(
     tx: &Connection,
     root: &Path,

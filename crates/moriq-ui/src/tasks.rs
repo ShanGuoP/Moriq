@@ -17,6 +17,7 @@ pub(super) struct TaskState {
 mod tests {
     use super::*;
     #[test]
+    /// 验证空任务投影仍可刷新，且旧回执被拒绝。
     fn task_refresh_runs_with_empty_projection_and_rejects_stale_receipts() {
         let mut app = crate::tests::app();
         let id = app.library.as_ref().unwrap().info.id;
@@ -50,6 +51,7 @@ mod tests {
         assert!(app.jobs.error.is_none());
     }
     #[test]
+    /// 验证分析进度刷新分类与筛选布局，不造成重复轮询。
     fn analysis_progress_refreshes_categories_and_filtered_layout_without_polling_loops() {
         let mut app = crate::tests::app();
         let owner = app.library.as_ref().unwrap().info.id;
@@ -113,6 +115,7 @@ pub enum JobMessage {
     FailuresLoaded(LibraryId, String, Result<Vec<JobFailure>, String>),
 }
 impl App {
+    /// 刷新后台任务投影；任务执行由应用调度器独立驱动。
     pub(super) fn job_tick(&mut self) -> Task<Message> {
         self.jobs.ticks = self.jobs.ticks.wrapping_add(1);
         if self.jobs.loading || !self.jobs.ticks.is_multiple_of(4) {
@@ -130,6 +133,7 @@ impl App {
             Message::Jobs(JobMessage::Refreshed(id, request, r))
         })
     }
+    /// 处理任务控制与进度回执，刷新受结果影响的分类和布局。
     pub(super) fn job_message(&mut self, event: JobMessage) -> Task<Message> {
         let Some(library) = &self.library else {
             return Task::none();
@@ -261,6 +265,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建模型任务暂停、恢复和停止控件。
     pub(super) fn model_job_controls(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let jobs: Vec<_> = self
@@ -308,6 +313,7 @@ impl App {
         form_card(column![heading(trf!(language,"{} 个模型任务 · {} 个暂停"=>"{} model tasks · {} paused",jobs.len(),paused),14),
             actions.wrap(),muted(tr!(language,"暂停后可继续未完成素材；完全停止不会自动恢复，已完成的分析结果保留。"=>"Pause to resume unfinished assets later. Stopped tasks never auto-resume; completed results are preserved."))].spacing(10))
     }
+    /// 构建后台任务列表、进度和失败操作入口。
     pub(super) fn tasks_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut view = column![muted(

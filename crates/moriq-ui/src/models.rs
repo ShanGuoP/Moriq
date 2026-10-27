@@ -9,6 +9,7 @@ use iced::widget::{
 use iced::{Alignment, Border, Color, Length};
 pub(super) const MODEL_FILTER_ORDER: [u8; 3] = [2, 1, 0];
 impl App {
+    /// 构建模型管理页面及当前标签、搜索与筛选结果。
     pub(super) fn models(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let can_organize = self.library.is_some()
@@ -333,6 +334,7 @@ impl App {
         .height(Length::Fill)
         .into()
     }
+    /// 根据当前分组方式组织模型卡片。
     fn model_grouping(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         if self.library.is_none() {
@@ -351,6 +353,7 @@ impl App {
             .into()
         }
     }
+    /// 判断模型是否满足当前安装状态和文本筛选。
     fn model_visible(&self, model: &moriq_app::ModelInfo) -> bool {
         let language = self.preferences.language;
         (match self.model_filter {
@@ -366,6 +369,7 @@ impl App {
         .to_lowercase()
         .contains(&self.model_search.trim().to_lowercase())
     }
+    /// 构建模型说明、下载进度和安装卸载操作卡片。
     fn model_card<'a>(&'a self, model: &'a moriq_app::ModelInfo) -> Element<'a, Message> {
         let language = self.preferences.language;
         let id = &model.spec.id;
@@ -518,6 +522,7 @@ impl App {
         .snap_within_viewport(true)
         .into()
     }
+    /// 构建模型加载与下载来源设置区。
     fn model_settings(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let jobs: Vec<_> = self
@@ -653,6 +658,7 @@ impl App {
             .style(panel)
             .into()
     }
+    /// 构建单项模型设置行。
     fn model_setting<'a>(
         &self,
         kind: Icon,
@@ -708,6 +714,7 @@ impl App {
     }
 }
 
+/// 取得指定模型的本地化用途说明。
 fn model_description(language: Language, id: &str) -> &'static str {
     match id {
         "qwen35-4b" => {
@@ -716,6 +723,7 @@ fn model_description(language: Language, id: &str) -> &'static str {
         _ => tr!(language, "在本机分析图片内容。" => "Analyze image content locally."),
     }
 }
+/// 根据 Qwen 模型状态生成排队入口或提示消息。
 fn qwen_queue_message(id: &str) -> Option<Message> {
     if id == "qwen35-4b" {
         Some(Message::Ai(AiMessage::Organize))
@@ -723,6 +731,7 @@ fn qwen_queue_message(id: &str) -> Option<Message> {
         None
     }
 }
+/// 把任务种类转换为当前语言的任务标题。
 fn job_title(language: Language, kind: JobKind) -> &'static str {
     match kind {
         JobKind::Analysis(ModelId::ChineseClip) => {
@@ -748,6 +757,7 @@ fn job_title(language: Language, kind: JobKind) -> &'static str {
         _ => tr!(language, "图片元数据索引" => "Image metadata index"),
     }
 }
+/// 把持久化任务状态转换为展示文本。
 fn job_state(language: Language, state: JobState) -> &'static str {
     match state {
         JobState::Running => tr!(language, "分析中…" => "Analyzing…"),

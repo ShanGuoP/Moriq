@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+/// 生成独立样本，分别测量首次解码、磁盘缓存和内存缓存读取。
 fn main() -> Result<(), String> {
     tokio::runtime::Runtime::new()
         .map_err(|e| e.to_string())?

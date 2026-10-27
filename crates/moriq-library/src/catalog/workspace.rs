@@ -2,6 +2,7 @@
 use super::*;
 
 impl Library {
+    /// 按复制选项把素材加入目标项目，隔离其身份和项目所属配置。
     pub fn copy_to_project(
         &mut self,
         ids: &[AssetId],
@@ -49,6 +50,7 @@ impl Library {
         self.snapshot = None;
         Ok(())
     }
+    /// 根据配置创建项目，并按选项建立独立的分类、分组等初始数据。
     pub fn create_project_configured(
         &mut self,
         name: &str,
@@ -126,15 +128,19 @@ impl Library {
         tx.commit()?;
         Ok(id)
     }
+    /// 设置后续资源库操作的项目范围；空值表示资源库聚合视图。
     pub fn set_workspace(&mut self, project: Option<ProjectId>) {
         self.workspace = project;
     }
+    /// 返回当前选择的项目范围。
     pub fn workspace(&self) -> Option<ProjectId> {
         self.workspace
     }
+    /// 将当前项目范围转换为数据库查询使用的稳定键。
     pub(crate) fn workspace_key(&self) -> String {
         self.workspace.map(|id| id.to_string()).unwrap_or_default()
     }
+    /// 为固定的素材表达式生成当前项目范围条件。
     pub(crate) fn workspace_filter(&self, asset: &str) -> String {
         match self.workspace {
             Some(project) => format!(
@@ -143,6 +149,7 @@ impl Library {
             None => "1=1".into(),
         }
     }
+    /// 将当前项目范围合入查询，拒绝与会话范围冲突的项目请求。
     pub(crate) fn workspace_query(&self, query: &Query) -> Result<Query> {
         let mut query = query.clone();
         if let Some(project) = self.workspace {
@@ -154,9 +161,11 @@ impl Library {
         }
         Ok(query)
     }
+    /// 查询指定素材所属的项目范围。
     pub(crate) fn asset_workspace(&self, asset: AssetId) -> Result<String> {
         asset_scope(&self.db, &asset.to_string())
     }
+    /// 核对固定内部表中的对象是否属于当前项目，拒绝跨项目操作。
     pub(crate) fn require_workspace_object(&self, table: &str, key: &str) -> Result<()> {
         let (column, source) = match table {
             "people" => ("person_id", "workspace_people"),
@@ -176,6 +185,7 @@ impl Library {
         }
         Ok(())
     }
+    /// 验证所选素材均处于允许的当前项目范围。
     pub(crate) fn require_workspace_assets(&self, ids: &[AssetId]) -> Result<()> {
         if let Some(project) = self.workspace {
             for id in ids {
@@ -186,6 +196,7 @@ impl Library {
         }
         Ok(())
     }
+    /// 对需要精确归属的操作逐项校验素材的项目身份。
     pub(crate) fn require_exact_workspace_assets(&self, ids: &[AssetId]) -> Result<()> {
         let scope = self.workspace_key();
         for id in ids {
@@ -197,6 +208,7 @@ impl Library {
     }
 }
 
+/// 从素材关联中解析其项目范围键。
 pub(crate) fn asset_scope(db: &Connection, asset: &str) -> Result<String> {
     Ok(db.query_row(
         "SELECT coalesce((SELECT min(project_id) FROM project_assets WHERE asset_id=?1),'')",
@@ -204,6 +216,7 @@ pub(crate) fn asset_scope(db: &Connection, asset: &str) -> Result<String> {
         |r| r.get(0),
     )?)
 }
+/// 通过版本所属素材解析项目范围键。
 pub(crate) fn version_scope(db: &Connection, version: &str) -> Result<String> {
     let asset: String = db.query_row(
         "SELECT asset_id FROM asset_versions WHERE id=?1",
@@ -212,6 +225,7 @@ pub(crate) fn version_scope(db: &Connection, version: &str) -> Result<String> {
     )?;
     asset_scope(db, &asset)
 }
+/// 读取后台任务登记的项目范围。
 pub(crate) fn job_scope(db: &Connection, job: &str) -> Result<String> {
     Ok(db.query_row(
         "SELECT coalesce((SELECT workspace FROM workspace_jobs WHERE job_id=?1),'')",
@@ -219,10 +233,12 @@ pub(crate) fn job_scope(db: &Connection, job: &str) -> Result<String> {
         |r| r.get(0),
     )?)
 }
+/// 登记人物与项目的归属关系。
 pub(crate) fn own_person(db: &Connection, person: &str, scope: &str) -> Result<()> {
     db.execute("INSERT INTO workspace_people VALUES(?1,?2) ON CONFLICT(person_id) DO UPDATE SET workspace=excluded.workspace", params![person,scope])?;
     Ok(())
 }
+/// 为项目保存独立的 AI 分类配置快照。
 pub(crate) fn insert_profile(
     db: &Connection,
     project: ProjectId,
@@ -239,6 +255,7 @@ pub(crate) fn insert_profile(
     )?;
     Ok(())
 }
+/// 在目标项目复制人物身份，避免人物分组在项目之间共享可变状态。
 fn copy_person(db: &Connection, person: &str, scope: &str) -> Result<String> {
     let id = Uuid::new_v4().to_string();
     db.execute(
@@ -250,6 +267,8 @@ fn copy_person(db: &Connection, person: &str, scope: &str) -> Result<String> {
 }
 
 /// Copying a photo never imports another project's people or collection membership.
+///
+/// 调整素材及相关分组数据的项目归属。
 pub(crate) fn rehome_asset(db: &Connection, asset: &str, scope: &str) -> Result<()> {
     let faces = db.prepare("SELECT DISTINCT f.person_id FROM detected_faces f JOIN asset_versions v ON v.id=f.version_id WHERE v.asset_id=?1 AND f.person_id IS NOT NULL")?
         .query_map([asset], |r| r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
@@ -270,6 +289,7 @@ pub(crate) fn rehome_asset(db: &Connection, asset: &str, scope: &str) -> Result<
     Ok(())
 }
 
+/// 在项目词表之间映射分类，保留能够按名称对应的分类含义。
 pub(crate) fn map_classification(
     db: &Connection,
     source: &str,
@@ -307,6 +327,7 @@ pub(crate) fn map_classification(
     Ok(())
 }
 
+/// 建立项目范围数据表并拆分共享人物、分组和配置，在事务中完成版本升级。
 pub(super) fn migrate(db: &mut Connection) -> Result<()> {
     let tx = db.transaction()?;
     tx.execute_batch(include_str!("../database/migrations/migration_26.sql"))?;

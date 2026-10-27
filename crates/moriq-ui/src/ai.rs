@@ -37,6 +37,7 @@ pub struct PersonChoice {
     label: String,
 }
 impl PersonChoice {
+    /// 根据人物名称、身份及素材数量构造本地化的选择项标签。
     fn person(language: Language, p: &Person) -> Self {
         let name = p.name.clone();
         let label = if name.is_empty() || name == "未命名人物" {
@@ -55,6 +56,7 @@ impl PersonChoice {
     }
 }
 impl std::fmt::Display for PersonChoice {
+    /// 输出人物选择项的显示标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
@@ -107,6 +109,7 @@ pub enum AiMessage {
     Stored(LibraryId, Result<(), String>),
 }
 impl App {
+    /// 构建模型页面的资源库切换列表，保留当前库身份。
     pub(super) fn model_libraries(&self) -> Vec<(String, PathBuf, bool)> {
         let mut entries = self
             .preferences
@@ -134,6 +137,7 @@ impl App {
         }
         entries
     }
+    /// 处理 AI 内容编辑、人物管理和推理回执，核对库、版本与请求身份。
     pub(super) fn ai_message(&mut self, event: AiMessage) -> Task<Message> {
         let language = self.preferences.language;
         let service = self.service.clone();
@@ -520,6 +524,7 @@ impl App {
         }
         Task::none()
     }
+    /// 刷新当前项目可用的人物选择项。
     pub(super) fn refresh_people_choices(&mut self) {
         let language = self.preferences.language;
         let people = &self.manager.organizer.people;
@@ -536,6 +541,7 @@ impl App {
             .and_then(|old| people.iter().find(|p| p.id == old.id))
             .map(|person| PersonChoice::person(language, person));
     }
+    /// 按当前项目的真实分类配置构建侧栏分组。
     pub(super) fn sidebar_categories(&self) -> Vec<(String, u64)> {
         if !self.manager.organizer.ai_groups.is_empty() {
             return self
@@ -554,6 +560,7 @@ impl App {
             .cloned()
             .collect()
     }
+    /// 为当前人物列表启动有界头像读取，并绑定请求身份。
     pub(super) fn refresh_people_portraits(&mut self) -> Task<Message> {
         self.stop_people_portraits();
         if self.manager.panel != Some(manage::Panel::People) {
@@ -605,6 +612,7 @@ impl App {
         self.ai.portrait_task = Some(handle.abort_on_drop());
         task
     }
+    /// 取消人物头像读取并使旧回执失效。
     pub(super) fn stop_people_portraits(&mut self) {
         self.ai.portrait_cancel.store(true, Ordering::Release);
         if let Some(task) = self.ai.portrait_task.take() {
@@ -613,6 +621,7 @@ impl App {
             task.abort();
         }
     }
+    /// 构建人物分组管理面板及其操作入口。
     pub(super) fn people_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         use crate::{
@@ -767,6 +776,7 @@ impl App {
         }
         view.into()
     }
+    /// 构建素材详情中的 AI 分类、描述与人工编辑区域。
     pub(super) fn ai_details(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         use crate::icons::Icon;
@@ -1080,6 +1090,7 @@ impl App {
         }
         view.into()
     }
+    /// 构建当前素材的相似推荐区域。
     pub(super) fn ai_recommendations(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         column![

@@ -26,15 +26,19 @@ pub(super) struct Viewer {
     pub tiles: Vec<(ImageRegion, image::Handle)>,
 }
 impl Widget<Message, Theme, iced::Renderer> for Viewer {
+    /// 返回原图查看控件的持久状态标识。
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
     }
+    /// 建立原图查看控件的初始交互状态。
     fn state(&self) -> tree::State {
         tree::State::new(State::default())
     }
+    /// 声明查看器所需的布局尺寸。
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
     }
+    /// 按视口约束布局原图查看区域。
     fn layout(
         &mut self,
         _: &mut Tree,
@@ -43,6 +47,7 @@ impl Widget<Message, Theme, iced::Renderer> for Viewer {
     ) -> layout::Node {
         layout::Node::new(limits.resolve(Length::Fill, Length::Fill, Size::ZERO))
     }
+    /// 处理缩放、拖动和窗口事件，把视口变化发送为应用消息。
     fn update(
         &mut self,
         tree: &mut Tree,
@@ -176,6 +181,7 @@ impl Widget<Message, Theme, iced::Renderer> for Viewer {
             )));
         }
     }
+    /// 按当前拖动或可交互状态返回鼠标指针样式。
     fn mouse_interaction(
         &self,
         tree: &Tree,
@@ -192,6 +198,7 @@ impl Widget<Message, Theme, iced::Renderer> for Viewer {
             mouse::Interaction::None
         }
     }
+    /// 使用现有 GPU 图像绘制预览和原图块，应用当前相机与裁剪范围。
     fn draw(
         &self,
         tree: &Tree,
@@ -243,6 +250,7 @@ impl Widget<Message, Theme, iced::Renderer> for Viewer {
     }
 }
 impl<'a> From<Viewer> for Element<'a, Message> {
+    /// 把原图查看器包装为通用界面元素。
     fn from(value: Viewer) -> Self {
         Element::new(value)
     }

@@ -1,3 +1,4 @@
+# 准备固定版本的媒体组件，核对归档与文件清单后生成可打包运行目录。
 param([switch]$Offline)
 $ErrorActionPreference='Stop'
 $projectRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -34,6 +35,7 @@ foreach($codecDirectory in @($selected,(Join-Path $codecRoot 'runtime'))){
 }
 New-Item -ItemType Directory -Force -Path $selected | Out-Null
 Copy-Item -Path (Join-Path $ffmpegSource.FullName '*') -Destination $selected -Recurse -Force
+# 仅把允许的工具和动态库复制到运行目录，避免混入解压包中的其他程序。
 $runtime=Join-Path $codecRoot 'runtime'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 $allowed=@('ffmpeg.exe','ffprobe.exe','avcodec-62.dll','avdevice-62.dll','avfilter-11.dll','avformat-62.dll','avutil-60.dll','swresample-6.dll','swscale-9.dll')
@@ -47,6 +49,7 @@ Copy-Item -LiteralPath (Join-Path $codecRoot 'libraw/LibRaw-0.22.2/COPYRIGHT') -
 $artifacts | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $runtime 'provenance.json') -Encoding utf8
 & python (Join-Path $PSScriptRoot 'prune-runtime-notices.py') codecs
 if($LASTEXITCODE -ne 0){throw 'Codec runtime notice archival failed'}
+# 为最终运行目录生成内容摘要，后续构建把该清单嵌入程序。
 $checksums=[ordered]@{}
 foreach($entry in (Get-ChildItem -LiteralPath $runtime -File -Recurse -Force | Sort-Object FullName)){
     $relative=[IO.Path]::GetRelativePath($runtime,$entry.FullName).Replace('\','/')

@@ -22,6 +22,7 @@ pub enum FolderMessage {
     CoverLoaded(LibraryId, String, AssetId, Result<image::Handle, String>),
 }
 impl App {
+    /// 处理虚拟文件夹创建、重命名、成员和封面操作。
     pub(super) fn folder_message(&mut self, event: FolderMessage) -> Task<Message> {
         let Some(library) = &self.library else {
             return Task::none();
@@ -118,6 +119,7 @@ impl App {
             move |r| Message::Folder(FolderMessage::Stored(id, r)),
         )
     }
+    /// 构建虚拟文件夹与收藏分组的管理界面。
     pub(super) fn folders_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut view = column![

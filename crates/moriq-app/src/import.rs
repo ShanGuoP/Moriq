@@ -2,6 +2,7 @@
 use super::*;
 
 impl Service {
+    /// 分页查找旧根目录引用，在文件线程验证新位置后提交重连结果。
     pub async fn reconnect_root(
         &self,
         id: LibraryId,
@@ -51,6 +52,7 @@ impl Service {
         }
         Ok((connected, skipped))
     }
+    /// 执行资源库恢复入口，并返回更新后的状态。
     pub async fn recover(&self, id: LibraryId) -> Result<ImportReport> {
         self.call(move |active| {
             check(active, id)?
@@ -59,6 +61,7 @@ impl Service {
         })
         .await
     }
+    /// 校验目标文件内容后提交外部原片的新位置。
     pub async fn relocate_reference(
         &self,
         id: LibraryId,
@@ -86,6 +89,7 @@ impl Service {
         })
         .await
     }
+    /// 建立有界文件扫描流，输出文件及相对目录信息。
     pub async fn scan(&self, id: LibraryId, paths: Vec<PathBuf>) -> Result<Vec<ImportFile>> {
         let root = self
             .call(move |active| Ok(check(active, id)?.root().to_path_buf()))
@@ -114,6 +118,8 @@ impl Service {
         .map_err(|e| e.to_string())?
     }
     /// UI path: starts importing as traversal runs, with a bounded discovery channel.
+    ///
+    /// 扫描多个来源并发导入，汇总新增、重复、失败和取消结果。
     pub async fn import_sources(
         &self,
         id: LibraryId,
@@ -162,6 +168,7 @@ impl Service {
         control.scanning.store(false, Ordering::Relaxed);
         report
     }
+    /// 通过统一导入流程处理指定来源，沿用并发与内存控制。
     pub async fn import(
         &self,
         library: LibraryId,
@@ -178,6 +185,7 @@ impl Service {
         )
         .await
     }
+    /// 消费扫描流并调度有界导入工作；停止后等待已启动工作收尾。
     async fn import_stream<S: Stream<Item = Result<ImportFile>> + Unpin>(
         &self,
         library: LibraryId,
@@ -234,6 +242,7 @@ impl Service {
         report.cancelled = control.cancel.load(Ordering::Relaxed);
         report
     }
+    /// 领取导入票据、等待媒体预算、准备像素，再验证库身份并提交结果。
     async fn import_one(
         &self,
         library: LibraryId,

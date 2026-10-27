@@ -10,6 +10,7 @@ pub struct ReferenceCandidate {
     verified: Option<(String, u64, SystemTime)>,
 }
 impl ReferenceCandidate {
+    /// 核对候选文件的根目录、内容校验和及文件身份，拒绝校验期间发生的替换。
     pub fn verify(self) -> Result<Self> {
         let actual = self.replacement.canonicalize()?;
         if !actual.starts_with(&self.allowed_root) || !actual.is_file() {
@@ -35,6 +36,7 @@ impl ReferenceCandidate {
     }
 }
 impl Library {
+    /// 读取持久化浏览历史；无记录时返回空值，并限制历史数据大小。
     pub fn saved_navigation(&self) -> Result<Option<SavedNavigation>> {
         let value: Option<String> = self
             .db
@@ -53,6 +55,7 @@ impl Library {
             })
             .transpose()
     }
+    /// 校验历史条数、滚动位置和查询预算，再保存浏览状态。
     pub fn save_navigation(&self, value: &SavedNavigation) -> Result<()> {
         if value.back.len() > 32
             || value.forward.len() > 32
@@ -77,6 +80,7 @@ impl Library {
         self.db.execute("INSERT INTO library_preferences VALUES('navigation_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",[value])?;
         Ok(())
     }
+    /// 分页查找旧磁盘根目录下的外部引用，为新根目录生成待校验的重连候选。
     pub fn reconnect_page(
         &self,
         old_root: &Path,
@@ -130,6 +134,7 @@ impl Library {
         }
         Ok((cursor, candidates))
     }
+    /// 提交已验证的外部文件新位置，保留原素材与版本身份。
     pub fn apply_reconnect(&mut self, candidate: ReferenceCandidate) -> Result<bool> {
         let Some((identity, bytes, modified)) = &candidate.verified else {
             return Err(Error::Invalid("源文件尚未通过内容校验".into()));

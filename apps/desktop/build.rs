@@ -1,5 +1,6 @@
 use std::{env, fs, path::PathBuf};
 
+/// 生成桌面程序所需的图标和平台资源，并登记资源文件的重建依赖。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=MORIQ_BUILD_ID");
     let source = "../../assets/branding/moriq.svg";

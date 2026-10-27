@@ -1,3 +1,4 @@
+-- 创建版本 1 的资源库基础表、外键、索引及素材顺序维护触发器。
 PRAGMA foreign_keys = ON;
 CREATE TABLE library_identity(id TEXT PRIMARY KEY NOT NULL);
 CREATE TABLE assets(

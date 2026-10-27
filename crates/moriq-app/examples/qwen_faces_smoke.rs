@@ -4,6 +4,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+/// 校验样本与报告参数后启动人脸任务验收。
 fn main() -> Result<(), String> {
     let args = std::env::args_os()
         .skip(1)
@@ -16,6 +17,7 @@ fn main() -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .block_on(run(&args))
 }
+/// 在临时资源库运行真实 Qwen 人脸任务，检查分组及任务结果。
 async fn run(args: &[PathBuf]) -> Result<(), String> {
     std::fs::create_dir_all(&args[2]).map_err(|e| e.to_string())?;
     let dir = tempfile::tempdir_in(&args[2]).map_err(|e| e.to_string())?;

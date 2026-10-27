@@ -1,8 +1,10 @@
 use super::*;
 use rusqlite::types::Value;
 
+/// 把已校验的规则树编译为带参数的 SQL 条件，并追加绑定值。
 pub(super) fn compile(rule: &Rule, values: &mut Vec<Value>) -> Result<String> {
     rule.validate().map_err(|e| Error::Invalid(e.into()))?;
+    /// 递归生成规则节点对应的条件表达式，保持参数序号与值列表一致。
     fn emit(rule: &Rule, values: &mut Vec<Value>) -> String {
         match rule {
             Rule::All(items) | Rule::Any(items) => {

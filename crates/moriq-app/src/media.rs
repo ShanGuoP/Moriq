@@ -2,6 +2,7 @@
 use super::*;
 
 impl Service {
+    /// 使用默认取消控制建立原图分块会话。
     pub async fn region_session(
         &self,
         id: LibraryId,
@@ -11,6 +12,7 @@ impl Service {
         self.region_session_cancellable(id, asset, version, Arc::new(AtomicBool::new(false)))
             .await
     }
+    /// 冻结指定版本来源，在共享预算内建立可取消分块会话。
     pub async fn region_session_cancellable(
         &self,
         id: LibraryId,
@@ -34,6 +36,7 @@ impl Service {
         )
         .await
     }
+    /// 读取分块会话指定区域的像素。
     pub async fn region_tile(
         &self,
         id: LibraryId,
@@ -43,6 +46,7 @@ impl Service {
         self.region_tile_cancellable(id, session, region, Arc::new(AtomicBool::new(false)))
             .await
     }
+    /// 等待内存预算后读取指定图块，并向解码流程传递取消标志。
     pub async fn region_tile_cancellable(
         &self,
         id: LibraryId,
@@ -64,6 +68,7 @@ impl Service {
         )
         .await
     }
+    /// 冻结有效代表人脸并在媒体线程裁出人物头像。
     pub async fn person_portrait(
         &self,
         library: LibraryId,
@@ -90,6 +95,7 @@ impl Service {
         .await
         .map_err(|e| e.to_string())?
     }
+    /// 请求当前素材较大尺寸的预览，沿用统一缓存与媒体预算。
     pub async fn preview_full(
         &self,
         library: LibraryId,
@@ -97,6 +103,7 @@ impl Service {
     ) -> Result<moriq_library::media::Preview> {
         self.preview_for(library, asset, None).await
     }
+    /// 读取指定版本的预览，不修改素材当前展示版本。
     pub async fn preview_version(
         &self,
         library: LibraryId,
@@ -105,6 +112,7 @@ impl Service {
     ) -> Result<moriq_library::media::Preview> {
         self.preview_for(library, asset, Some(version)).await
     }
+    /// 按库、版本与尺寸查缓存，再冻结来源并执行有界解码。
     async fn preview_for(
         &self,
         library: LibraryId,
@@ -169,9 +177,11 @@ impl Service {
         )
         .await
     }
+    /// 读取当前展示版本的标准预览，供图库和详情使用。
     pub async fn preview(&self, library: LibraryId, asset: AssetId) -> Result<Pixels> {
         self.preview_full(library, asset).await.map(|p| p.image)
     }
+    /// 通过有界读取计划准备原图查看所需预览。
     pub async fn preview_original(
         &self,
         library: LibraryId,
@@ -194,6 +204,7 @@ impl Service {
         )
         .await
     }
+    /// 冻结视频版本并启动播放会话，拒绝过期库身份。
     pub async fn playback(
         &self,
         library: LibraryId,
@@ -211,6 +222,7 @@ impl Service {
         )
         .await
     }
+    /// 读取两份冻结版本预览，供界面对比而不切换展示版本。
     pub async fn compare_versions(
         &self,
         library: LibraryId,
@@ -242,12 +254,14 @@ impl Service {
         .await
     }
     #[cfg(feature = "capture")]
+    /// 把诊断像素写入指定路径，并保留调用所需的完成回执。
     pub async fn save_capture_evidence(&self, path: PathBuf, text: String) -> Result<()> {
         tokio::task::spawn_blocking(move || std::fs::write(path, text).map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())?
     }
     #[cfg(feature = "capture")]
+    /// 在阻塞线程保存界面诊断图片。
     pub async fn save_capture(
         &self,
         path: PathBuf,

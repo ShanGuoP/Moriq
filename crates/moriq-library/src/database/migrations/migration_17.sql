@@ -1,3 +1,4 @@
+-- 保存规范化 EXIF，并为相机、时间、感光度和地点筛选建立索引。
 CREATE TABLE version_exif(version_id TEXT PRIMARY KEY REFERENCES asset_versions(id) ON DELETE CASCADE,data TEXT NOT NULL);
 CREATE INDEX exif_camera ON version_exif(json_extract(data,'$.camera'));
 CREATE INDEX exif_taken ON version_exif(json_extract(data,'$.taken_at'));

@@ -1,4 +1,5 @@
 //! Exercise the desktop's verified model lease, guarded worker and request bridge.
+/// 通过正式模型租约和推理桥接执行一次验证，并输出结果摘要。
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let model = args.next().ok_or("usage: infer_model MODEL [IMAGE]")?;

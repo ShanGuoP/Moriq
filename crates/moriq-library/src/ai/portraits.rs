@@ -8,6 +8,7 @@ pub struct PortraitSource {
 }
 
 impl Library {
+    /// 为人物选择有效代表人脸，并冻结其素材版本与裁剪范围。
     pub fn person_portrait_source(&self, person: &str) -> Result<Option<PortraitSource>> {
         let row: Option<(String, String, String)> = self.db.query_row(
             "SELECT a.id,f.version_id,f.box FROM detected_faces f \
@@ -29,9 +30,12 @@ impl Library {
 
 /// Crop the actual detected face, with a little context, from a bounded preview.
 /// Copy only the crop rows rather than cloning the entire image for every face.
+///
+/// 按已准备的人脸范围裁出头像像素。
 pub fn crop(preview: &Pixels, bounds: [f32; 4]) -> Result<Pixels> {
     crop_at(preview, bounds, 96)
 }
+/// 校验人脸位置与源像素尺寸后裁剪指定区域，拒绝不完整像素数据。
 pub(crate) fn crop_at(preview: &Pixels, bounds: [f32; 4], output: u32) -> Result<Pixels> {
     if preview.width == 0
         || preview.height == 0
@@ -83,6 +87,7 @@ pub(crate) fn crop_at(preview: &Pixels, bounds: [f32; 4], output: u32) -> Result
 mod tests {
     use super::*;
     #[test]
+    /// 验证头像裁剪取实际人脸区域，并拒绝无效范围或不完整像素。
     fn crops_the_detected_face_and_rejects_invalid_or_incomplete_pixels() {
         let image = image::RgbaImage::from_fn(100, 100, |x, _| {
             image::Rgba(if x < 50 {
@@ -119,6 +124,7 @@ mod tests {
         assert!(crop(&preview, [0.99, 0.99, 0.2, 0.2]).is_ok());
     }
     #[test]
+    /// 验证人物代表头像排除旧展示版本和回收站素材。
     fn representative_face_excludes_old_versions_and_trashed_assets() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("sample.png");

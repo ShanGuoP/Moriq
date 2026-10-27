@@ -14,6 +14,7 @@ pub(super) enum Treatment {
     Thumb,
 }
 
+/// 为内容包装连续形变的选中指示，沿用减少动态效果偏好。
 pub(super) fn selection<'a>(
     content: impl Into<Element<'a, Message>>,
     selected: Option<usize>,
@@ -45,9 +46,11 @@ struct Morph {
     sampled: Instant,
 }
 impl Morph {
+    /// 判断选中指示是否仍在从当前形状过渡到目标形状。
     fn active(&self) -> bool {
         self.from != self.target && self.sampled.saturating_duration_since(self.started) < SETTLE
     }
+    /// 按采样时间插值选中区域边界，生成带先后边缘与回弹的形变。
     fn bounds(&self) -> Rectangle {
         if !self.active() {
             return self.target;
@@ -109,6 +112,7 @@ struct State {
     layout_size: Size,
 }
 impl State {
+    /// 从当前可见边界重新设定目标，避免快速切换选项产生跳变。
     fn retarget(
         &mut self,
         selected: Option<usize>,
@@ -157,9 +161,11 @@ impl State {
 }
 
 impl Liquid<'_> {
+    /// 借用包装控件的子控件，统一转发操作。
     fn child<'a>(layout: Layout<'a>) -> Layout<'a> {
         layout.children().next().unwrap_or(layout)
     }
+    /// 根据选中项和实际布局查找指示区域。
     fn target(&self, layout: Layout<'_>) -> Option<Rectangle> {
         let index = self.selected?;
         let origin = layout.bounds().position();
@@ -172,6 +178,7 @@ impl Liquid<'_> {
         }
         Some(bounds)
     }
+    /// 按选中、下划线或滑块样式绘制当前形变区域。
     fn paint(&self, renderer: &mut Renderer, theme: &Theme, bounds: Rectangle) {
         let (color, radius) = match self.treatment {
             Treatment::Selection => (
@@ -197,24 +204,31 @@ impl Liquid<'_> {
 }
 
 impl Widget<Message, Theme, Renderer> for Liquid<'_> {
+    /// 返回控件树状态类型标识，支持重建时复用已有状态。
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
     }
+    /// 建立选中指示控件的初始持久状态。
     fn state(&self) -> tree::State {
         tree::State::new(State::default())
     }
+    /// 沿用子控件声明的尺寸约束。
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }
+    /// 转发子控件的建议尺寸。
     fn size_hint(&self) -> Size<Length> {
         self.content.as_widget().size_hint()
     }
+    /// 为包装控件建立子控件树。
     fn children(&self) -> Vec<widget::Tree> {
         vec![widget::Tree::new(&self.content)]
     }
+    /// 对齐新旧子控件树，保留有效交互状态。
     fn diff(&self, tree: &mut widget::Tree) {
         tree.diff_children(std::slice::from_ref(&self.content));
     }
+    /// 布局子内容并依据实际位置更新选中指示目标。
     fn layout(
         &mut self,
         tree: &mut widget::Tree,
@@ -227,6 +241,7 @@ impl Widget<Message, Theme, Renderer> for Liquid<'_> {
             .layout(&mut tree.children[0], renderer, limits);
         layout::Node::with_children(child.size(), vec![child])
     }
+    /// 绘制形变指示和子内容，沿用当前裁剪范围。
     fn draw(
         &self,
         tree: &widget::Tree,
@@ -273,6 +288,7 @@ impl Widget<Message, Theme, Renderer> for Liquid<'_> {
             });
         }
     }
+    /// 转发输入事件并推进必要动画，只在未稳定时请求重绘。
     fn update(
         &mut self,
         tree: &mut widget::Tree,
@@ -324,6 +340,7 @@ impl Widget<Message, Theme, Renderer> for Liquid<'_> {
             viewport,
         );
     }
+    /// 把焦点、滚动等树操作转发给子控件。
     fn operate(
         &mut self,
         tree: &mut widget::Tree,
@@ -338,6 +355,7 @@ impl Widget<Message, Theme, Renderer> for Liquid<'_> {
             operation,
         );
     }
+    /// 返回子内容对应的鼠标交互状态。
     fn mouse_interaction(
         &self,
         tree: &widget::Tree,
@@ -354,6 +372,7 @@ impl Widget<Message, Theme, Renderer> for Liquid<'_> {
             renderer,
         )
     }
+    /// 转发子控件浮层，并保持其布局坐标一致。
     fn overlay<'a>(
         &'a mut self,
         tree: &'a mut widget::Tree,
@@ -376,6 +395,7 @@ impl Widget<Message, Theme, Renderer> for Liquid<'_> {
 mod tests {
     use super::*;
 
+    /// 构造选中形变测试所需的固定布局槽位。
     fn slot(x: f32) -> Rectangle {
         Rectangle {
             x,
@@ -386,6 +406,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证首次挂载与减少动态效果模式不会启动选中动画。
     fn first_mount_and_reduced_motion_never_start_an_animation() {
         let now = Instant::now();
         let size = Size::new(200.0, 32.0);
@@ -398,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证选中切换会伸缩并最终稳定，静止后不继续请求帧。
     fn moving_selection_stretches_squeezes_and_settles_without_idle_frames() {
         let now = Instant::now();
         let morph = Morph {
@@ -420,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证反向选择从当前可见形状改向，不发生位置跳变。
     fn reversing_retargets_the_current_shape_without_jumping() {
         let now = Instant::now();
         let size = Size::new(200.0, 32.0);
@@ -442,6 +465,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证窗口尺寸变化或选中项消失时清理旧几何状态。
     fn resize_and_missing_selection_drop_stale_geometry() {
         let now = Instant::now();
         let mut state = State::default();
@@ -465,6 +489,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证开启减少动态效果会结束正在进行的选中形变。
     fn enabling_reduced_motion_stops_an_in_flight_selection() {
         let now = Instant::now();
         let size = Size::new(200.0, 32.0);

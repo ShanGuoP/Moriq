@@ -5,6 +5,7 @@ use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, r
 use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Transformation, Vector};
 use std::time::{Duration, Instant};
 
+/// 包装内容的视觉平移，保持其布局尺寸和交互语义。
 pub(super) fn translated(content: Element<'_, Message>, y: f32) -> Element<'_, Message> {
     Element::new(Translated {
         content,
@@ -22,6 +23,8 @@ struct Translated<'a> {
 }
 
 /// Draw-only feedback keeps the button's original hit target and tooltip anchor.
+///
+/// 为按钮内容附加悬停、按压和失焦后的恢复反馈。
 pub(super) fn feedback<'a>(
     content: impl Into<Element<'a, Message>>,
     enabled: bool,
@@ -35,6 +38,7 @@ pub(super) fn feedback<'a>(
     })
 }
 
+/// 为可复用素材按钮绑定稳定身份，防止持有手势串到另一素材。
 pub(super) fn asset_feedback<'a>(
     content: impl Into<Element<'a, Message>>,
     owner: moriq_domain::AssetId,
@@ -49,24 +53,30 @@ pub(super) fn asset_feedback<'a>(
 }
 
 impl Widget<Message, Theme, Renderer> for Translated<'_> {
+    /// 返回反馈控件的状态类型标识，供控件树复用。
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<Feedback>()
     }
+    /// 建立反馈控件的初始持久状态。
     fn state(&self) -> widget::tree::State {
         widget::tree::State::new(Feedback {
             owner: self.owner,
             ..Default::default()
         })
     }
+    /// 沿用被包装内容的尺寸需求。
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }
+    /// 转发子控件的建议尺寸。
     fn size_hint(&self) -> Size<Length> {
         self.content.as_widget().size_hint()
     }
+    /// 为包装内容建立子控件树。
     fn children(&self) -> Vec<widget::Tree> {
         vec![widget::Tree::new(&self.content)]
     }
+    /// 更新子树并处理素材身份变化，保留有效状态并清理旧手势。
     fn diff(&self, tree: &mut widget::Tree) {
         let state = tree.state.downcast_mut::<Feedback>();
         if state.owner != self.owner {
@@ -80,6 +90,7 @@ impl Widget<Message, Theme, Renderer> for Translated<'_> {
             tree.diff_children(std::slice::from_ref(&self.content));
         }
     }
+    /// 沿用内容布局，避免视觉反馈改变命中区域。
     fn layout(
         &mut self,
         tree: &mut widget::Tree,
@@ -95,6 +106,7 @@ impl Widget<Message, Theme, Renderer> for Translated<'_> {
             vec![child.translate(Vector::new(0.0, self.y))],
         )
     }
+    /// 按采样后的缩放和位移绘制内容，保持裁剪范围一致。
     fn draw(
         &self,
         tree: &widget::Tree,
@@ -134,6 +146,7 @@ impl Widget<Message, Theme, Renderer> for Translated<'_> {
         }
     }
 
+    /// 处理控件输入与动画帧，失焦或身份变化时清理持有手势。
     fn update(
         &mut self,
         tree: &mut widget::Tree,
@@ -176,6 +189,7 @@ impl Widget<Message, Theme, Renderer> for Translated<'_> {
             viewport,
         );
     }
+    /// 把控件树操作转发给被包装内容。
     fn operate(
         &mut self,
         tree: &mut widget::Tree,
@@ -190,6 +204,7 @@ impl Widget<Message, Theme, Renderer> for Translated<'_> {
             operation,
         );
     }
+    /// 沿用子控件的鼠标交互提示。
     fn mouse_interaction(
         &self,
         tree: &widget::Tree,
@@ -206,6 +221,7 @@ impl Widget<Message, Theme, Renderer> for Translated<'_> {
             renderer,
         )
     }
+    /// 转发子内容浮层，并应用与内容一致的视觉偏移。
     fn overlay<'a>(
         &'a mut self,
         tree: &'a mut widget::Tree,
@@ -233,6 +249,7 @@ pub(super) struct Value {
     duration: Duration,
 }
 impl Default for Value {
+    /// 构造静止状态的反馈参数，初始不申请动画帧。
     fn default() -> Self {
         let now = Instant::now();
         Self {
@@ -245,6 +262,7 @@ impl Default for Value {
     }
 }
 impl Value {
+    /// 读取当前已采样的插值值。
     pub fn get(&self) -> f32 {
         let t = if self.duration.is_zero() {
             1.0
@@ -258,6 +276,7 @@ impl Value {
         };
         self.from + (self.target - self.from) * (1.0 - (1.0 - t).powi(3))
     }
+    /// 从当前采样值设置新目标；减少动态效果时直接到达目标。
     pub fn set(&mut self, target: f32, now: Instant, duration: Duration, reduced: bool) {
         self.sample(now);
         if reduced {
@@ -274,9 +293,11 @@ impl Value {
         self.started = now;
         self.duration = duration;
     }
+    /// 记录单个插值参数的采样时刻，供读取当前值时计算缓动进度。
     pub fn sample(&mut self, now: Instant) {
         self.sampled = now;
     }
+    /// 判断当前反馈是否还需要动画采样和重绘。
     pub fn active(&self) -> bool {
         (self.from - self.target).abs() > f32::EPSILON
             && self.sampled.saturating_duration_since(self.started) < self.duration
@@ -291,6 +312,7 @@ struct Feedback {
     owner: Option<moriq_domain::AssetId>,
 }
 impl Default for Feedback {
+    /// 构造静止状态的反馈参数，初始不申请动画帧。
     fn default() -> Self {
         Self {
             hover: Default::default(),
@@ -303,6 +325,7 @@ impl Default for Feedback {
     }
 }
 impl Feedback {
+    /// 根据输入、可用状态与时间更新悬停和按压参数。
     fn update(&mut self, event: &Event, inside: bool, enabled: bool, reduced: bool, now: Instant) {
         match event {
             Event::Window(iced::window::Event::Focused) => self.focused = true,
@@ -352,9 +375,11 @@ impl Feedback {
             reduced || !enabled,
         );
     }
+    /// 判断当前反馈是否还需要动画采样和重绘。
     fn active(&self) -> bool {
         self.hover.active() || self.press.active()
     }
+    /// 返回当前反馈对应的缩放与垂直位移。
     fn transform(&self) -> (f32, f32) {
         (
             1.0 - 0.055 * self.press.get(),
@@ -371,6 +396,7 @@ pub(super) struct HoverFeedback {
 }
 impl HoverFeedback {
     const DURATION: Duration = Duration::from_millis(120);
+    /// 读取指定素材当前可见的悬停反馈强度。
     pub fn amount(&self, id: moriq_domain::AssetId) -> f32 {
         self.current
             .iter()
@@ -378,6 +404,7 @@ impl HoverFeedback {
             .find(|(key, _)| *key == id)
             .map_or(0.0, |(_, value)| value.get())
     }
+    /// 切换素材悬停目标，保留当前项与离开项的可见值以支持连续反向。
     pub fn set(&mut self, id: moriq_domain::AssetId, inside: bool, now: Instant, reduced: bool) {
         self.sample(now);
         if inside {
@@ -414,6 +441,7 @@ impl HoverFeedback {
             self.leaving = None;
         }
     }
+    /// 推进当前项与离开项的悬停插值，移除已回到静止状态的旧项。
     pub fn sample(&mut self, now: Instant) {
         for (_, value) in self.current.iter_mut().chain(self.leaving.iter_mut()) {
             value.sample(now);
@@ -426,12 +454,14 @@ impl HoverFeedback {
             self.leaving = None;
         }
     }
+    /// 判断当前反馈是否还需要动画采样和重绘。
     pub fn active(&self) -> bool {
         self.current
             .iter()
             .chain(self.leaving.iter())
             .any(|(_, value)| value.active())
     }
+    /// 清空素材悬停反馈，使导航或查询替换后不再绘制旧素材状态。
     pub fn clear(&mut self) {
         *self = Self::default();
     }
@@ -444,6 +474,7 @@ mod tests {
     use moriq_domain::AssetId;
     use std::time::{Duration, Instant};
     #[test]
+    /// 验证悬停反向连续、忽略旧离开事件并在静止后停止采样。
     fn hover_reverses_continuously_ignores_stale_exit_and_stops_at_rest() {
         let mut motion = HoverFeedback::default();
         let id = AssetId::default();
@@ -466,6 +497,7 @@ mod tests {
         assert!(!motion.active());
     }
     #[test]
+    /// 验证减少动态效果保留静态反馈但不订阅动画帧。
     fn reduced_motion_keeps_feedback_without_a_frame_subscription() {
         let id = AssetId::default();
         let mut motion = HoverFeedback::default();
@@ -477,6 +509,7 @@ mod tests {
         assert!(!motion.active());
     }
     #[test]
+    /// 验证跨卡片并再次进入时，当前项与离开项反馈均保持连续。
     fn crossing_cards_and_reentering_preserve_both_visible_values() {
         let now = Instant::now();
         let a = AssetId::default();
@@ -503,6 +536,7 @@ mod tests {
         assert!(feedback.leaving.is_none());
     }
     #[test]
+    /// 验证按下释放连续反向，失焦不留下卡住的按压状态。
     fn press_release_reverses_continuously_and_focus_loss_does_not_leave_a_stuck_press() {
         let now = Instant::now();
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
@@ -561,6 +595,7 @@ mod tests {
         assert!(!feedback.active());
     }
     #[test]
+    /// 验证素材按钮复用时清理旧手势，同身份刷新保留反馈。
     fn recycling_an_asset_button_clears_held_gestures_but_stable_identity_keeps_feedback() {
         let first_id = AssetId::default();
         let second_id = AssetId::default();

@@ -1,3 +1,4 @@
+-- 扩展分类词表定义、顺序与启用状态，并更新有效内容视图。
 ALTER TABLE ai_vocabulary ADD COLUMN definition TEXT NOT NULL DEFAULT '';
 ALTER TABLE ai_vocabulary ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE ai_vocabulary ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1));

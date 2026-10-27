@@ -16,7 +16,9 @@ TOKEN = re.compile(
 )
 
 
+# 隐藏字符串和注释内容并保留行号，返回用于代码密度检查的逻辑行。
 def code_lines(source):
+    # 把一个字面量或注释替换为占位内容，保留其换行数以准确定位违规行。
     def elide(match):
         token = match.group(0)
         marker = "" if token.startswith(("//", "/*")) else '"literal"'
@@ -24,6 +26,7 @@ def code_lines(source):
     return TOKEN.sub(elide, source).splitlines()
 
 
+# 遍历自有 Rust 源码检查可执行代码行宽，输出违规位置并返回检查状态。
 def main():
     failures = []
     paths = sorted((ROOT / "crates").rglob("*.rs")) + sorted((ROOT / "apps").rglob("*.rs"))

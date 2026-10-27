@@ -1,6 +1,7 @@
 use super::*;
 
 impl Library {
+    /// 校验并保存资源库显示名称，不移动资源库目录。
     pub fn rename(&mut self, name: &str) -> Result<()> {
         let name = name.trim().trim_end_matches(".moriq").trim();
         import::validate_component(name)?;
@@ -14,6 +15,7 @@ impl Library {
         Ok(())
     }
 
+    /// 在临时目录建立初始数据库和目录结构，再发布为指定名称的资源库并打开。
     pub fn create(parent: &Path, name: &str) -> Result<Self> {
         let name = name.trim().trim_end_matches(".moriq").trim();
         import::validate_component(name)?;
@@ -61,10 +63,12 @@ impl Library {
         Self::open_inner(&destination, true)
     }
 
+    /// 打开已有资源库，执行身份校验、必要的结构升级和恢复流程。
     pub fn open(root: &Path) -> Result<Self> {
         Self::open_inner(root, false)
     }
 
+    /// 取得资源库锁并校验清单与数据库身份；升级前备份已有数据库，再恢复未完成操作。
     fn open_inner(root: &Path, fresh: bool) -> Result<Self> {
         let root = root.canonicalize()?;
         let manifest_file = safe_path(&root, "library.toml")?;
@@ -323,18 +327,22 @@ impl Library {
         Ok(library)
     }
 
+    /// 借用最近一次导入各阶段的耗时统计，不重新执行导入。
     pub fn import_metrics(&self) -> &ImportMetrics {
         &self.last_import
     }
 
+    /// 返回当前资源库的根目录路径。
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// 返回清单中稳定的资源库身份，用于请求和结果的归属校验。
     pub fn id(&self) -> LibraryId {
         self.manifest.library_id
     }
 
+    /// 汇总素材数量、空间、项目及显示名称，生成资源库信息快照。
     pub fn info(&self) -> Result<LibraryInfo> {
         let (count, favorites): (u64, u64) = self.db.query_row(
             "SELECT count(*),COALESCE(sum(favorite),0) FROM assets WHERE deleted_at IS NULL",

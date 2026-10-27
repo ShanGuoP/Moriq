@@ -29,10 +29,13 @@ impl Library {
     /// Only the catalog snapshot and file names are frozen on the writer.
     /// Managed originals are immutable and the library requires hard-link support.
     /// Private links keep their bytes alive even if the source is purged later.
+    ///
+    /// 冻结资源库数据库与不可变文件链接，生成可离开写入线程执行的备份计划。
     pub fn backup_plan(&self, parent: &Path, independent: bool) -> Result<Plan> {
         self.backup_plan_controlled(parent, independent, &Control::default())
     }
 
+    /// 在可取消控制下生成一致备份快照，排除未完成导入暂存。
     pub fn backup_plan_controlled(
         &self,
         parent: &Path,
@@ -133,10 +136,12 @@ impl Library {
 }
 
 impl Plan {
+    /// 将冻结快照复制到目标位置，使用默认进度处理。
     pub fn copy(self, control: &Control) -> Result<Prepared> {
         self.copy_with_progress(control, |_| {})
     }
 
+    /// 复制快照内容并报告进度；取消或失败时不发布半成品备份。
     pub fn copy_with_progress(
         self,
         control: &Control,
@@ -204,6 +209,8 @@ impl Plan {
 
 impl Prepared {
     /// The app checks the library identity on its writer before calling this.
+    ///
+    /// 校验备份身份与内容后发布最终目录，按选项处理副本资源库身份。
     pub fn publish(self) -> Result<PathBuf> {
         if self.control.cancel.load(Ordering::Acquire) {
             return Err(Error::Invalid("备份已停止，未发布副本".into()));
@@ -213,6 +220,7 @@ impl Prepared {
     }
 }
 
+/// 遍历受管备份范围并响应取消，收集需要复制的文件。
 fn walk_files(
     root: &Path,
     relative: &Path,
@@ -238,6 +246,7 @@ fn walk_files(
     Ok(())
 }
 
+/// 建立不可变文件的链接快照，使后续源库编辑不改变备份输入。
 fn link_tree(root: &Path, relative: &Path, destination: &Path) -> Result<()> {
     cancel::check()?;
     if relative.components().count() > 128 {
@@ -280,6 +289,7 @@ fn link_tree(root: &Path, relative: &Path, destination: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
     fn fixture() -> (tempfile::TempDir, Library, AssetId) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("original.png");
@@ -293,6 +303,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证备份冻结链接不受源库删除影响，之后编辑不混入快照。
     fn frozen_links_survive_source_purge_and_later_edits_are_not_in_the_backup() {
         let (dir, mut library, asset) = fixture();
         library
@@ -333,6 +344,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证取消或损坏不发布半成品副本，克隆会获得新库身份。
     fn cancellation_and_corruption_never_publish_partial_copies_and_clone_changes_identity() {
         let (dir, library, asset) = fixture();
         let plan = library.backup_plan(dir.path(), false).unwrap();
@@ -368,6 +380,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证备份排除进行中导入暂存，已中断导入仍可恢复。
     fn active_import_stages_are_excluded_but_interrupted_imports_remain_recoverable() {
         let (dir, mut library, _) = fixture();
         let source = dir.path().join("pending.png");

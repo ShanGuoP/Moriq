@@ -15,6 +15,7 @@ pub struct MasonryIndex {
     pub widths: Vec<f32>,
 }
 impl MasonryIndex {
+    /// 按素材尺寸和列数构造瀑布流位置索引。
     pub fn new(sizes: &[(u32, u32)], columns: usize, width: f32, gap: f32) -> Self {
         let width = width.max(1.0);
         let gap = gap.max(0.0);
@@ -54,6 +55,7 @@ impl MasonryIndex {
             widths,
         }
     }
+    /// 根据滚动位置和视口高度计算需要显示的素材范围。
     pub fn visible(&self, top: f32, height: f32) -> Vec<Vec<Placement>> {
         let start = (top - self.width * 1.5).max(0.0);
         let end = top + height + self.width * 1.5;
@@ -66,6 +68,7 @@ impl MasonryIndex {
             })
             .collect()
     }
+    /// 把可见区间转换为有界分页请求，控制两端预取范围。
     pub fn page_range(&self, top: f32, height: f32) -> Range<usize> {
         let start = (top - self.width * 1.5).max(0.0);
         let end = top + height + self.width * 1.5;
@@ -91,6 +94,7 @@ pub struct Grid {
     pub viewport_height: f32,
 }
 impl Grid {
+    /// 根据滚动位置和视口高度计算需要显示的素材范围。
     pub fn visible(self, total: usize, scroll_y: f32) -> Range<usize> {
         let columns = self.columns.max(1);
         let height = self.row_height.max(1.0);
@@ -105,6 +109,7 @@ impl Grid {
                 .saturating_add(rows.saturating_mul(columns))
                 .min(total)
     }
+    /// 返回当前布局索引的总高度，供滚动容器计算内容尺寸。
     pub fn total_height(self, total: usize) -> f32 {
         total.div_ceil(self.columns.max(1)) as f32 * self.row_height
     }
@@ -114,6 +119,7 @@ impl Grid {
 mod tests {
     use super::*;
     #[test]
+    /// 验证随机滚动跳转不会突破可见控件预算。
     fn random_jumps_keep_widget_budget_constant() {
         let grid = Grid {
             columns: 4,
@@ -131,6 +137,7 @@ mod tests {
         assert!(grid.visible(0, 0.0).is_empty());
     }
     #[test]
+    /// 验证瀑布流可见查询与直接计算一致，卡片不重叠。
     fn masonry_random_jumps_match_brute_force_and_never_overlap() {
         for count in [10_000, 100_000, 500_000] {
             let sizes: Vec<_> = (0..count)
@@ -168,6 +175,7 @@ mod tests {
         }
     }
     #[test]
+    /// 验证空素材和异常尺寸输入仍产生有界布局。
     fn masonry_empty_and_invalid_dimensions_are_bounded() {
         let empty = MasonryIndex::new(&[], 0, 0.0, 0.0);
         assert_eq!(empty.height, 0.0);

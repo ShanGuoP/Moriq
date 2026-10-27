@@ -1,6 +1,7 @@
 //! Desktop shell integration always runs outside the catalog writer.
 use crate::Result;
 use std::{ffi::OsString, process::Command};
+/// 在阻塞线程调用系统打开或定位目标，沿用平台参数规则。
 pub(super) async fn open(target: OsString, reveal: bool) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         #[cfg(windows)]
@@ -42,6 +43,7 @@ pub(super) async fn open(target: OsString, reveal: bool) -> Result<()> {
 }
 
 #[cfg(windows)]
+/// 规范化文件管理器目标路径，保留 Unicode、空格和合法 URL。
 fn shell_target(value: OsString) -> OsString {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     let wide: Vec<u16> = value.encode_wide().collect();
@@ -61,6 +63,7 @@ fn shell_target(value: OsString) -> OsString {
 mod tests {
     use super::*;
     #[test]
+    /// 验证系统打开目标规范化保留 Unicode、空格与 URL 含义。
     fn explorer_paths_remove_verbatim_prefix_without_changing_unicode_spaces_or_urls() {
         for (input, expected) in [
             (

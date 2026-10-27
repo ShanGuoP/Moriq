@@ -6,6 +6,7 @@ pub(super) struct Cancellation(
     std::sync::Mutex<Vec<(LibraryId, String, std::sync::Weak<AtomicBool>)>>,
 );
 impl Cancellation {
+    /// 为指定库与任务登记取消标志，清除已释放令牌的记录。
     pub fn register(&self, owner: LibraryId, job: String) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
         let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -13,6 +14,7 @@ impl Cancellation {
         tasks.push((owner, job, Arc::downgrade(&flag)));
         flag
     }
+    /// 向指定任务或全部在途任务发送取消，保留仍被工作线程持有的令牌。
     pub fn stop(&self, target: Option<(LibraryId, &str)>) {
         let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
         tasks.retain(|(owner, job, flag)| {
@@ -28,6 +30,7 @@ impl Cancellation {
     }
 }
 
+/// 启动独立调度线程，以弱队列所有权驱动任务；最后一个公开服务释放后停止。
 pub(super) fn start(service: &Service) -> std::io::Result<()> {
     // Only weak ownership of the writer queue: dropping the last public Service
     // stops scheduling and releases the active library after in-flight work settles.
@@ -113,6 +116,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    /// 验证并行登记的取消令牌不会互相覆盖，单项取消仅影响目标任务。
     fn cancellation_keeps_multiple_tasks_and_targets_only_the_requested_job() {
         let cancellation = Cancellation::default();
         let owner = LibraryId::default();
@@ -134,6 +138,7 @@ mod tests {
         assert!(cancellation.0.lock().unwrap().is_empty());
     }
     #[test]
+    /// 验证等待预算时切库会拒绝旧结果，并保留可恢复任务检查点。
     fn switching_library_during_budget_wait_rejects_old_result_and_recovers_checkpoint() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let dir = tempfile::tempdir().unwrap();
@@ -199,6 +204,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证任务独立于界面投影执行，服务释放后调度器停止。
     fn jobs_run_without_ui_despite_projection_errors_and_stop_with_the_service() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let dir = tempfile::tempdir().unwrap();

@@ -2,6 +2,7 @@
 use super::*;
 const TREE: &str = "WITH RECURSIVE tree(id) AS(SELECT ?1 UNION ALL SELECT p.id FROM projects p JOIN tree t ON p.parent_id=t.id)";
 impl Library {
+    /// 冻结项目树、成员及共享关系，生成等待用户确认的完整删除范围。
     pub fn project_deletion_plan(&self, root: ProjectId) -> Result<ProjectDeletionPlan> {
         let name = self.db.query_row(
             "SELECT name FROM projects WHERE id=?1",
@@ -71,6 +72,7 @@ impl Library {
             referenced,
         })
     }
+    /// 复核已确认范围后删除项目内容；成员发生变化时拒绝沿用旧计划。
     pub fn delete_project_contents(&mut self, plan: &ProjectDeletionPlan) -> Result<PurgeReport> {
         self.recover_purges()?;
         let current = self.project_deletion_plan(plan.root)?;

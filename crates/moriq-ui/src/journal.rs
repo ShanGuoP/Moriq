@@ -14,6 +14,7 @@ pub(super) struct Journal {
     newest_notice: i64,
 }
 impl Journal {
+    /// 清除活动与通知分页状态，并使旧读取回执失效。
     pub fn reset(&mut self) {
         let requests = self.requests.map(|n| n + 1);
         *self = Self {
@@ -34,6 +35,7 @@ pub enum JournalMessage {
     Retry(String),
 }
 impl App {
+    /// 按当前筛选和游标异步读取活动或通知页面。
     pub(super) fn load_events(&mut self, notices: bool, before: Option<i64>) -> Task<Message> {
         let Some(library) = &self.library else {
             return Task::none();
@@ -58,6 +60,7 @@ impl App {
             },
         )
     }
+    /// 把界面操作结果保存为不带素材关联的资源库通知。
     pub(super) fn persist_notice(
         &self,
         title: &str,
@@ -67,6 +70,7 @@ impl App {
     ) -> Task<Message> {
         self.persist_asset_notice(title, detail, level, retry, None)
     }
+    /// 保存带素材身份和重试信息的资源库通知。
     pub(super) fn persist_asset_notice(
         &self,
         title: &str,
@@ -93,6 +97,7 @@ impl App {
             move |result| Message::Journal(JournalMessage::Stored(id, result)),
         )
     }
+    /// 处理活动分页、已读和关联素材导航，核对读取回执身份。
     pub(super) fn journal_message(&mut self, message: JournalMessage) -> Task<Message> {
         let language = self.preferences.language;
         use JournalMessage::*;
@@ -208,6 +213,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建活动或通知列表及加载更多入口。
     pub(super) fn event_list(&self, notices: bool) -> Element<'_, Message> {
         let language = self.preferences.language;
         let index = usize::from(notices);
@@ -311,6 +317,7 @@ impl App {
             .into()
     }
 }
+/// 把活动类型转换为可读的本地化标签。
 pub(super) fn event_label(language: Language, kind: &str) -> &str {
     match kind {
         "import" => tr!(language, "导入素材" => "Assets imported"),

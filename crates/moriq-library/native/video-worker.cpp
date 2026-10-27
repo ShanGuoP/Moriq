@@ -1,4 +1,4 @@
-// Isolated FFmpeg decoder. RGBA frames go to the Rust/Iced renderer over stdout.
+﻿// Isolated FFmpeg decoder. RGBA frames go to the Rust/Iced renderer over stdout.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -33,7 +33,9 @@ static std::ofstream diagnostics;
 static std::mutex diagnostics_mutex;
 static std::atomic<unsigned> rendered{0};
 static const auto process_started=std::chrono::steady_clock::now();
+// 返回播放进程启动以来的毫秒数，用于播放诊断计时。
 static long long elapsed_ms(){return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-process_started).count();}
+// 按固定小端帧协议输出尺寸、位置、时长和 RGBA 像素，刷新管道供界面读取。
 static bool write_frame(int w,int h,long long pts,const std::vector<uint8_t>& pixels) {
     // Fixed little-endian header; Windows targets are little endian.
     const uint32_t width=w,height=h;const uint64_t position=std::max(0LL,pts),duration=std::max(0LL,duration_ms.load());
@@ -43,10 +45,12 @@ static bool write_frame(int w,int h,long long pts,const std::vector<uint8_t>& pi
     std::cout.write(reinterpret_cast<const char*>(pixels.data()),pixels.size());std::cout.flush();
     return bool(std::cout);
 }
+// 把 Windows 宽字符文件路径转换为 FFmpeg 使用的 UTF-8。
 static std::string utf8(const wchar_t* value) {
     int n=WideCharToMultiByte(CP_UTF8,0,value,-1,nullptr,0,nullptr,nullptr);
     std::string s(size_t(n),0);WideCharToMultiByte(CP_UTF8,0,value,-1,s.data(),n,nullptr,nullptr);s.pop_back();return s;
 }
+// 为指定媒体流创建解码上下文，并设置有界解码线程数；失败时释放已分配资源。
 static AVCodecContext* codec(AVFormatContext* f,int index) {
     if(index<0)return nullptr;
     const AVCodec* c=avcodec_find_decoder(f->streams[index]->codecpar->codec_id);if(!c)return nullptr;
@@ -55,8 +59,10 @@ static AVCodecContext* codec(AVFormatContext* f,int index) {
     ctx->thread_count=ctx->codec_type==AVMEDIA_TYPE_VIDEO?std::clamp(int(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS))/2,2,8):2;
     if(avcodec_open2(ctx,c,nullptr)<0){avcodec_free_context(&ctx);return nullptr;}return ctx;
 }
+// 把停止标志传给 FFmpeg 的阻塞读取中断回调。
 static int interrupt(void*) {return stopping?1:0;}
 struct Sound {WAVEHDR header{};std::vector<uint8_t> samples;};
+// 读取本地音视频流，处理跳转、暂停和音量；按时钟输出有界视频帧并回收解码资源。
 static void decode(const std::wstring path) {
     auto fail=[](const char* message){{std::lock_guard<std::mutex> lock(diagnostics_mutex);diagnostics<<"error "<<message<<std::endl;}stopping=true;};
     AVFormatContext* format=avformat_alloc_context();if(!format){fail("allocation");return;}
@@ -172,6 +178,7 @@ static void decode(const std::wstring path) {
     reset_audio();if(audio)waveOutClose(audio);swr_free(&resampler);sws_freeContext(scaler);av_frame_free(&frame);av_packet_free(&packet);avcodec_free_context(&vc);avcodec_free_context(&ac);avformat_close_input(&format);
 
 }
+// 建立父进程保护和控制通道，启动播放解码并在停止后等待工作线程结束。
 int wmain(int argc,wchar_t** argv) {
     if(argc!=4)return 2;diagnostics.open(argv[3],std::ios::trunc);
     HANDLE parent=OpenProcess(SYNCHRONIZE,FALSE,wcstoul(argv[2],nullptr,10));if(!parent)return 3;

@@ -1,5 +1,6 @@
 use super::*;
 
+/// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
 fn fixture() -> (tempfile::TempDir, Library, PathBuf, Asset) {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("original.png");
@@ -13,6 +14,7 @@ fn fixture() -> (tempfile::TempDir, Library, PathBuf, Asset) {
 }
 
 #[test]
+/// 验证孤立文件扫描与重检保留已登记项目别名。
 fn orphan_scan_and_recheck_preserve_registered_project_aliases() {
     let (_dir, mut lib, source, asset) = fixture();
     let project = lib.create_project("second").unwrap();
@@ -56,6 +58,7 @@ fn orphan_scan_and_recheck_preserve_registered_project_aliases() {
 }
 
 #[test]
+/// 验证恢复拒绝部分复制，并清理成功导入的暂存。
 fn recovery_rejects_partial_copy_and_cleans_successful_staging() {
     for partial in [false, true] {
         let dir = tempfile::tempdir().unwrap();
@@ -92,6 +95,7 @@ fn recovery_rejects_partial_copy_and_cleans_successful_staging() {
 }
 
 #[test]
+/// 验证所有受支持旧结构在迁移前获得一致数据库备份。
 fn every_old_schema_gets_a_consistent_snapshot_before_migration() {
     let (_dir, lib, _source, _asset) = fixture();
     let root = lib.root.clone();
@@ -126,6 +130,7 @@ fn every_old_schema_gets_a_consistent_snapshot_before_migration() {
 }
 
 #[test]
+/// 验证危险清单或项目名称在文件系统访问前被拒绝。
 fn unsafe_manifest_and_project_names_are_rejected_before_filesystem_use() {
     let (_dir, lib, _source, _asset) = fixture();
     for name in ["CON", "nul.jpg", "COM1", "客户.", "a/b", "../escape"] {
@@ -144,6 +149,7 @@ fn unsafe_manifest_and_project_names_are_rejected_before_filesystem_use() {
 }
 
 #[test]
+/// 验证永久删除清理版本预览并保留应受保护的来源。
 fn purge_removes_version_previews_and_preserves_the_source() {
     let (_dir, mut lib, source, asset) = fixture();
     let path = lib
@@ -157,6 +163,7 @@ fn purge_removes_version_previews_and_preserves_the_source() {
 }
 
 #[test]
+/// 验证外部引用限制自动读取，UNC 路径在打开前被拒绝。
 fn external_references_pause_automatic_reads_and_unc_is_rejected_without_opening_it() {
     let (_dir, mut lib, source, _asset) = fixture();
     // Use distinct content to register an external original rather than deduplicate it.
@@ -203,6 +210,7 @@ fn external_references_pause_automatic_reads_and_unc_is_rejected_without_opening
 }
 
 #[test]
+/// 验证视频链接快照在原路径被移除后仍保留内容。
 fn video_link_snapshot_keeps_content_after_source_name_is_removed() {
     let (_dir, lib, _source, asset) = fixture();
     let source = lib.asset_path(asset.id).unwrap();
@@ -221,6 +229,7 @@ fn video_link_snapshot_keeps_content_after_source_name_is_removed() {
 }
 
 #[test]
+/// 验证重复导入恢复已在回收站的内容。
 fn duplicate_import_restores_trashed_content_instead_of_hiding_it() {
     let (_dir, mut lib, source, asset) = fixture();
     lib.edit(&[asset.id], &Edit::Trash(true)).unwrap();
@@ -230,6 +239,7 @@ fn duplicate_import_restores_trashed_content_instead_of_hiding_it() {
 }
 
 #[test]
+/// 验证设置和清除地点会刷新相关规则查询快照。
 fn location_rule_snapshot_updates_after_setting_and_clearing_location() {
     let (_dir, mut lib, _source, asset) = fixture();
     let query = Query {
@@ -253,6 +263,7 @@ fn location_rule_snapshot_updates_after_setting_and_clearing_location() {
 }
 
 #[test]
+/// 验证删除恢复冲突保留两份文件，并允许打开进行检查。
 fn conflicting_purge_recovery_keeps_both_files_and_allows_open_for_inspection() {
     let (_dir, mut lib, _source, asset) = fixture();
     let job = Uuid::new_v4().to_string();
@@ -295,6 +306,7 @@ fn conflicting_purge_recovery_keeps_both_files_and_allows_open_for_inspection() 
 }
 
 #[test]
+/// 验证孤立文件扫描不会因路径大小写差异误判已登记文件。
 fn orphan_scan_preserves_registered_paths_with_different_case() {
     let (_dir, lib, _source, asset) = fixture();
     let path = lib.asset_path(asset.id).unwrap();
@@ -314,6 +326,7 @@ fn orphan_scan_preserves_registered_paths_with_different_case() {
 }
 
 #[test]
+/// 验证引用导入经过正式票据流程，重开与删除后状态符合约束。
 fn referenced_import_uses_production_ticket_and_survives_reopen_and_purge() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("external.png");
@@ -357,6 +370,7 @@ fn referenced_import_uses_production_ticket_and_survives_reopen_and_purge() {
 }
 
 #[test]
+/// 验证无效名称不会发布无法再次打开的库或项目。
 fn invalid_names_never_publish_unopenable_libraries_or_projects() {
     let dir = tempfile::tempdir().unwrap();
     for name in ["NUL", "COM¹", "a/b", "report\u{1}A"] {
@@ -372,6 +386,7 @@ fn invalid_names_never_publish_unopenable_libraries_or_projects() {
 }
 
 #[test]
+/// 验证缓存清理后按需重建缩略图且不修改原片。
 fn cache_trim_rebuilds_thumbnails_on_demand_without_changing_originals() {
     let (_dir, lib, _source, asset) = fixture();
     let original = fs::read(lib.asset_path(asset.id).unwrap()).unwrap();
@@ -401,6 +416,7 @@ fn cache_trim_rebuilds_thumbnails_on_demand_without_changing_originals() {
 }
 
 #[test]
+/// 验证任务完成状态与任务项清理在同一事务提交。
 fn completed_job_and_item_cleanup_commit_together() {
     let (_dir, mut lib, _source, _asset) = fixture();
     let id = lib.enqueue_media_job(JobKind::Integrity, 0).unwrap();

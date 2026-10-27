@@ -49,6 +49,7 @@ pub struct Hardware {
     pub logical_cpus: usize,
     pub provider: String,
 }
+/// 读取本机处理器和内存信息，供模型运行与资源预算参考。
 pub fn hardware() -> Hardware {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
@@ -61,12 +62,14 @@ pub fn hardware() -> Hardware {
         provider: "Vulkan · llama.cpp · Qwen3.5-4B".into(),
     }
 }
+/// 解析内置模型清单，返回固定版本的模型及下载文件信息。
 pub fn registry() -> Result<Vec<ModelSpec>> {
     serde_json::from_str(
         include_str!("../../../workers/ai/models.json").trim_start_matches('\u{feff}'),
     )
     .map_err(|e| e.to_string())
 }
+/// 定位当前用户模型存放根目录。
 pub fn model_root() -> Result<PathBuf> {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
@@ -79,15 +82,18 @@ pub fn model_root() -> Result<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")));
     Ok(base.ok_or("无法定位模型目录")?.join("MORIQ").join("models"))
 }
+/// 按模型身份查找内置规格，未知身份返回错误。
 fn spec(id: &str) -> Result<ModelSpec> {
     registry()?
         .into_iter()
         .find(|m| m.id == id)
         .ok_or_else(|| "未知模型".into())
 }
+/// 对模型修订计算短摘要，生成该修订的稳定目录键。
 fn key(model: &ModelSpec) -> String {
     format!("{:x}", Sha256::digest(model.revision.as_bytes()))[..24].into()
 }
+/// 校验模型清单中的相对文件路径，防止下载目标越界。
 fn safe_file(root: &Path, name: &str) -> Result<PathBuf> {
     if name.is_empty()
         || name.contains('\\')
@@ -99,6 +105,7 @@ fn safe_file(root: &Path, name: &str) -> Result<PathBuf> {
     }
     Ok(root.join(name))
 }
+/// 分块计算模型文件 SHA-256 校验和。
 fn digest(path: &Path) -> Result<String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let mut hash = Sha256::new();
@@ -112,9 +119,11 @@ fn digest(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
+/// 根据模型规格确定隔离的模型版本目录。
 fn model_folder(model: &ModelSpec) -> Result<PathBuf> {
     Ok(model_root()?.join(&model.id))
 }
+/// 汇总模型安装状态、文件大小和可用性，供模型管理界面展示。
 pub fn inventory() -> Result<Vec<ModelInfo>> {
     registry()?
         .into_iter()
@@ -142,6 +151,7 @@ pub fn inventory() -> Result<Vec<ModelInfo>> {
         })
         .collect()
 }
+/// 取得通过安装校验的模型目录，缺失或损坏时返回错误。
 pub fn installed_path(id: &str) -> Result<PathBuf> {
     let model = spec(id)?;
     let root = model_folder(&model)?;
@@ -166,9 +176,11 @@ pub fn installed_path(id: &str) -> Result<PathBuf> {
 }
 // Browsing inventory must not hash multi-gigabyte weights. Install verifies
 // checksums before publishing current.json; inference verifies before loading.
+/// 检查模型文件是否存在并符合基础大小要求。
 fn present_installed_file(path: &Path, artifact: &ModelFile) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == artifact.bytes)
 }
+/// 核对已安装文件与固定模型规格的内容校验和。
 fn valid_installed_file(path: &Path, artifact: &ModelFile) -> bool {
     type Stamp = (
         u64,
@@ -208,6 +220,7 @@ fn valid_installed_file(path: &Path, artifact: &ModelFile) -> bool {
         false
     }
 }
+/// 校验安装内容并持有使用租约，阻止推理期间卸载或替换模型。
 pub(crate) fn verified_lease(id: &str) -> Result<File> {
     let model = spec(id)?;
     let root = model_folder(&model)?;
@@ -235,9 +248,11 @@ pub(crate) fn verified_lease(id: &str) -> Result<File> {
     }
     Ok(lock)
 }
+/// 使用默认下载来源安装指定模型，并沿用下载控制状态。
 pub fn install(id: &str, control: &DownloadControl) -> Result<()> {
     install_with_mirror(id, control, true)
 }
+/// 根据清单和镜像偏好构造固定修订的下载地址。
 fn download_url(url: &str, use_mirror: bool) -> String {
     if use_mirror && let Some(path) = url.strip_prefix("https://huggingface.co/") {
         format!("https://hf-mirror.com/{path}")
@@ -245,6 +260,7 @@ fn download_url(url: &str, use_mirror: bool) -> String {
         url.to_string()
     }
 }
+/// 按选定来源下载模型，支持暂停、续传、重试和发布前完整校验。
 pub fn install_with_mirror(id: &str, control: &DownloadControl, use_mirror: bool) -> Result<()> {
     let model = spec(id)?;
     let root = model_folder(&model)?;
@@ -407,6 +423,7 @@ pub fn install_with_mirror(id: &str, control: &DownloadControl, use_mirror: bool
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+/// 请求文件指定范围，核对服务器对续传区间的响应。
 fn request_range(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -447,6 +464,7 @@ fn request_range(
     }
     Err("下载源暂时不可用，已保留断点".into())
 }
+/// 规范化下载失败信息，供安装状态和用户提示复用。
 fn download_error(path: &str, use_mirror: bool, error: &impl std::fmt::Display) -> String {
     format!(
         "{} 下载失败（{}）：{}。可在模型设置中切换下载源后继续，断点已保留。",
@@ -459,6 +477,7 @@ fn download_error(path: &str, use_mirror: bool, error: &impl std::fmt::Display) 
         error
     )
 }
+/// 在获得排他访问后移除指定模型安装，拒绝删除仍在使用的权重。
 pub fn uninstall(id: &str) -> Result<()> {
     let model = spec(id)?;
     crate::unload()?;
@@ -506,6 +525,7 @@ mod source_tests {
     use super::*;
     #[test]
     #[allow(clippy::unwrap_used)]
+    /// 验证安装状态能发现文件大小未变的内容损坏。
     fn installation_state_detects_same_size_corruption() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("weights.onnx");
@@ -528,6 +548,7 @@ mod source_tests {
     }
     #[test]
     #[allow(clippy::unwrap_used)]
+    /// 验证下载限流后重试相同区间，暂停期间不再发送请求。
     fn throttled_source_retries_the_same_range_and_pause_makes_no_request() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -572,6 +593,7 @@ mod source_tests {
         );
     }
     #[test]
+    /// 验证镜像地址保留清单固定的修订与文件路径。
     fn mirror_keeps_every_pinned_revision_and_artifact_path() {
         let models = registry().unwrap_or_default();
         assert_eq!(models.len(), 1);

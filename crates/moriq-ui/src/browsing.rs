@@ -3,6 +3,7 @@ use super::*;
 #[cfg(test)]
 #[test]
 #[allow(clippy::unwrap_used)]
+/// 验证选择并打开同一版本会复用进行中或已完成的预览。
 fn selecting_and_opening_same_version_reuses_pending_and_completed_preview() {
     let mut app = crate::tests::app();
     app.screen = Screen::Assets;
@@ -38,6 +39,7 @@ fn selecting_and_opening_same_version_reuses_pending_and_completed_preview() {
 }
 
 impl App {
+    /// 取消相邻素材读取并清除浏览锚点，使旧结果无法重定向查看器。
     pub(super) fn clear_browsing(&mut self) {
         self.viewer.clear();
         self.surfaces.viewer_y = None;
@@ -53,6 +55,7 @@ impl App {
         self.restored_notes = None;
         self.editing_tags = false;
     }
+    /// 按当前查询与素材锚点异步读取相邻素材。
     pub(super) fn load_neighborhood(&mut self, anchor: AssetId, direction: i8) -> Task<Message> {
         let Some(library) = &self.library else {
             return Task::none();
@@ -74,6 +77,7 @@ impl App {
         self.browse_task = Some(handle);
         task
     }
+    /// 把焦点移到指定有效素材，并协调选择和预览状态。
     pub(super) fn focus_tile(&mut self, mut tile: Tile) -> Task<Message> {
         if let Some(value) = self.pending_favorite(tile.asset.id) {
             tile.asset.favorite = value;
@@ -158,6 +162,7 @@ impl App {
         };
         Task::batch([task, self.refresh_details(), enlarged])
     }
+    /// 处理前后浏览及回执，仅接受当前查询和请求的相邻结果。
     pub(super) fn browse_message(
         &mut self,
         library: LibraryId,

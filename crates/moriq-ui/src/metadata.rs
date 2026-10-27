@@ -13,6 +13,7 @@ const FIELDS: [(&str, &str); 10] = [
     ("latitude_e6", "纬度（度）"),
     ("longitude_e6", "经度（度）"),
 ];
+/// 把规范化元数据数值转换为表单显示单位。
 fn display_number(index: usize, value: Option<i64>) -> String {
     let Some(value) = value else {
         return String::new();
@@ -36,6 +37,7 @@ fn display_number(index: usize, value: Option<i64>) -> String {
     };
     (value as f64 / scale).to_string()
 }
+/// 解析表单中的数值并转换为查询使用的存储单位。
 fn parse_number(
     language: Language,
     index: usize,
@@ -120,6 +122,7 @@ pub enum MetadataMessage {
     Clear,
 }
 impl App {
+    /// 维护元数据筛选草稿，并把有效条件提交到查询。
     pub(super) fn metadata_message(&mut self, event: MetadataMessage) -> Task<Message> {
         let language = self.preferences.language;
         match event {
@@ -183,6 +186,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建相机、拍摄时间及参数等元数据筛选表单。
     pub(super) fn metadata_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut view = column![

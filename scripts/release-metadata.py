@@ -15,15 +15,18 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parent.parent
 
 
+# 在项目根目录执行指定 Git 读取命令，并返回原始字节结果。
 def git(*args):
     return subprocess.check_output(["git", *args], cwd=ROOT)
 
 
+# 创建父目录并以 UTF-8 写出格式化 JSON 报告。
 def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
 
 
+# 计算源文件清单摘要并记录提交、脏状态、版本和构建时间，生成构建身份。
 def identity():
     names = set(git("ls-files", "-z", "--cached", "--others", "--exclude-standard").decode().split("\0")) - {""}
     files = {}
@@ -43,12 +46,14 @@ def identity():
     write(ROOT / "target/build-info.json", data)
 
 
+# 汇总锁定依赖及运行组件的许可正文，输出归属说明、依赖清单与缺失报告。
 def notices(destination, reports):
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--offline", "--filter-platform", "x86_64-pc-windows-msvc", "--format-version=1"], cwd=ROOT))
     components, lines, missing = [], ["# Third-party licenses", "", "Generated from locked Cargo metadata and installed npm packages.",
         "The inventory includes build and other-platform dependencies; it is not a declaration that every listed package is linked.", ""], []
     retained = {}
 
+    # 按正文校验和去重许可文本，并保留每个依赖的来源引用。
     def retain(reference, file):
         content = file.read_bytes()
         checksum = hashlib.sha256(content).hexdigest()
@@ -58,6 +63,7 @@ def notices(destination, reports):
     for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
         retain(f"Moriq Space/{name}", ROOT / name)
 
+    # 收集一个依赖的许可文件与补充正文，并把其身份加入报告和依赖清单。
     def add(name, version, license_name, folder, ecosystem, explicit=None):
         slug = name.replace("@", "").replace("/", "_") + "-" + version
         texts = set()

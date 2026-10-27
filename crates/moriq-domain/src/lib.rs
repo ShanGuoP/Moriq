@@ -11,11 +11,13 @@ macro_rules! identity {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub struct $name(pub Uuid);
         impl Default for $name {
+            /// 为领域身份生成新的随机 UUID，避免新对象复用已有身份。
             fn default() -> Self {
                 Self(Uuid::new_v4())
             }
         }
         impl std::fmt::Display for $name {
+            /// 将领域身份格式化为其 UUID 文本。
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 self.0.fmt(f)
             }
@@ -134,7 +136,9 @@ pub enum Rule {
     HasLocation,
 }
 impl Rule {
+    /// 校验规则树的深度、节点及字段预算，拒绝无界或无效筛选。
     pub fn validate(&self) -> Result<(), &'static str> {
+        /// 递归检查规则节点并累计预算，供规则树完整校验使用。
         fn visit(rule: &Rule, depth: usize, count: &mut usize) -> Result<(), &'static str> {
             *count += 1;
             if depth > 8 || *count > 64 {
@@ -345,6 +349,7 @@ pub enum Language {
     English,
 }
 impl std::fmt::Display for Language {
+    /// 把语言枚举格式化为用户可读的语言名称。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::SimplifiedChinese => "简体中文",
@@ -367,6 +372,7 @@ pub struct SyncoPreferences {
     pub auto_start: bool,
 }
 impl Default for SyncoPreferences {
+    /// 构造默认 Synco 偏好，允许自动启动且不预设可执行文件路径。
     fn default() -> Self {
         Self {
             executable: None,
@@ -382,6 +388,7 @@ pub struct AiPreferences {
     pub use_mirror: bool,
 }
 impl Default for AiPreferences {
+    /// 构造按需加载、保留索引并使用镜像的默认 AI 偏好。
     fn default() -> Self {
         Self {
             on_demand: true,
@@ -417,6 +424,7 @@ pub struct ImportPreferences {
     pub memory_mib: u32,
 }
 impl Default for ImportPreferences {
+    /// 构造自动选择并发数的导入偏好，并提供缺省内存预算。
     fn default() -> Self {
         Self {
             workers: 0,
@@ -425,6 +433,7 @@ impl Default for ImportPreferences {
     }
 }
 impl ImportPreferences {
+    /// 结合处理器数量和用户偏好计算实际导入并发，保留界面处理余量。
     pub fn effective_workers(self, logical_cpus: usize) -> usize {
         if self.workers == 0 {
             (logical_cpus / 2).clamp(2, 16)
@@ -432,6 +441,7 @@ impl ImportPreferences {
             self.workers.clamp(1, 32)
         }
     }
+    /// 校验并规范化导入并发与内存设置。
     pub fn validated(self) -> Option<Self> {
         (self.workers <= 32 && (256..=4096).contains(&self.memory_mib)).then_some(self)
     }
@@ -578,6 +588,7 @@ pub struct ExportOptions {
     pub metadata_sidecar: bool,
 }
 impl Default for ExportOptions {
+    /// 构造保留原文件格式的默认导出选项及其他转换缺省值。
     fn default() -> Self {
         Self {
             directory_template: String::new(),
@@ -597,6 +608,7 @@ impl Default for ExportOptions {
 mod tests {
     use super::*;
     #[test]
+    /// 验证自动导入并发保留 CPU 余量，并校验用户覆盖值。
     fn automatic_import_limits_leave_cpu_headroom_and_validate_overrides() {
         let auto = ImportPreferences::default();
         assert_eq!(auto.effective_workers(20), 10);
@@ -678,6 +690,7 @@ pub struct StorageStats {
     pub measured_at: u64,
 }
 impl AssetLocation {
+    /// 检查地点经纬度及相关字段是否落在有效范围。
     pub fn valid(&self) -> bool {
         self.latitude.is_finite()
             && self.longitude.is_finite()
@@ -686,6 +699,7 @@ impl AssetLocation {
             && self.label.len() <= 1024
             && self.label.chars().count() <= 256
     }
+    /// 根据已校验经纬度生成地图查看链接。
     pub fn map_url(&self) -> Option<String> {
         self.valid().then(|| {
             format!(

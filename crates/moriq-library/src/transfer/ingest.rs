@@ -32,9 +32,11 @@ pub struct Prepared {
     pub(super) metadata: serde_json::Value,
 }
 impl Ticket {
+    /// 根据导入票据解析本次操作专属的暂存文件路径。
     fn staged(&self) -> Result<PathBuf> {
         safe_path(&self.root, &format!("staging/{}.part", self.operation))
     }
+    /// 将来源复制到受管暂存位置，校验身份并在分块读取间响应取消。
     pub fn copy(&self, cancel: &AtomicBool) -> Result<()> {
         let staged = self.staged()?;
         let mut input = File::open(&self.source)?;
@@ -75,6 +77,8 @@ impl Ticket {
     }
     /// Admission estimate includes two decoded buffers, compressed input and workspace.
     /// This bounds admitted image work, not the entire process's RSS.
+    ///
+    /// 估算此导入票据解码所需的内存预算，供应用层调度准入。
     pub fn memory_mib(&self) -> Result<u32> {
         let staged = self.staged()?;
         let mut reader = ImageReader::open(&staged)?.with_guessed_format()?;
@@ -113,6 +117,7 @@ impl Ticket {
         let bytes = decoded.saturating_mul(2) + fs::metadata(staged)?.len() * 2 + 32 * 1024 * 1024;
         Ok(bytes.div_ceil(1024 * 1024) as u32)
     }
+    /// 解码暂存媒体并生成缩略图、校验和及元数据，支持从写入端外执行。
     pub fn prepare(&self, cancel: &AtomicBool) -> Result<Prepared> {
         cancelled(cancel)?;
         let mut prepared = prepare(&self.staged()?, &self.operation, &self.source)?;
@@ -126,6 +131,7 @@ impl Ticket {
         Ok(prepared)
     }
 }
+/// 检查显式取消标志，将取消统一转换为导入错误。
 fn cancelled(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
         Err(Error::Invalid("导入已停止".into()))
@@ -133,6 +139,7 @@ fn cancelled(cancel: &AtomicBool) -> Result<()> {
         Ok(())
     }
 }
+/// 写入已完成暂存的回执，避免恢复流程登记尚未复制完整的文件。
 pub(super) fn staged_receipt(root: &Path, operation: &str, bytes: u64) -> Result<()> {
     let mut receipt = tempfile::NamedTempFile::new_in(safe_path(root, "staging")?)?;
     receipt.write_all(&bytes.to_le_bytes())?;
@@ -142,12 +149,14 @@ pub(super) fn staged_receipt(root: &Path, operation: &str, bytes: u64) -> Result
         .map_err(|e| Error::Io(e.error))?;
     Ok(())
 }
+/// 校验解码尺寸及像素乘积，拒绝无效或超预算的媒体。
 fn validate_dimensions(width: u32, height: u32) -> Result<()> {
     if width == 0 || height == 0 {
         return Err(Error::Invalid("图片尺寸无效".into()));
     }
     Ok(())
 }
+/// 解码暂存媒体并生成缩略图、校验和及元数据，支持从写入端外执行。
 pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<Prepared> {
     let clock = std::time::Instant::now();
     let hash = organize::hash_file(staged)?;
@@ -231,6 +240,7 @@ pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<P
     })
 }
 impl Library {
+    /// 登记导入操作并生成冻结来源身份、项目和租约的票据。
     pub fn begin_import(
         &mut self,
         file: &ImportFile,
@@ -283,6 +293,7 @@ impl Library {
             _lease: self._lock.clone(),
         })
     }
+    /// 复核票据归属并提交媒体准备结果，拒绝来源变化和过期上下文。
     pub fn finish_import(&mut self, ticket: Ticket, prepared: Prepared) -> Result<bool> {
         if ticket.root != self.root {
             return Err(Error::Invalid("导入所属资源库已切换".into()));
@@ -327,6 +338,7 @@ impl Library {
         }
         result
     }
+    /// 中止票据对应操作并清理可撤销暂存，保留原始来源文件。
     pub fn interrupt_import(&self, ticket: &Ticket) -> Result<()> {
         if ticket.root != self.root {
             return Err(Error::Invalid("导入所属资源库已切换".into()));
@@ -344,6 +356,7 @@ impl Library {
 mod tests {
     use super::*;
     #[test]
+    /// 验证 JPEG 内存准入依据实际尺寸，而非统一回退预算。
     fn jpeg_admission_uses_dimensions_instead_of_fallback_budget() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("photo.jpg");
@@ -367,6 +380,7 @@ mod tests {
         assert!(weight < 256, "24 MP JPEG was assigned {weight} MiB");
     }
     #[test]
+    /// 验证票据保持库锁，取消产生的部分复制不被恢复为媒体。
     fn ticket_keeps_library_locked_and_cancelled_copy_is_not_recoverable_media() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("原片.png");
@@ -396,6 +410,7 @@ mod tests {
         assert!(Library::open(&root).is_ok());
     }
     #[test]
+    /// 验证引用导入工作拒绝暂存后发生改变的来源。
     fn reference_worker_rejects_a_source_changed_after_staging() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("原片.png");

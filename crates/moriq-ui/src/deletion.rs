@@ -21,6 +21,7 @@ pub(super) struct Deletion {
     error: Option<String>,
 }
 impl Deletion {
+    /// 清除删除确认计划、错误和提交状态。
     pub fn reset(&mut self) {
         *self = Self {
             request: self.request + 1,
@@ -42,6 +43,7 @@ pub enum DeletionMessage {
     Finished(LibraryId, u64, Result<PurgeReport, String>),
 }
 impl App {
+    /// 处理删除计划加载、二次确认与完成回执，拒绝旧库或旧范围结果。
     pub(super) fn deletion_message(&mut self, event: DeletionMessage) -> Task<Message> {
         let language = self.preferences.language;
         use DeletionMessage::*;
@@ -222,12 +224,14 @@ impl App {
         }
         Task::none()
     }
+    /// 判断已加载删除计划是否仍对应当前目标项目和库身份。
     fn deletion_matches(&self, library: LibraryId, request: u64) -> bool {
         self.manager.panel == Some(Panel::Delete)
             && self.deletion.library == Some(library)
             && self.deletion.request == request
             && self.library.as_ref().is_some_and(|l| l.info.id == library)
     }
+    /// 检查当前删除计划和操作状态是否允许提交。
     fn deletion_ready(&self) -> bool {
         self.deletion
             .library
@@ -238,6 +242,7 @@ impl App {
             && self.deletion.error.is_none()
             && !self.switching
     }
+    /// 展示项目删除范围、共享素材影响和确认操作。
     pub(super) fn deletion_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut content = column![].spacing(14);
@@ -354,6 +359,7 @@ impl App {
 mod tests {
     use super::*;
     #[test]
+    /// 验证回收站删除成功后关闭确认界面，并丢弃无效菜单历史。
     fn successful_trash_deletion_closes_the_confirmation_and_discards_menu_history() {
         let mut app = crate::tests::app();
         app.screen = Screen::Assets;
@@ -384,6 +390,7 @@ mod tests {
         assert!(app.deletion.target.is_none());
         assert!(!app.manager.busy);
     }
+    /// 构造指定项目和素材范围的测试删除计划。
     fn plan(root: ProjectId) -> ProjectDeletionPlan {
         ProjectDeletionPlan {
             root,
@@ -397,6 +404,7 @@ mod tests {
         }
     }
     #[test]
+    /// 验证两步删除确认冻结同一目标，可取消并拒绝旧回执。
     fn both_confirmation_steps_freeze_target_cancel_and_reject_stale_receipts() {
         let mut app = crate::tests::app();
         let library = app.library.as_ref().unwrap().info.id;

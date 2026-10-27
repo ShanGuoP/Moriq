@@ -8,6 +8,7 @@ pub(super) struct Copies {
     committed: bool,
 }
 impl Copies {
+    /// 创建并记录项目专属文件副本，使未提交的复制能够在退出时清理。
     fn copy(&mut self, source: &Path, destination: &Path) -> Result<()> {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -21,11 +22,13 @@ impl Copies {
         output.sync_all()?;
         Ok(())
     }
+    /// 标记文件复制已提交，阻止清理守卫删除有效副本。
     pub fn commit(mut self) {
         self.committed = true;
     }
 }
 impl Drop for Copies {
+    /// 清理未提交的项目副本；清理失败时留下诊断以供后续恢复。
     fn drop(&mut self) {
         if !self.committed {
             for path in &self.paths {
@@ -38,6 +41,7 @@ impl Drop for Copies {
 }
 
 // All identifiers come from the fixed internal table list, never user input.
+/// 从固定内部表复制记录，并用参数覆盖新身份字段，避免拼接用户输入。
 fn copy_rows(
     db: &Connection,
     table: &str,
@@ -76,6 +80,7 @@ fn copy_rows(
     Ok(())
 }
 
+/// 为目标项目创建独立素材和版本身份，复制必要文件与元数据并复用已有有效副本。
 pub(super) fn clone_asset(
     db: &Connection,
     root: &Path,
@@ -242,6 +247,7 @@ pub(super) fn clone_asset(
     Ok(new_asset)
 }
 
+/// 升级旧版共享素材模型，为各项目拆分可变状态并保留原始内容。
 pub(super) fn migrate(db: &mut Connection, root: &Path) -> Result<()> {
     let shared = db.prepare("SELECT project_id,asset_id FROM project_assets pa WHERE project_id<>(SELECT min(project_id) FROM project_assets WHERE asset_id=pa.asset_id) ORDER BY asset_id,project_id")?
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?

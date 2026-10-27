@@ -19,6 +19,7 @@ pub struct Prepared {
     _lease: Arc<File>,
 }
 impl Plan {
+    /// 在媒体工作线程生成独立的封面图片，返回供资源库写入端提交的准备结果。
     pub fn render(self) -> Result<Prepared> {
         let image = self.source.preview_edge(960)?.image;
         let mut file = tempfile::NamedTempFile::new_in(safe_path(&self.root, "metadata")?)?;
@@ -42,6 +43,7 @@ impl Plan {
     }
 }
 impl Library {
+    /// 确认封面素材及版本仍然有效，阻止过期或不匹配的封面请求。
     fn check_cover_asset(&self, asset: AssetId, version: AssetVersionId) -> Result<()> {
         let current: bool = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM assets WHERE id=?1 AND display_version_id=?2 AND deleted_at IS NULL)",
@@ -55,6 +57,7 @@ impl Library {
         }
         Ok(())
     }
+    /// 冻结封面素材的读取来源和版本身份，供后续解码使用。
     pub fn asset_cover_plan(&self, asset: AssetId, version: AssetVersionId) -> Result<Plan> {
         self.check_cover_asset(asset, version)?;
         Ok(Plan {
@@ -66,6 +69,7 @@ impl Library {
             lease: self._lock.clone(),
         })
     }
+    /// 重新校验素材身份后发布已生成封面，避免失败结果替换原有封面。
     pub fn commit_asset_cover(&self, prepared: Prepared) -> Result<()> {
         if prepared.owner != self.id() || prepared.root != self.root {
             return Err(Error::Invalid("资源库已变化，封面操作已停止".into()));
@@ -86,6 +90,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// 验证封面为独立持久副本，更新失败保留原封面。
     fn asset_cover_is_an_independent_durable_copy_and_failed_changes_keep_the_previous_cover() {
         let dir = tempfile::tempdir().unwrap();
         let original = dir.path().join("original.png");

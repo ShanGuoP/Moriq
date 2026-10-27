@@ -1,4 +1,5 @@
 use super::*;
+/// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
 fn fixture() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let image = dir.path().join("原片.png");
@@ -8,6 +9,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf) {
     (dir, image)
 }
 #[test]
+/// 验证创建、导入、编辑、重开及目录迁移后的数据持久性。
 fn create_import_edit_reopen_and_move_are_durable() {
     let (dir, source) = fixture();
     let original = fs::read(&source).unwrap();
@@ -53,6 +55,7 @@ fn create_import_edit_reopen_and_move_are_durable() {
     assert_eq!(fs::read(source).unwrap(), original);
 }
 #[test]
+/// 验证导入中断不登记半成品，也不修改原始来源。
 fn interruption_never_registers_a_half_import_or_touches_source() {
     let (dir, source) = fixture();
     let original = fs::read(&source).unwrap();
@@ -76,6 +79,7 @@ fn interruption_never_registers_a_half_import_or_touches_source() {
     assert_eq!(fs::read(source).unwrap(), original);
 }
 #[test]
+/// 验证路径穿越、无效媒体与清单身份不一致均被拒绝。
 fn rejects_traversal_bad_media_and_manifest_mismatch() {
     let (dir, source) = fixture();
     let mut lib = Library::create(dir.path(), "安全").unwrap();
@@ -116,6 +120,7 @@ fn rejects_traversal_bad_media_and_manifest_mismatch() {
 }
 
 #[test]
+/// 验证编辑和导入会使相关筛选快照失效。
 fn filtered_snapshot_is_invalidated_by_edits_and_imports() {
     let (dir, source) = fixture();
     let mut lib = Library::create(dir.path(), "查询").unwrap();
@@ -146,6 +151,7 @@ fn filtered_snapshot_is_invalidated_by_edits_and_imports() {
 }
 
 #[test]
+/// 验证外键约束阻止素材引用不属于自己的展示版本。
 fn foreign_key_contract_prevents_wrong_cover_version() {
     let (dir, source) = fixture();
     let mut lib = Library::create(dir.path(), "外键").unwrap();
@@ -164,6 +170,7 @@ fn foreign_key_contract_prevents_wrong_cover_version() {
 
 #[test]
 #[ignore = "synthetic metadata benchmark; no media or frame-time acceptance"]
+/// 测量合成数据库的分页、搜索与重开耗时，不代表真实媒体吞吐或帧率验收。
 fn synthetic_metadata_benchmark() {
     let dir = tempfile::tempdir().unwrap();
     let mut lib = Library::create(dir.path(), "benchmark").unwrap();

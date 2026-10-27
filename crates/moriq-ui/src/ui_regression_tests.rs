@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+/// 验证 Ctrl 点击与右键保留批量选择，普通点击退出追加选择。
 fn ctrl_click_and_context_menu_preserve_the_batch_and_plain_click_exits_additive_selection() {
     let mut app = crate::tests::app();
     app.screen = Screen::Assets;
@@ -41,9 +42,11 @@ fn ctrl_click_and_context_menu_preserve_the_batch_and_plain_click_exits_additive
 }
 
 #[test]
+/// 验证打开和关闭上下文菜单保留原滚动控件状态。
 fn opening_and_closing_context_menu_keeps_existing_scroll_widget_state() {
     use iced::advanced::widget::{Tree, tree};
     use std::collections::HashSet;
+    /// 收集测试控件树状态，比较弹出层前后底层控件的连续性。
     fn states(tree: &Tree, tag: tree::Tag, result: &mut HashSet<usize>) {
         if tree.tag == tag
             && let tree::State::Some(state) = &tree.state
@@ -86,6 +89,7 @@ fn opening_and_closing_context_menu_keeps_existing_scroll_widget_state() {
 }
 
 #[test]
+/// 验证资源库根部后退打开选择器，前进恢复项目上下文。
 fn back_from_library_root_opens_picker_and_forward_restores_projects() {
     let mut app = crate::tests::app();
     app.preferences.reduced_motion = true;
@@ -100,6 +104,7 @@ fn back_from_library_root_opens_picker_and_forward_restores_projects() {
 }
 
 #[test]
+/// 验证封面保存单次在途、绑定库身份，并刷新卡片。
 fn asset_cover_save_is_single_flight_scoped_and_refreshes_the_library_card() {
     let mut app = crate::tests::app();
     let owner = app.library.as_ref().unwrap().info.id;
@@ -169,6 +174,7 @@ fn asset_cover_save_is_single_flight_scoped_and_refreshes_the_library_card() {
 }
 
 #[test]
+/// 验证模型页签排序与筛选身份分离。
 fn model_tabs_put_all_first_installed_last_without_swapping_filter_ids() {
     let mut app = crate::tests::app();
     assert_eq!(crate::models::MODEL_FILTER_ORDER, [2, 1, 0]);
@@ -190,6 +196,7 @@ fn model_tabs_put_all_first_installed_last_without_swapping_filter_ids() {
 }
 
 #[test]
+/// 验证卡片和侧栏使用相同分类顺序、名称与稳定查询。
 fn configurable_cards_and_sidebar_share_order_names_and_stable_group_queries() {
     let mut app = crate::tests::app();
     let query = Query {
@@ -212,6 +219,7 @@ fn configurable_cards_and_sidebar_share_order_names_and_stable_group_queries() {
 }
 
 #[test]
+/// 验证分类编辑保持草稿，拒绝旧库保存回执。
 fn category_editor_is_a_draft_and_rejects_old_library_save_receipts() {
     use crate::categories::CategoryMessage as C;
     let mut app = crate::tests::app();
@@ -256,6 +264,7 @@ fn category_editor_is_a_draft_and_rejects_old_library_save_receipts() {
 }
 
 #[test]
+/// 验证内容筛选身份不依赖标签文本，并支持主题交集。
 fn content_filter_ids_are_independent_of_labels_and_support_theme_intersection() {
     let mut q = Query::default();
     FilterChange::Medium("photography").apply(&mut q, 0);
@@ -269,6 +278,7 @@ fn content_filter_ids_are_independent_of_labels_and_support_theme_intersection()
 }
 
 #[test]
+/// 验证切换版本后不能保存上一版本内容草稿。
 fn switching_versions_cannot_save_the_previous_versions_content_draft() {
     let mut app = crate::tests::app();
     let mut asset = crate::tests::selected_asset();
@@ -287,6 +297,7 @@ fn switching_versions_cannot_save_the_previous_versions_content_draft() {
 }
 
 #[test]
+/// 验证内容草稿在刷新后保留，旧保存回执不清除新草稿。
 fn content_drafts_survive_refresh_and_late_save_receipts_do_not_clear_new_drafts() {
     let mut app = crate::tests::app();
     let owner = app.library.as_ref().unwrap().info.id;
@@ -346,6 +357,7 @@ fn content_drafts_survive_refresh_and_late_save_receipts_do_not_clear_new_drafts
 }
 
 #[test]
+/// 验证侧栏使用实际分类配置及自定义名称。
 fn sidebar_uses_actual_classifications_including_custom_names() {
     let mut app = crate::tests::app();
     app.manager.organizer.ai_categories = vec![
@@ -363,6 +375,7 @@ fn sidebar_uses_actual_classifications_including_custom_names() {
 }
 
 #[test]
+/// 验证人物头像拒绝旧库和旧请求回执。
 fn person_portraits_reject_previous_library_and_request_receipts() {
     let mut app = crate::tests::app();
     let owner = app.library.as_ref().unwrap().info.id;
@@ -400,6 +413,7 @@ fn person_portraits_reject_previous_library_and_request_receipts() {
 }
 
 #[test]
+/// 验证离开素材页停止查看器，并拒绝迟到媒体回执。
 fn leaving_assets_stops_viewer_and_rejects_late_worker_receipts() {
     for destination in [Message::Navigate(2), Message::ShowLibraries] {
         let mut app = crate::tests::app();
@@ -428,6 +442,7 @@ fn leaving_assets_stops_viewer_and_rejects_late_worker_receipts() {
 }
 
 #[test]
+/// 验证旧管理摘要和封面投影不能覆盖较新计数。
 fn stale_organizer_and_cover_projections_cannot_overwrite_newer_counts() {
     let mut app = crate::tests::app();
     let id = app.library.as_ref().unwrap().info.id;
@@ -452,6 +467,7 @@ fn stale_organizer_and_cover_projections_cannot_overwrite_newer_counts() {
 }
 
 #[test]
+/// 验证元数据保存保留在途图片，仅视觉变化重载图片。
 fn metadata_saves_preserve_inflight_images_and_visual_changes_only_reload_images() {
     let mut app = crate::tests::app();
     let owner = app.library.as_ref().unwrap().info.id;
@@ -498,6 +514,7 @@ fn metadata_saves_preserve_inflight_images_and_visual_changes_only_reload_images
 }
 
 #[test]
+/// 验证取消和切库停止复制，但实际完成前保持忙碌状态。
 fn backup_cancel_and_library_switch_stop_copy_without_releasing_busy_before_completion() {
     let mut app = crate::tests::app();
     let owner = app.library.as_ref().unwrap().info.id;
@@ -519,6 +536,7 @@ fn backup_cancel_and_library_switch_stop_copy_without_releasing_busy_before_comp
 }
 
 #[test]
+/// 验证新查询丢弃旧滚动恢复，普通刷新保留已保存导航。
 fn new_query_discards_old_scroll_restoration_and_refresh_does_not_cancel_saved_navigation() {
     let mut app = crate::tests::app();
     app.pending_scroll = Some(999.);
@@ -540,6 +558,7 @@ fn new_query_discards_old_scroll_restoration_and_refresh_does_not_cancel_saved_n
 }
 
 #[test]
+/// 验证引用导入菜单设置正确模式，取消后清除。
 fn reference_import_menu_sets_mode_and_cancel_clears_it() {
     let mut app = crate::tests::app();
     let task = app.update_inner(Message::Manage(ManageMessage::ReferenceImport));
@@ -552,6 +571,7 @@ fn reference_import_menu_sets_mode_and_cancel_clears_it() {
 }
 
 #[test]
+/// 验证减少动态效果下导航即时提交，不留下旧动作。
 fn reduced_motion_navigation_commits_immediately_and_does_not_leave_stale_actions() {
     let mut app = crate::tests::app();
     app.screen = Screen::Assets;
@@ -569,6 +589,7 @@ fn reduced_motion_navigation_commits_immediately_and_does_not_leave_stale_action
 }
 
 #[test]
+/// 验证滚动或查询替换清理虚拟化卡片的旧反馈。
 fn scrolling_or_replacing_query_clears_virtualized_card_feedback() {
     let mut app = crate::tests::app();
     let id = AssetId::default();
@@ -584,6 +605,7 @@ fn scrolling_or_replacing_query_clears_virtualized_card_feedback() {
 }
 
 #[test]
+/// 验证分类多行编辑器跟随选中项，并保留明确填写的定义。
 fn category_multiline_editor_follows_selection_and_preserves_explicit_definitions() {
     use crate::categories::CategoryMessage as C;
     use iced::widget::text_editor::{Action, Edit};
@@ -630,6 +652,7 @@ fn category_multiline_editor_follows_selection_and_preserves_explicit_definition
 }
 
 #[test]
+/// 验证描述编辑保留多行草稿，单纯移动光标不标记内容已改。
 fn description_editor_preserves_multiline_drafts_without_dirtying_on_cursor_actions() {
     use iced::widget::text_editor::{Action, Edit};
     let mut app = crate::tests::app();
@@ -685,6 +708,7 @@ fn description_editor_preserves_multiline_drafts_without_dirtying_on_cursor_acti
 }
 
 #[test]
+/// 验证资源库移除需要第二次确认，并拒绝旧回执。
 fn library_removal_requires_explicit_second_confirmation_and_rejects_stale_receipts() {
     use crate::libraries::LibraryMessage as L;
     let mut app = crate::tests::app();
@@ -725,6 +749,7 @@ fn library_removal_requires_explicit_second_confirmation_and_rejects_stale_recei
     assert!(app.manager.panel.is_none());
 }
 #[test]
+/// 验证新项目目标与正在编辑项目的父级草稿独立。
 fn new_project_destination_is_separate_from_the_edited_projects_parent() {
     let mut app = crate::tests::app();
     let parent = ProjectId::default();
@@ -739,6 +764,7 @@ fn new_project_destination_is_separate_from_the_edited_projects_parent() {
 }
 
 #[test]
+/// 验证应用分类模板只修改当前草稿。
 fn applying_a_reusable_category_template_changes_only_the_current_draft() {
     use crate::categories::CategoryMessage as C;
     let mut app = crate::tests::app();

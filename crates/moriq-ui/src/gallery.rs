@@ -15,6 +15,7 @@ pub enum TagChoice {
     More,
 }
 impl std::fmt::Display for TagChoice {
+    /// 输出图库显示选项的文本标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::All => f.write_str("全部标签"),
@@ -24,6 +25,7 @@ impl std::fmt::Display for TagChoice {
     }
 }
 impl App {
+    /// 构建素材页面主体，协调列表、详情与空状态。
     pub(super) fn assets(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         if self.viewer.preview_expanded && self.viewer.selected.is_some() {
@@ -229,7 +231,7 @@ impl App {
             })
             .height(Length::Fill)
             .width(Length::Fill);
-        row![
+        let body: Element<'_, Message> = row![
             center,
             container(scroll(self.details()).id("details"))
                 .padding([16, 16])
@@ -248,8 +250,51 @@ impl App {
                 })
         ]
         .height(Length::Fill)
-        .into()
+        .into();
+        let frozen = self.responsiveness.replacing();
+        let body = body.map(move |message| if frozen { Message::Noop } else { message });
+        let shield: Element<'_, Message> = if frozen {
+            iced::widget::opaque(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+        } else {
+            Space::new().height(0).into()
+        };
+        let banner: Element<'_, Message> = if frozen {
+            let mut controls = row![
+                text(if self.responsiveness.search_error.is_some() {
+                    tr!(language,"搜索未完成，可以重试或取消"=>"Search failed. Retry or cancel.")
+                } else {
+                    tr!(language,"正在搜索…"=>"Searching…")
+                })
+                .size(13),
+                Space::new().width(Length::Fill)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center);
+            if self.responsiveness.search_error.is_some() {
+                controls = controls.push(action(
+                    tr!(language,"重试"=>"Retry"),
+                    Message::Search(self.query.text.clone()),
+                ));
+            }
+            controls = controls.push(action(
+                tr!(language,"取消搜索"=>"Cancel search"),
+                Message::CancelSearch,
+            ));
+            container(controls)
+                .padding([8, 16])
+                .width(Length::Fill)
+                .style(panel)
+                .into()
+        } else {
+            Space::new().height(0).into()
+        };
+        stack![body, shield, banner].into()
     }
+    /// 按当前可见范围构建素材网格或列表。
     fn gallery(&self) -> Element<'_, Message> {
         if !self.list
             && let Some(layout) = self.active_masonry()
@@ -330,6 +375,7 @@ impl App {
             .width(Length::Fill)
             .into()
     }
+    /// 构建素材图片卡片，保持素材身份、点击和悬停反馈一致。
     fn image_card<'a>(&self, tile: Option<&'a Tile>, height: f32) -> Element<'a, Message> {
         let Some(tile) = tile else {
             return photo(None, Length::Fill, height);
@@ -444,6 +490,7 @@ impl App {
         .on_right_press(Message::AssetContext(tile.asset.id))
         .into()
     }
+    /// 构建素材列表行及选择、收藏和上下文入口。
     fn list_card<'a>(&self, tile: Option<&'a Tile>) -> Element<'a, Message> {
         let Some(tile) = tile else {
             return photo(None, Length::Fill, 72.0);
@@ -517,6 +564,7 @@ impl App {
         .on_right_press(Message::AssetContext(tile.asset.id))
         .into()
     }
+    /// 构建选中素材的详情栏，展示资料和编辑入口。
     pub(super) fn details(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let Some(asset) = &self.viewer.selected else {
@@ -1056,6 +1104,7 @@ impl App {
         }
         details.width(Length::Fill).into()
     }
+    /// 构建展开预览区域，并复用当前图像或视频状态。
     fn large_preview(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let video = self

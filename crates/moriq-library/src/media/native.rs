@@ -10,6 +10,7 @@ pub const RAW_EXTENSIONS: &[&str] = &[
     "raw", "dng", "crw", "cr2", "cr3", "nef", "nrw", "arw", "sr2", "srf", "rw2", "orf", "raf",
     "pef", "srw", "rwl", "3fr", "fff", "iiq", "kdc", "dcr", "mos", "mrw", "erf", "x3f",
 ];
+/// 识别受支持的 RAW 扩展名，使用统一的格式列表。
 pub fn raw_extension(path: &Path) -> Option<&'static str> {
     let value = path.extension()?.to_str()?;
     RAW_EXTENSIONS
@@ -17,6 +18,7 @@ pub fn raw_extension(path: &Path) -> Option<&'static str> {
         .copied()
         .find(|e| value.eq_ignore_ascii_case(e))
 }
+/// 把固定 RAW 格式列表转换为内部 SQL 筛选字面量。
 pub(super) fn raw_sql() -> String {
     RAW_EXTENSIONS
         .iter()
@@ -25,6 +27,7 @@ pub(super) fn raw_sql() -> String {
         .join(",")
 }
 #[cfg(windows)]
+/// 定位或展开隔离 WIC 解码工作程序。
 pub(crate) fn worker() -> Result<PathBuf> {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/wic-worker.exe"));
     let hash = format!("{:x}", Sha256::digest(bytes));
@@ -46,14 +49,18 @@ pub(crate) fn worker() -> Result<PathBuf> {
     }
     Ok(path)
 }
+/// 按文件路径执行系统图像解码，输出有界 RGBA 像素。
 pub fn decode(path: &Path, edge: u32) -> Result<Decoded> {
     decode_worker(path, edge, false)
 }
+/// 使用 RAW 解码路径读取原片，避免普通解码器误判格式。
 pub fn decode_raw(path: &Path, edge: u32) -> Result<Decoded> {
     decode_worker(path, edge, true)
 }
 /// LibRaw identifies sensor layout without unpacking/demosaicing. The worker uses
 /// the same estimate as an enforced process cap when it actually decodes.
+///
+/// 探测 RAW 尺寸并估算解码内存预算，供工作线程准入使用。
 pub fn raw_memory_mib(path: &Path) -> Result<u32> {
     #[cfg(any(windows, target_os = "macos"))]
     {
@@ -129,6 +136,7 @@ pub fn raw_memory_mib(path: &Path) -> Result<u32> {
     }
 }
 #[cfg(all(windows, bundled_libraw))]
+/// 定位当前平台可用的 LibRaw 工作程序，缺少运行组件时返回明确错误。
 pub(crate) fn raw_worker() -> Result<PathBuf> {
     let exe = include_bytes!(concat!(env!("OUT_DIR"), "/raw-runtime/raw-worker.exe"));
     // LGPL users may replace this DLL in the application directory. Freeze the
@@ -170,11 +178,13 @@ pub(crate) fn raw_worker() -> Result<PathBuf> {
     Ok(root.join("raw-worker.exe"))
 }
 #[cfg(all(windows, not(bundled_libraw)))]
+/// 定位当前平台可用的 LibRaw 工作程序，缺少运行组件时返回明确错误。
 pub(crate) fn raw_worker() -> Result<PathBuf> {
     Err(Error::Invalid(
         "此构建未包含 LibRaw，请使用包含内置 RAW 解码器的发行包".into(),
     ))
 }
+/// 启动隔离解码进程并校验其输出；处理取消、进程退出和尺寸预算。
 fn decode_worker(path: &Path, edge: u32, raw: bool) -> Result<Decoded> {
     #[cfg(windows)]
     {
@@ -295,6 +305,7 @@ fn decode_worker(path: &Path, edge: u32, raw: bool) -> Result<Decoded> {
         ))
     }
 }
+/// 把已打开文件交给隔离解码流程，保留来源读取身份。
 pub fn decode_file(file: File, extension: &str, edge: u32) -> Result<Decoded> {
     let suffix = if extension.chars().all(|c| c.is_ascii_alphanumeric()) {
         format!(".{extension}")
@@ -324,6 +335,7 @@ pub const IMPORT_EXTENSIONS: &[&str] = &[
     "nrw", "arw", "sr2", "srf", "rw2", "orf", "raf", "pef", "srw", "rwl", "3fr", "fff", "iiq",
     "kdc", "dcr", "mos", "mrw", "erf", "x3f",
 ];
+/// 判断路径是否属于可导入的普通图片、RAW 或视频格式。
 pub fn supported_path(path: &Path) -> bool {
     if crate::video::extension(path).is_some() {
         return true;
@@ -334,6 +346,7 @@ pub fn supported_path(path: &Path) -> bool {
             .any(|e| value.eq_ignore_ascii_case(e))
     })
 }
+/// 根据媒体类型返回允许的文件字节预算。
 pub(crate) fn file_limit(path: &Path) -> u64 {
     if crate::video::extension(path).is_some() {
         64 * 1024 * 1024 * 1024
@@ -349,6 +362,7 @@ pub(crate) fn file_limit(path: &Path) -> u64 {
 mod tests {
     use super::*;
     #[test]
+    /// 验证 RAW 探测拒绝损坏元数据且不改动来源。
     fn raw_probe_rejects_broken_metadata_without_touching_source() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken.rw2");
@@ -357,6 +371,7 @@ mod tests {
         assert_eq!(fs::read(path).unwrap(), b"broken raw metadata");
     }
     #[test]
+    /// 验证隔离解码缩放与输出校验，以及 TIFF 往返保留来源。
     fn isolated_decoder_scales_and_validates_output_and_tiff_roundtrips_without_touching_source() {
         let dir = tempfile::tempdir().unwrap();
         let jpeg = dir.path().join("图片.jpg");

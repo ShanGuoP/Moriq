@@ -1,3 +1,4 @@
+-- 增加项目父级，并用全文索引和触发器维护名称、笔记与标签搜索。
 ALTER TABLE projects ADD COLUMN parent_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
 CREATE INDEX projects_parent ON projects(parent_id);
 CREATE INDEX versions_path_nocase ON asset_versions(path COLLATE NOCASE);

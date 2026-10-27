@@ -1,3 +1,4 @@
+-- 建立项目所属的 AI 配置、人物、分组、任务和集合表及清理约束。
 CREATE TABLE IF NOT EXISTS project_ai_profiles(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,revision INTEGER NOT NULL,max_themes INTEGER NOT NULL,categories TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS workspace_people(person_id TEXT PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,workspace TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS workspace_folders(folder_id TEXT PRIMARY KEY REFERENCES virtual_folders(id) ON DELETE CASCADE,workspace TEXT NOT NULL);

@@ -1,3 +1,4 @@
+-- 建立可暂停和恢复的后台任务，以及图像相似性指纹。
 CREATE TABLE background_jobs(
  id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind IN('fingerprints','thumbnails')),
  state TEXT NOT NULL CHECK(state IN('queued','running','paused','cancelled','completed')),

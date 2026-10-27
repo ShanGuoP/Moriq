@@ -24,6 +24,7 @@ pub struct Candidate {
     modified: u64,
     identity: String,
 }
+/// 提取文件修改时间作为重检指纹，无法读取时返回保守缺省值。
 fn modified(metadata: &fs::Metadata) -> u64 {
     metadata
         .modified()
@@ -32,6 +33,7 @@ fn modified(metadata: &fs::Metadata) -> u64 {
         .map(|t| t.as_nanos().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
+/// 识别符号链接及平台重解析点，避免把链接目标当作孤立文件。
 fn linked(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
@@ -46,6 +48,7 @@ fn linked(metadata: &fs::Metadata) -> bool {
     false
 }
 impl Library {
+    /// 冻结资源库身份和读取租约，建立孤立文件扫描输入。
     pub fn orphan_scan(&self) -> Scan {
         Scan {
             root: self.root.clone(),
@@ -56,6 +59,7 @@ impl Library {
     }
 }
 impl Scan {
+    /// 扫描未登记的旧受管文件并生成磁盘快照，供后续分页复核。
     pub fn run(self) -> Result<Plan> {
         let reader = self.readers.checkout()?;
         let source = reader.connection()?;
@@ -135,6 +139,7 @@ impl Scan {
     }
 }
 impl Plan {
+    /// 从冻结的孤立文件计划分页读取候选，不重新扫描整个资源库。
     pub fn page(&self, after: &str) -> Result<Vec<Candidate>> {
         let db = Connection::open_with_flags(
             self.snapshot.as_ref(),
@@ -151,11 +156,13 @@ _>>().map_err(Error::from)
     }
 }
 impl Candidate {
+    /// 返回当前候选的相对路径，作为下一页孤立文件读取的游标。
     pub fn cursor(&self) -> &str {
         &self.path
     }
 }
 impl Library {
+    /// 重检候选文件身份后移入可恢复隔离区，并记录恢复日志。
     pub fn quarantine_orphans(
         &mut self,
         plan: &Plan,
@@ -216,6 +223,7 @@ impl Library {
         }
         Ok(report)
     }
+    /// 根据隔离日志恢复未完成的隔离或清理操作。
     pub fn recover_orphans(&mut self) -> Result<()> {
         let mut cursor = String::new();
         loop {
@@ -268,6 +276,7 @@ _>>()?;
         }
         Ok(())
     }
+    /// 分批把隔离文件恢复到登记位置，拒绝覆盖现有文件。
     pub fn restore_orphans_page(
         &mut self,
         purge: bool,

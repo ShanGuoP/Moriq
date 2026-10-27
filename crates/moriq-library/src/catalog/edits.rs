@@ -1,6 +1,7 @@
 use super::*;
 
 impl Library {
+    /// 校验素材名称并更新编辑时间，同时使旧查询快照失效。
     pub fn rename_asset(&mut self, id: AssetId, name: &str) -> Result<()> {
         if name.trim().is_empty() || name.len() > 512 {
             return Err(Error::Invalid("素材名称不能为空且最多 512 字节".into()));
@@ -16,6 +17,7 @@ impl Library {
         Ok(())
     }
 
+    /// 更新素材收藏标记和编辑时间，使后续收藏筛选读取新状态。
     pub fn set_favorite(&mut self, id: AssetId, favorite: bool) -> Result<()> {
         self.snapshot = None;
         self.db.execute(
@@ -25,6 +27,7 @@ impl Library {
         Ok(())
     }
 
+    /// 校验评分范围并保存评分，同时使旧查询快照失效。
     pub fn set_rating(&mut self, id: AssetId, rating: u8) -> Result<()> {
         self.snapshot = None;
         if rating > 5 {
@@ -37,6 +40,7 @@ impl Library {
         Ok(())
     }
 
+    /// 保存人工标签及对自动标签的取舍，保留未被人工覆盖的 AI 来源信息。
     pub fn set_tags(&mut self, id: AssetId, tags: &[String]) -> Result<()> {
         self.snapshot = None;
         if tags.len() > 64 || tags.iter().any(|s| s.len() > 128) {
@@ -82,6 +86,7 @@ impl Library {
         Ok(())
     }
 
+    /// 校验项目名称并在事务中创建项目及其独立 AI 配置。
     pub fn create_project(&self, name: &str) -> Result<ProjectId> {
         import::validate_component(name.trim())?;
         if name.trim().is_empty() || name.len() > 120 {

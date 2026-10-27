@@ -8,6 +8,7 @@ pub struct Item {
     metadata: serde_json::Value,
 }
 impl Library {
+    /// 冻结所选素材的有效版本和导出元数据，供独立工作线程读取。
     pub fn export_plan(&self, ids: &[AssetId]) -> Result<Vec<Item>> {
         if ids.is_empty() || ids.len() > 10000 {
             return Err(Error::Invalid("请选择 1～10000 张素材导出".into()));
@@ -59,6 +60,7 @@ _>>()?;
         }).collect()
     }
 }
+/// 按导出选项复制原片或转换图像，并在独立结果目录中发布输出。
 pub fn run(items: Vec<Item>, parent: &Path, options: ExportOptions) -> Result<PathBuf> {
     if options.max_edge > native::MAX_OUTPUT_EDGE
         || options.quality == 0
@@ -304,6 +306,7 @@ pub fn run(items: Vec<Item>, parent: &Path, options: ExportOptions) -> Result<Pa
 mod tests {
     use super::*;
     #[test]
+    /// 验证导出先限定解码尺寸，再处理方向且不放大来源。
     fn bounded_export_scales_before_decoding_and_rotates_without_upscaling() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("large.svg");

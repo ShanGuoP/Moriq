@@ -5,6 +5,7 @@ use crate::theme::*;
 use iced::widget::{Row, Space, button, column, container, image, row, text, text_input, tooltip};
 use iced::{Alignment, Border, Color, ContentFit, Length, Theme};
 impl App {
+    /// 构建欢迎页、最近资源库与创建入口。
     pub(super) fn welcome(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         if !self.preferences.recent.is_empty() {
@@ -65,6 +66,7 @@ impl App {
     }
 }
 impl App {
+    /// 按规范化根目录匹配资源库封面，避免使用无关库的图片。
     pub(super) fn library_cover_for(&self, path: &std::path::Path) -> Option<&image::Handle> {
         self.library_covers.get(path).or_else(|| {
             // Windows may return the opened root with an extended-path prefix.
@@ -75,6 +77,7 @@ impl App {
             })
         })
     }
+    /// 构建资源库选择卡片及其独立打开和管理入口。
     fn library_picker_cards(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let can_open =
@@ -359,6 +362,7 @@ impl App {
         .into()
     }
 }
+/// 为缺少图片封面的卡片生成渐变背景。
 fn cover_gradient(theme: &Theme, tones: (Color, Color)) -> iced::Background {
     let dark = theme.extended_palette().is_dark;
     let base = if dark {
@@ -380,6 +384,7 @@ fn cover_gradient(theme: &Theme, tones: (Color, Color)) -> iced::Background {
             .add_stop(1.0, mix(tones.1)),
     ))
 }
+/// 根据库身份选择稳定的卡片强调色。
 fn library_accent(name: &str, path: &std::path::Path) -> (Icon, Color, Color) {
     let key = path
         .to_string_lossy()
@@ -421,6 +426,7 @@ fn library_accent(name: &str, path: &std::path::Path) -> (Icon, Color, Color) {
         _ => (Icon::Folder, BLUE, Color::from_rgb8(230, 240, 255)),
     }
 }
+/// 生成新建资源库卡片的交互样式。
 fn library_new_style(theme: &Theme, status: button::Status) -> button::Style {
     let mut card = library_card_style(theme);
     if matches!(status, button::Status::Hovered | button::Status::Pressed) {
@@ -433,11 +439,13 @@ fn library_new_style(theme: &Theme, status: button::Status) -> button::Style {
         ..library_open_style(theme, status)
     }
 }
+/// 根据可用窗口宽度计算紧凑卡片宽度与列数。
 fn library_card_width(available: f32) -> f32 {
     let available = available.max(1.0);
     let columns = ((available + 20.0) / 320.0).floor().clamp(1.0, 3.0);
     ((available - (columns - 1.0) * 20.0) / columns).min(440.0)
 }
+/// 生成资源库卡片背景、边框和悬停样式。
 fn library_card_style(theme: &Theme) -> container::Style {
     container::Style {
         border: Border {
@@ -466,6 +474,7 @@ fn library_card_style(theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+/// 生成卡片打开入口的交互样式。
 fn library_open_style(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: match status {
@@ -481,6 +490,7 @@ fn library_open_style(theme: &Theme, status: button::Status) -> button::Style {
         ..Default::default()
     }
 }
+/// 按字符数量截短卡片文本，并在截断位置附加省略号。
 pub(super) fn compact(value: &str, limit: usize) -> String {
     if value.chars().count() <= limit {
         return value.to_owned();
@@ -494,6 +504,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    /// 验证带平台前缀的路径正确匹配侧栏封面，不误用其他库图片。
     fn sidebar_cover_matches_extended_root_without_using_unrelated_covers() {
         let mut app = crate::tests::app();
         let path = PathBuf::from(r"D:\photos\中文目录\library.moriq");
@@ -502,10 +513,10 @@ mod tests {
             path.clone(),
             image::Handle::from_rgba(1, 1, vec![40, 80, 120, 255]),
         );
-        assert!(std::ptr::eq(
-            app.library_cover_for(&extended).unwrap(),
-            app.library_covers.get(&path).unwrap()
-        ));
+        assert!(
+            matches!((app.library_cover_for(&extended), app.library_covers.get(&path)),
+            (Some(found), Some(expected)) if std::ptr::eq(found, expected))
+        );
         assert!(
             app.library_cover_for(std::path::Path::new(r"D:\other.moriq"))
                 .is_none()
@@ -515,6 +526,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证资源库卡片保持紧凑并适应窗口列数。
     fn library_cards_stay_compact_and_fit_responsive_columns() {
         for available in [240.0, 440.0, 625.0, 626.0, 800.0, 1180.0, 2000.0] {
             let width = library_card_width(available);
@@ -529,6 +541,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证资源库卡片使用实际身份，打开和管理操作互相独立。
     fn library_picker_cards_build_with_real_identity_and_independent_actions() {
         let mut app = crate::tests::app();
         app.library = None;

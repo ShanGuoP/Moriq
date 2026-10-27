@@ -6,6 +6,7 @@ use moriq_library::{
 };
 
 pub trait InferenceRunner: Send + Sync {
+    /// 约定可取消的人脸推理接口；未配置执行器时返回不可用错误。
     fn qwen_faces(
         &self,
         _image: &std::path::Path,
@@ -14,6 +15,7 @@ pub trait InferenceRunner: Send + Sync {
     ) -> TaskResult<InferenceResult> {
         Err(TaskError::Runtime("未配置 Qwen 人脸推理".into()))
     }
+    /// 约定使用指定分类配置执行 Qwen 任务，并返回带模型修订的回执。
     fn qwen_infer(
         &self,
         task: &str,
@@ -21,8 +23,11 @@ pub trait InferenceRunner: Send + Sync {
         profile: &AiProfile,
         cancel: &AtomicBool,
     ) -> TaskResult<InferenceResult>;
+    /// 约定查询指定模型的固定修订信息。
     fn revision(&self, model: ModelId) -> TaskResult<String>;
+    /// 约定检查指定模型当前是否可供推理。
     fn ready(&self, model: ModelId) -> TaskResult<()>;
+    /// 约定模型推理接口，显式接收输入和取消标志。
     fn infer(
         &self,
         model: ModelId,
@@ -33,6 +38,7 @@ pub trait InferenceRunner: Send + Sync {
 
 pub struct LocalInference;
 impl InferenceRunner for LocalInference {
+    /// 确认模型可用后执行本地人脸推理，并在返回前再次检查取消。
     fn qwen_faces(
         &self,
         image: &std::path::Path,
@@ -51,6 +57,7 @@ impl InferenceRunner for LocalInference {
             data,
         })
     }
+    /// 调用本地 Qwen 执行器，绑定实际模型修订并拒绝取消后的结果。
     fn qwen_infer(
         &self,
         task: &str,
@@ -74,6 +81,7 @@ impl InferenceRunner for LocalInference {
             data,
         })
     }
+    /// 从内置模型清单读取修订，未知模型返回输入错误。
     fn revision(&self, model: ModelId) -> TaskResult<String> {
         moriq_ai::registry()
             .map_err(TaskError::Runtime)?
@@ -82,11 +90,13 @@ impl InferenceRunner for LocalInference {
             .map(|spec| spec.revision)
             .ok_or_else(|| TaskError::InvalidInput("模型未登记".into()))
     }
+    /// 验证指定模型已完整安装，统一转换运行时错误。
     fn ready(&self, model: ModelId) -> TaskResult<()> {
         moriq_ai::installed_path(model.as_str())
             .map(|_| ())
             .map_err(TaskError::Runtime)
     }
+    /// 执行已安装模型推理，并返回带真实身份与修订的分析结果。
     fn infer(
         &self,
         model: ModelId,
@@ -111,6 +121,7 @@ impl InferenceRunner for LocalInference {
     }
 }
 
+/// 按冻结工作种类分派媒体执行或模型推理，再封装待写入端提交的结果。
 pub(super) fn execute(
     work: Work,
     cancel: Arc<AtomicBool>,
@@ -155,12 +166,14 @@ pub(super) fn execute(
 /// Cancels detached blocking inference if the UI drops its request future.
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
+    /// 在请求 Future 被丢弃时发出取消信号，阻止后台推理继续发布结果。
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
     }
 }
 
 impl Service {
+    /// 为当前库的交互推理登记取消令牌，切库或请求销毁时可统一停止。
     async fn inference_cancel(&self, id: LibraryId) -> Result<CancelOnDrop> {
         let cancellation = self.job_cancel.clone();
         self.call(move |active| {
@@ -172,6 +185,7 @@ impl Service {
         .await
     }
 
+    /// 等待共享内存预算后推理文本向量，再校验库身份并执行语义检索。
     pub async fn semantic_search(&self, id: LibraryId, text: String) -> Result<Vec<AssetId>> {
         if text.trim().is_empty() || text.len() > 4096 {
             return Err("请输入1～4096字节的自然语言描述".into());
@@ -215,6 +229,7 @@ impl Service {
         .await
     }
 
+    /// 准备图片向量并进行语义检索，沿用共享预算与取消控制。
     pub async fn search_by_image(&self, id: LibraryId, asset: AssetId) -> Result<Vec<AssetId>> {
         let cancel = self.inference_cancel(id).await?;
         let flag = cancel.0.clone();
@@ -259,6 +274,7 @@ impl Service {
         .await
     }
 
+    /// 读取当前版本的语义推荐，避免旧版本结果用于新素材。
     pub async fn recommendations(
         &self,
         id: LibraryId,
@@ -289,16 +305,19 @@ impl Service {
 // Model installation and runtime policy.
 
 impl Service {
+    /// 在阻塞线程读取模型安装清单及本机能力。
     pub async fn models(&self) -> Result<(Vec<ModelInfo>, Hardware)> {
         tokio::task::spawn_blocking(|| Ok((moriq_ai::inventory()?, moriq_ai::hardware())))
             .await
             .map_err(|e| e.to_string())?
     }
+    /// 按默认来源安装模型，沿用下载状态与并发保护。
     pub async fn install_model(&self, model: String, control: DownloadControl) -> Result<()> {
         let preferences = self.settings().await?;
         self.install_model_with_mirror(model, control, preferences.ai.use_mirror)
             .await
     }
+    /// 按用户选择的来源安装模型，避免阻塞资源库写入端。
     pub async fn install_model_with_mirror(
         &self,
         model: String,
@@ -311,6 +330,7 @@ impl Service {
         .await
         .map_err(|e| e.to_string())?
     }
+    /// 在阻塞线程卸载模型，沿用运行租约保护。
     pub async fn uninstall_model(&self, model: String) -> Result<()> {
         tokio::task::spawn_blocking(move || moriq_ai::uninstall(&model))
             .await

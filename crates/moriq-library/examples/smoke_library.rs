@@ -1,6 +1,7 @@
 //! Isolated visual fixtures. Usage: cargo run -p moriq-library --example smoke_library -- target/test-artifacts
 use moriq_library::Library;
 use std::{error::Error, path::PathBuf};
+/// 生成独立的视觉验收资源库与样本图片，不依赖用户生产数据。
 fn main() -> Result<(), Box<dyn Error>> {
     let parent = PathBuf::from(
         std::env::args_os()

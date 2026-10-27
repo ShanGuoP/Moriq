@@ -19,6 +19,8 @@ macro_rules! trf {
 }
 
 /// Fixed option labels only. Dropdown callbacks retain the original value.
+///
+/// 按当前语言翻译固定选项标签，保留未知文本的既有回退。
 pub(super) fn option_label(language: Language, value: &str) -> &str {
     if language != Language::English {
         return value;
@@ -108,6 +110,7 @@ pub(super) fn option_label(language: Language, value: &str) -> &str {
     }
 }
 
+/// 翻译内置分类名称，不替换用户自定义名称。
 pub(super) fn category(language: Language, value: &str) -> &str {
     if language != Language::English {
         return value;
@@ -134,6 +137,7 @@ pub(super) fn category(language: Language, value: &str) -> &str {
     }
 }
 
+/// 将内部状态文本转换为当前语言的展示说明。
 pub(super) fn status(language: Language, value: &str) -> &str {
     let fixed = [
         (

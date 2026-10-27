@@ -1,4 +1,5 @@
 //! Exercise the controlled llama server with the installed Qwen weights.
+/// 读取图片与可选分类配置，验证受控 Qwen 推理并释放运行器。
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let task = args

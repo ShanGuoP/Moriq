@@ -7,6 +7,7 @@ pub struct Assets {
 }
 
 impl Library {
+    /// 读取首页收藏和分类素材摘要，不替换图库正在使用的查询快照。
     pub fn overview_assets(&self) -> Result<Assets> {
         let favorites = self.read_assets(
             &format!("SELECT a.id,v.id,a.name,v.format,v.width,v.height,v.bytes,a.favorite,a.rating,a.imported_at \
@@ -34,6 +35,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// 验证首页摘要使用当前版本并排除回收站，且不替换图库快照。
     fn homepage_respects_current_versions_and_trash_without_replacing_gallery_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "首页查询").unwrap();

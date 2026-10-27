@@ -2,6 +2,7 @@
 use super::*;
 
 impl Service {
+    /// 在当前库中登记媒体后台任务，供独立调度器领取。
     pub async fn queue_media_job(&self, id: LibraryId, kind: JobKind) -> TaskResult<()> {
         if let Some(model) = kind.model() {
             let runner = self.inference.clone();
@@ -17,6 +18,7 @@ impl Service {
         })
         .await
     }
+    /// 提交单任务控制并通知正在执行的对应工作取消。
     pub async fn control_job(
         &self,
         id: LibraryId,
@@ -35,6 +37,7 @@ impl Service {
         })
         .await
     }
+    /// 批量控制模型任务，同时向受影响的执行发出取消信号。
     pub async fn control_model_jobs(&self, id: LibraryId, command: JobCommand) -> TaskResult<()> {
         let cancellation = self.job_cancel.clone();
         self.call_task(move |active| {
@@ -50,6 +53,7 @@ impl Service {
         })
         .await
     }
+    /// 读取任务逐项失败信息，供用户查看或重试。
     pub async fn job_failures(&self, id: LibraryId, job: String) -> Result<Vec<JobFailure>> {
         self.call(move |active| {
             check(active, id)?
@@ -58,6 +62,7 @@ impl Service {
         })
         .await
     }
+    /// 领取有界任务工作、等待资源预算、执行并校验库身份后提交回执。
     pub async fn drive_job_step(&self, id: LibraryId) -> TaskResult<()> {
         let service = self.clone();
         // A dropped UI future must not strand an in-flight checkpoint in an open library.
@@ -158,6 +163,7 @@ impl Service {
         .await
         .map_err(|e| TaskError::Runtime(e.to_string()))?
     }
+    /// 读取后台任务状态投影，供界面展示而不驱动任务执行。
     pub async fn background_jobs(&self, id: LibraryId) -> Result<Vec<BackgroundJob>> {
         self.call(move |active| {
             check(active, id)?

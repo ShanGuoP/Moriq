@@ -18,6 +18,7 @@ pub struct Source {
     _lease: Arc<File>,
 }
 impl Source {
+    /// 从读取连接冻结指定素材版本的文件来源、身份及必要元数据。
     pub(crate) fn from_read_connection(
         db: &Connection,
         root: &Path,
@@ -79,6 +80,7 @@ pub struct Details {
     source: std::result::Result<Source, String>,
 }
 impl Library {
+    /// 为素材当前展示版本建立媒体读取来源。
     pub fn media_source(&self, asset: AssetId) -> Result<Source> {
         let version: String = self.db.query_row(
             "SELECT display_version_id FROM assets WHERE id=?1",
@@ -87,6 +89,7 @@ impl Library {
         )?;
         self.version_source(asset, AssetVersionId(parse_id(&version)?))
     }
+    /// 校验版本属于指定素材后建立来源，不修改当前展示版本。
     pub fn version_source(&self, asset: AssetId, version: AssetVersionId) -> Result<Source> {
         let (version, hash, extension,width,height): (String, String, String,u32,u32) = self.db.query_row(
             "SELECT id,sha256,format,width,height FROM asset_versions WHERE asset_id=?1 AND id=?2",
@@ -114,6 +117,7 @@ impl Library {
             _lease: self._lock.clone(),
         })
     }
+    /// 冻结有限数量版本的缩略图来源，供媒体线程批量读取。
     pub fn thumbnail_plan(&self, versions: &[AssetVersionId]) -> Result<Thumbnails> {
         if versions.len() > 128 {
             return Err(Error::Invalid("一次最多读取 128 张缩略图".into()));
@@ -150,6 +154,7 @@ impl Library {
             _lease: self._lock.clone(),
         })
     }
+    /// 冻结详情所需的数据库字段与媒体来源，避免界面直接访问文件。
     pub fn details_plan(&self, id: AssetId) -> Result<Details> {
         let mut metadata = self.details_metadata(id)?;
         metadata.faces = self.faces(id)?;
@@ -219,6 +224,7 @@ impl Library {
     }
 }
 impl Source {
+    /// 在取消作用域中建立原图分块会话，及时释放未完成读取。
     pub fn regions_cancellable(
         self,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
@@ -226,6 +232,7 @@ impl Source {
         let _scope = crate::cancel::Scope::enter(cancelled);
         self.regions()
     }
+    /// 核对已冻结来源的文件内容与登记校验和，拒绝被替换的原片。
     pub(crate) fn verify_integrity(mut self) -> Result<()> {
         let mut hash = Sha256::new();
         let mut bytes = 0u64;
@@ -247,6 +254,7 @@ impl Source {
         }
         Ok(())
     }
+    /// 建立持有来源快照和资源库租约的分块解码会话。
     pub fn regions(self) -> Result<crate::region::Session> {
         crate::cancel::check()?;
         let root = self.root.clone();
@@ -275,16 +283,20 @@ impl Source {
         };
         crate::region::Session::open(root, version, dimensions, extension, cacheable, path, lease)
     }
+    /// 返回此媒体来源绑定的素材版本身份。
     pub fn version(&self) -> AssetVersionId {
         self.version
     }
+    /// 返回该来源是否允许使用受管预览缓存。
     pub fn cacheable(&self) -> bool {
         self.expected.is_none()
     }
+    /// 从冻结文件读取规范化媒体元数据。
     pub fn metadata_record(self) -> Result<serde_json::Value> {
         let (file, _frozen) = self.frozen_file()?;
         crate::metadata::read(file)
     }
+    /// 为视频来源创建受保护的播放快照并启动播放会话。
     pub fn playback(self) -> Result<Arc<crate::video::Playback>> {
         let requested = std::time::Instant::now();
         if crate::video::extension(Path::new(&format!("video.{}", self.extension))).is_none() {
@@ -304,6 +316,7 @@ impl Source {
         };
         crate::video::Playback::start(snapshot, lease, requested)
     }
+    /// 取得与冻结身份一致的文件；必要时生成临时副本以隔离后续路径变化。
     fn frozen_file(mut self) -> Result<(File, Option<tempfile::NamedTempFile>)> {
         if let Some(expected) = self.expected.take() {
             if fs2::available_space(std::env::temp_dir())
@@ -327,10 +340,13 @@ impl Source {
             Ok((self.file, None))
         }
     }
+    /// 使用默认预览边长解码当前冻结来源。
     pub fn preview(self) -> Result<Preview> {
         self.preview_edge(1600)
     }
     /// Read only the bounded, managed 1600px derivative. Never fall back to source decoding.
+    ///
+    /// 仅读取已存在的有效预览缓存，缺失或损坏时返回空值。
     pub fn cached_preview(&self) -> Option<Preview> {
         if !self.cacheable() {
             return None;
@@ -354,6 +370,7 @@ impl Source {
         reader.limits(limits);
         preview_pixels(reader.decode().ok()?).ok()
     }
+    /// 按目标边长读取缓存或有界解码来源，并按来源策略写回缓存。
     pub fn preview_edge(self, edge: u32) -> Result<Preview> {
         if edge == 1600
             && let Some(preview) = self.cached_preview()
@@ -402,6 +419,7 @@ impl Source {
         Ok(result)
     }
 }
+/// 将解码图像转换为统一预览像素及实际尺寸。
 fn preview_pixels(preview: image::DynamicImage) -> Result<Preview> {
     let small = resize::fit(&preview, 128)?.to_rgba8();
     let background = image::DynamicImage::ImageRgba8(image::imageops::blur(&small, 8.0));
@@ -411,6 +429,7 @@ fn preview_pixels(preview: image::DynamicImage) -> Result<Preview> {
     })
 }
 impl Source {
+    /// 从冻结来源重建缺失缩略图，校验来源后再发布缓存。
     fn rebuild_thumbnail(self) -> Result<Pixels> {
         let destination = safe_path(&self.root, &format!("thumbnails/256/{}.png", self.version))?;
         let path = self.path.clone();
@@ -442,6 +461,7 @@ impl Source {
     }
 }
 impl Thumbnails {
+    /// 计算批量缩略图读取所需的内存预算。
     pub fn memory_mib(&self) -> u32 {
         if self
             .files
@@ -454,6 +474,7 @@ impl Thumbnails {
         }
     }
 
+    /// 批量读取缩略图，保留与输入对应的位置并统计读取失败项。
     pub fn read(self) -> (Vec<Option<Pixels>>, usize) {
         let mut warnings = 0;
         let images = self
@@ -485,6 +506,7 @@ impl Thumbnails {
     }
 }
 impl Details {
+    /// 读取详情中的 EXIF 和地点等媒体信息，合并已冻结的数据库字段。
     pub fn read(mut self) -> AssetDetails {
         if !self.metadata.exif.is_empty() {
             return self.metadata;
@@ -503,6 +525,7 @@ impl Details {
         self.metadata
     }
 }
+/// 从图像容器提取展示用 EXIF 字段和 GPS，缺少元数据时返回空结果。
 fn read_exif(file: File) -> (Vec<(String, String)>, Option<AssetLocation>) {
     let mut bytes = Vec::new();
     if let Err(e) = file.take(16 * 1024 * 1024).read_to_end(&mut bytes) {
@@ -541,9 +564,12 @@ fn read_exif(file: File) -> (Vec<(String, String)>, Option<AssetLocation>) {
 }
 
 /// Decode to a requested edge; large/RAW system codecs scale before pixel transfer.
+///
+/// 按文件类型选择统一的有界栅格解码流程。
 pub fn raster(file: File, hint: &Path, edge: u32) -> Result<crate::native::Decoded> {
     raster_with_filter(file, hint, edge, Resampling::Area)
 }
+/// 按格式、目标边长和滤镜解码媒体，统一处理方向与色彩转换。
 pub(crate) fn raster_with_filter(
     mut file: File,
     hint: &Path,
@@ -632,6 +658,7 @@ pub(crate) fn raster_with_filter(
 mod tests {
     use super::*;
     #[test]
+    /// 验证版本来源绑定正确素材、保持冻结且不切换展示版本。
     fn version_sources_are_asset_scoped_frozen_and_do_not_change_display() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("original.png");
@@ -682,6 +709,7 @@ organize::hash_file(&edited).unwrap()]).unwrap();
         );
     }
     #[test]
+    /// 验证大像素与长边图片可正常导入，原片内容保持不变。
     fn imports_more_than_sixty_megapixels_and_long_sides_while_preserving_original() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("大图.jpg");

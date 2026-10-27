@@ -11,6 +11,7 @@ pub struct VersionChoice {
 mod tests {
     use super::*;
     #[test]
+    /// 验证关闭对比面板及过期请求不会替换当前图片。
     fn dismissed_comparison_and_stale_requests_never_replace_images() {
         let mut app = crate::tests::app();
         let pair = [AssetVersionId::default(), AssetVersionId::default()];
@@ -49,6 +50,7 @@ mod tests {
     }
 }
 impl std::fmt::Display for VersionChoice {
+    /// 输出对比版本选择项的显示标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
@@ -63,6 +65,7 @@ pub(super) struct Compare {
     loading: bool,
 }
 impl Compare {
+    /// 清除对比版本与读取状态，使离开面板后的旧结果失效。
     pub fn clear(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
@@ -86,6 +89,7 @@ pub enum CompareMessage {
     ),
 }
 impl App {
+    /// 处理版本选择、预览读取和对比模式切换。
     pub(super) fn compare_message(&mut self, event: CompareMessage) -> Task<Message> {
         let language = self.preferences.language;
         match event {
@@ -185,6 +189,7 @@ impl App {
         self.compare.task = Some(handle);
         task
     }
+    /// 构建素材版本对比面板。
     pub(super) fn compare_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut view=column![muted(tr!(language, "左右独立选择版本，不改变展示版本。两侧均为最长边 1600 像素预览；未接入 ICC/HDR 色彩校准。" => "Select versions independently without changing the displayed version. Both previews have a maximum edge of 1600 pixels; ICC/HDR calibration is unavailable."))].spacing(12);

@@ -19,6 +19,7 @@ pub enum DropMessage {
     File(PathBuf),
     Flush(u64),
 }
+/// 把平台文件拖放事件转换为内部队列事件。
 pub(super) fn window_event(event: iced::window::Event) -> Option<DropMessage> {
     match event {
         iced::window::Event::FileHovered(path) => Some(DropMessage::Hover(path)),
@@ -52,6 +53,7 @@ enum Flush {
     Ready,
 }
 impl State {
+    /// 清空拖放队列与接收上下文，并使延迟回执失效。
     pub fn clear(&mut self) {
         let ticket = self.ticket.wrapping_add(1);
         *self = Self {
@@ -59,18 +61,23 @@ impl State {
             ..Default::default()
         };
     }
+    /// 仅清除拖放悬停提示，保留已登记批次。
     pub fn clear_hover(&mut self) {
         self.hovered.clear();
     }
+    /// 判断当前窗口是否正在显示文件拖入反馈。
     pub fn hovering(&self) -> bool {
         !self.hovered.is_empty()
     }
+    /// 返回尚未开始处理的拖放项目数量。
     pub fn pending_count(&self) -> usize {
         self.pending.iter().map(|b| b.paths.len()).sum()
     }
+    /// 判断队列中是否存在已经过静默收集期的批次。
     pub fn has_ready(&self) -> bool {
         self.ready && !self.pending.is_empty()
     }
+    /// 把平台分散发送的文件事件收集到当前批次，并冻结接收项目。
     fn push(&mut self, target: Target, path: PathBuf, now: Instant) -> Option<u64> {
         if self
             .pending
@@ -97,6 +104,7 @@ impl State {
             Some(self.ticket)
         }
     }
+    /// 在静默期结束时封存当前批次，准备按队列顺序导入。
     fn flush(&mut self, ticket: u64, now: Instant) -> Flush {
         if ticket != self.ticket || !self.timer {
             return Flush::Stale;
@@ -111,6 +119,7 @@ impl State {
         self.ready = true;
         Flush::Ready
     }
+    /// 取出下一个可以处理的拖放批次。
     fn pop(&mut self) -> Option<Batch> {
         if !self.ready {
             return None;
@@ -130,6 +139,7 @@ enum Blocked {
     Stopping,
 }
 impl Blocked {
+    /// 生成当前拖放反馈提示文本。
     fn text(self, language: Language) -> &'static str {
         match self {
             Self::Library => {
@@ -154,6 +164,7 @@ impl Blocked {
     }
 }
 impl App {
+    /// 计算当前页面允许接收文件的资源库和项目目标。
     fn drop_target(&self) -> Option<Target> {
         self.library.as_ref().map(|library| Target {
             library: library.info.id,
@@ -162,6 +173,7 @@ impl App {
                 .flatten(),
         })
     }
+    /// 判断当前界面或忙碌状态是否阻止开始拖放导入。
     fn drop_blocked(&self) -> Option<Blocked> {
         if self.library.is_none() || self.library_picker {
             Some(Blocked::Library)
@@ -183,6 +195,7 @@ impl App {
             None
         }
     }
+    /// 处理拖入、离开、文件到达和静默期回执。
     pub(super) fn drop_message(&mut self, message: DropMessage) -> Task<Message> {
         match message {
             DropMessage::Hover(path) => {
@@ -213,6 +226,7 @@ impl App {
         }
         Task::none()
     }
+    /// 安排一次带世代标识的静默期回执，合并平台连续文件事件。
     fn flush_drops_after(ticket: u64, delay: Duration) -> Task<Message> {
         Task::perform(
             async move {
@@ -221,9 +235,11 @@ impl App {
             move |_| Message::Drop(DropMessage::Flush(ticket)),
         )
     }
+    /// 检查已有批次、资源库和任务状态是否允许启动下一次导入。
     pub(super) fn can_start_drop(&self) -> bool {
         self.drop_blocked().is_none()
     }
+    /// 按队列顺序启动已就绪批次，保留批次原始库与项目归属。
     pub(super) fn start_next_drop(&mut self) -> Task<Message> {
         if !self.drop_import.has_ready() {
             return Task::none();
@@ -254,6 +270,7 @@ impl App {
         }
         self.start_import(batch.paths, batch.target.project, false)
     }
+    /// 把拖放来源交给统一导入管线，沿用进度、取消和错误处理。
     pub(super) fn start_import(
         &mut self,
         paths: Vec<PathBuf>,
@@ -286,6 +303,7 @@ impl App {
             Message::Imported,
         )
     }
+    /// 构建文件拖入提示层，避免破坏底层浏览和表单状态。
     pub(super) fn drop_overlay<'a>(&self, base: Element<'a, Message>) -> Element<'a, Message> {
         let language = self.preferences.language;
         let overlay: Element<'a, Message> = if self.drop_import.hovering() {
@@ -366,14 +384,17 @@ impl App {
 mod tests {
     use super::*;
     use iced::futures::StreamExt;
+    /// 构造测试拖放事件使用的独立文件路径。
     fn file(name: &str) -> PathBuf {
         PathBuf::from(name)
     }
+    /// 准备当前用例可接收回执的状态或已就绪的替身响应。
     fn ready(app: &mut App) -> Task<Message> {
         app.drop_import.last = Some(Instant::now() - QUIET);
         let ticket = app.drop_import.ticket;
         app.update(Message::Drop(DropMessage::Flush(ticket)))
     }
+    /// 构造导入完成回执，供队列和状态切换验证。
     async fn imported(task: Task<Message>) -> ImportReport {
         let mut stream = iced_runtime::task::into_stream(task).unwrap();
         while let Some(action) = stream.next().await {
@@ -384,6 +405,7 @@ mod tests {
         panic!("import task produced no completion")
     }
     #[test]
+    /// 验证窗口拖放与选择器回执分开，悬停离开不丢弃已收集文件。
     fn window_drop_events_are_distinct_from_picker_receipts_and_hover_leave_keeps_files() {
         let path = file("A.PNG");
         assert!(
@@ -405,6 +427,7 @@ mod tests {
         assert!(!app.drop_import.hovering());
     }
     #[test]
+    /// 验证连续拖放共用静默计时器，重置后忽略旧封存回执。
     fn bursts_use_one_timer_wait_for_quiet_and_ignore_stale_flush_after_reset() {
         let now = Instant::now();
         let owner = LibraryId::default();
@@ -428,6 +451,7 @@ mod tests {
         assert!(matches!(state.flush(ticket, now + QUIET * 3), Flush::Stale));
     }
     #[test]
+    /// 验证阻塞上下文不导入或修改草稿，取消会清空待处理队列。
     fn blocked_contexts_do_not_import_or_change_unsaved_forms_and_cancel_clears_the_queue() {
         let mut app = crate::tests::app();
         app.manager.notes = "unsaved".into();
@@ -467,6 +491,7 @@ mod tests {
         assert!(app.import.is_none());
     }
     #[test]
+    /// 验证拖放悬停仅显示提示，不关闭预览或修改编辑表单。
     fn hovering_is_informative_without_closing_preview_or_editing_forms() {
         let mut app = crate::tests::app();
         app.viewer.selected = Some(crate::tests::selected_asset());
@@ -490,6 +515,7 @@ mod tests {
         assert!(app.error.is_some());
     }
     #[test]
+    /// 验证拖放及迟到文件夹批次保存到原接收项目，来源保持不变。
     fn dropped_files_and_late_folder_batch_are_persisted_in_the_original_project_with_sources_preserved()
      {
         let runtime = tokio::runtime::Runtime::new().unwrap();

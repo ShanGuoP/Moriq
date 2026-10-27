@@ -1,6 +1,7 @@
 //! One per-library vocabulary drives inference, cards, filters, and sidebar groups.
 use super::*;
 
+/// 计算影响分类推理的配置摘要，供任务回执判断配置是否过期。
 pub fn classification_hash(profile: &AiProfile) -> Result<String> {
     let mut definitions = profile
         .categories
@@ -14,9 +15,11 @@ pub fn classification_hash(profile: &AiProfile) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 impl Library {
+    /// 读取当前项目实际使用的 AI 分类配置。
     pub fn ai_profile(&self) -> Result<AiProfile> {
         self.ai_profile_for(&self.workspace_key())
     }
+    /// 按指定项目范围读取分类词表、启用状态与主题数量限制。
     pub(crate) fn ai_profile_for(&self, scope: &str) -> Result<AiProfile> {
         if !scope.is_empty() {
             let (revision,max_themes,json):(u64,u8,String)=self.db.query_row("SELECT revision,max_themes,categories FROM project_ai_profiles WHERE project_id=?1",[scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
@@ -58,6 +61,7 @@ impl Library {
             categories,
         })
     }
+    /// 校验并保存分类配置，按语义变化处理旧分类任务与失效结果。
     pub fn save_ai_profile(&mut self, mut profile: AiProfile) -> Result<(AiProfile, Vec<String>)> {
         for c in &mut profile.categories {
             c.label = c.label.trim().into();
@@ -136,6 +140,7 @@ impl Library {
         self.snapshot = None;
         Ok((profile, cancelled))
     }
+    /// 汇总当前项目可见的 AI 分类分组和素材数量。
     pub fn ai_groups(&self) -> Result<Vec<AiGroup>> {
         let profile = self.ai_profile()?;
         // Materialize effective content once. The old implementation expanded the
@@ -226,6 +231,7 @@ impl Library {
             })
             .collect())
     }
+    /// 统计需要按当前分类配置重新分析的素材数量。
     pub fn outdated_ai_count(&self) -> Result<u64> {
         let hash = classification_hash(&self.ai_profile()?)?;
         Ok(self.db.query_row("SELECT count(*) FROM assets a JOIN ai_effective_results e ON e.version_id=a.display_version_id AND e.task='qwen_classification' JOIN ai_analysis_runs r ON r.id=e.run_id WHERE a.deleted_at IS NULL AND coalesce(json_extract(r.data,'$.profile_hash'),'')<>?1 AND (SELECT workspace FROM asset_workspaces WHERE asset_id=a.id)=?2",params![hash,self.workspace_key()],|r| r.get(0))?)

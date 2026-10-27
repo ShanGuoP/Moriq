@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// 驱动分类和描述任务至完成或超时，检查任务失败与持久化结果。
 async fn analyze(service: &Service, owner: LibraryId, total: usize) -> Result<(), String> {
     for kind in [JobKind::QwenClassification, JobKind::QwenDescription] {
         service
@@ -29,6 +30,7 @@ async fn analyze(service: &Service, owner: LibraryId, total: usize) -> Result<()
     }
 }
 
+/// 建立生成媒体的独立资源库，验证真实调度、分析及人工编辑路径。
 async fn run(image: PathBuf) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut library = moriq_library::Library::create(directory.path(), "qwen-content-smoke")
@@ -172,6 +174,7 @@ async fn run(image: PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+/// 启动异步运行环境执行 Qwen 完整流程验证。
 fn main() -> Result<(), String> {
     let image = std::env::args()
         .nth(1)

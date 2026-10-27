@@ -17,6 +17,7 @@ pub enum ExportChange {
     Template(String),
 }
 impl ExportState {
+    /// 将导出表单选项应用到类型化导出配置。
     pub fn apply(&mut self, change: ExportChange) {
         let o = &mut self.options;
         match change {
@@ -33,6 +34,7 @@ impl ExportState {
     }
 }
 impl std::fmt::Display for ExportChange {
+    /// 输出导出选项的显示标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Format(ExportFormat::Original) => "原文件",
@@ -58,6 +60,7 @@ impl std::fmt::Display for ExportChange {
         })
     }
 }
+/// 构建导出格式、尺寸和目录等选项行。
 pub(super) fn rows(o: &ExportOptions) -> Vec<(&'static str, Vec<ExportChange>, ExportChange)> {
     use ExportChange::*;
     vec![

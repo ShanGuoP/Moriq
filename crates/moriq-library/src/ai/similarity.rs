@@ -7,6 +7,7 @@ pub struct Signature {
     pub aspect: f64,
 }
 
+/// 从有界图像计算感知指纹、颜色和宽高比特征。
 pub fn signature(image: &image::DynamicImage) -> Signature {
     let scaled = image
         .resize_exact(32, 32, image::imageops::FilterType::Triangle)
@@ -58,6 +59,7 @@ pub fn signature(image: &image::DynamicImage) -> Signature {
         aspect: image.width() as f64 / image.height().max(1) as f64,
     }
 }
+/// 将指纹写入指定素材版本，供后续相似性检索使用。
 pub(crate) fn store(tx: &Connection, version: &str, s: &Signature) -> Result<()> {
     tx.execute("INSERT INTO image_fingerprints(version_id,hash,red,green,blue,aspect) VALUES(?1,?2,?3,?4,?5,?6) ON \
                 CONFLICT(version_id) DO UPDATE SET \
@@ -75,16 +77,19 @@ pub struct SimilarityPlan {
     connection: read_pool::ReadLease,
 }
 impl Library {
+    /// 取得相似性搜索使用的独立读取租约，避免持有写入端连接。
     pub fn similarity_plan(&self) -> Result<SimilarityPlan> {
         Ok(SimilarityPlan {
             connection: self.readers.checkout()?,
         })
     }
+    /// 为指定素材准备并执行相似性查询。
     pub fn similar_assets(&self, asset: AssetId) -> Result<Vec<SimilarAsset>> {
         self.similarity_plan()?.search(asset)
     }
 }
 impl SimilarityPlan {
+    /// 比较指纹与颜色等特征，返回符合条件的相似素材。
     pub fn search(&self, asset: AssetId) -> Result<Vec<SimilarAsset>> {
         let db = self.connection.connection()?;
         let reference:Option<(i64,
@@ -145,6 +150,7 @@ r.get(4)?))).optional()?;
 mod tests {
     use super::*;
     #[test]
+    /// 验证相似性识别缩放与重压缩图片，同时不合并素材或修改来源。
     fn detects_resized_and_recompressed_images_without_merging_or_modifying_sources() {
         let dir = tempfile::tempdir().unwrap();
         let mut image = image::RgbImage::new(512, 256);

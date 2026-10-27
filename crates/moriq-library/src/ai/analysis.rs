@@ -7,6 +7,7 @@ pub struct SemanticPlan {
     revision: String,
 }
 impl SemanticPlan {
+    /// 根据指定展示版本的语义向量返回少量相近素材，排除素材自身。
     pub fn recommendations(
         &self,
         asset: AssetId,
@@ -40,6 +41,7 @@ self.revision],
         }
         Ok(items)
     }
+    /// 按同模型修订的向量相似度筛选素材，维护有界候选集合。
     pub fn search(&self, query: &[f32], exclude: Option<AssetId>) -> Result<Vec<AssetId>> {
         let mut stmt=self.db.connection()?.prepare("SELECT a.id,e.vector FROM ai_embeddings e JOIN assets a ON a.display_version_id=e.version_id WHERE \
                 a.deleted_at IS NULL AND e.model_id='chinese-clip' AND e.revision=?1")?;
@@ -68,9 +70,11 @@ self.revision],
         Ok(top.into_iter().map(|(id, _)| id).collect())
     }
 }
+/// 将浮点向量编码为小端字节，统一数据库中的向量存储格式。
 fn vector_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
+/// 校验 JSON 向量的维度与有限值，并归一化为单位向量。
 pub fn query_vector(value: &serde_json::Value) -> Result<Vec<f32>> {
     let raw = value
         .as_array()
@@ -96,6 +100,7 @@ pub fn query_vector(value: &serde_json::Value) -> Result<Vec<f32>> {
     }
     Ok(values)
 }
+/// 从小端字节还原浮点向量，拒绝非法长度和非有限数值。
 pub fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) || bytes.len() > 16384 {
         return Err(Error::Invalid("已存向量数据无效".into()));
@@ -113,6 +118,7 @@ pub fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>> {
 }
 pub struct PreparedImage(tempfile::NamedTempFile);
 impl PreparedImage {
+    /// 借用推理用临时图片路径，文件寿命由准备结果持有者管理。
     pub fn path(&self) -> &Path {
         self.0.path()
     }
@@ -124,6 +130,7 @@ pub struct InferenceResult {
     pub data: serde_json::Value,
 }
 impl InferenceResult {
+    /// 核对推理回执的模型身份与修订字段，拒绝不匹配的结果。
     pub fn checked(self, expected: ModelId) -> TaskResult<Self> {
         if self.model != expected || self.revision.trim().is_empty() || self.revision.len() > 256 {
             return Err(TaskError::InvalidInput("分析回执模型身份或修订无效".into()));
@@ -131,6 +138,7 @@ impl InferenceResult {
         Ok(self)
     }
 }
+/// 将冻结素材来源转为有界的推理 PNG，返回持有临时文件的准备结果。
 pub fn prepare_image(source: media::Source) -> Result<PreparedImage> {
     let preview = source.preview_edge(1024)?.image;
     let temp = tempfile::Builder::new().suffix(".png").tempfile()?;
@@ -143,12 +151,14 @@ pub fn prepare_image(source: media::Source) -> Result<PreparedImage> {
     )?;
     Ok(PreparedImage(temp))
 }
+/// 按默认分类配置校验并规范化 Qwen 输出。
 pub fn qwen_payload(
     task: &'static str,
     output: serde_json::Value,
 ) -> TaskResult<serde_json::Value> {
     qwen_payload_for_profile(task, output, &AiProfile::default())
 }
+/// 按任务类型、启用词表和长度限制校验 Qwen 字段，并附加配置摘要。
 pub fn qwen_payload_for_profile(
     task: &'static str,
     output: serde_json::Value,
@@ -243,6 +253,7 @@ pub fn qwen_payload_for_profile(
     }
     Ok(result)
 }
+/// 提交版本绑定的分析结果，保留人工分类与人物归属等人工状态。
 pub(crate) fn store(
     tx: &Connection,
     version: &str,
@@ -320,12 +331,14 @@ vector_bytes(&embedding)])?;
     Ok(())
 }
 
+/// 计算两个人脸向量的相似度，供人物匹配使用。
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return -1.0;
     }
     a.iter().zip(b).map(|(a, b)| a * b).sum()
 }
+/// 根据人脸向量给出候选人物分组，供后续归属判断。
 pub(crate) fn suggest_people(
     pool: &std::sync::Arc<read_pool::ReadPool>,
     version: &str,
@@ -377,6 +390,7 @@ pub(crate) fn suggest_people(
     }
     Ok(())
 }
+/// 根据人物当前有效人脸重建代表向量，剔除失效来源。
 fn refresh_person_vectors(tx: &Connection, person: &str) -> Result<()> {
     tx.execute("DELETE FROM person_vectors WHERE person_id=?1", [person])?;
     let revisions = tx
@@ -425,12 +439,14 @@ struct PreviousFace {
     bounds: [f32; 4],
     vector: Vec<f32>,
 }
+/// 计算两个人脸框的重叠程度，用于检测结果去重或匹配。
 fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let w = ((a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0])).max(0.);
     let h = ((a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1])).max(0.);
     let intersection = w * h;
     intersection / (a[2] * a[3] + b[2] * b[3] - intersection).max(f32::EPSILON)
 }
+/// 保存当前版本的人脸检测及特征数据，并维护人物候选关联。
 fn store_faces(
     tx: &Connection,
     version: &str,
@@ -553,6 +569,7 @@ person])?;
     Ok(())
 }
 impl Library {
+    /// 冻结语义检索所需的读取租约与模型修订。
     pub fn semantic_plan(&self, revision: String) -> Result<SemanticPlan> {
         let db = self.readers.checkout()?;
         Ok(SemanticPlan {
@@ -561,6 +578,7 @@ impl Library {
             revision,
         })
     }
+    /// 保存素材的人工分类，保留人工优先于自动分析的语义。
     pub fn set_category(&mut self, ids: &[AssetId], category: &str) -> Result<()> {
         self.require_workspace_assets(ids)?;
         if ids.is_empty() || ids.len() > 10000 || category.trim().is_empty() || category.len() > 128
@@ -578,6 +596,7 @@ category.trim()])?;
         self.snapshot = None;
         Ok(())
     }
+    /// 查询当前项目的人物分组及摘要信息。
     pub fn people(&self) -> Result<Vec<Person>> {
         self.db.prepare("SELECT p.id,p.name,count(DISTINCT a.id) FROM people p LEFT JOIN detected_faces f ON \
                 f.person_id=p.id LEFT JOIN assets a ON a.display_version_id=f.version_id AND a.deleted_at IS NULL \
@@ -589,6 +608,7 @@ count:r.get(2)?}
 ))?.collect::<std::result::Result<Vec<_>,
 _>>().map_err(Error::from)
     }
+    /// 校验人物归属和名称后更新显示名称。
     pub fn rename_person(&mut self, id: &str, name: &str) -> Result<()> {
         self.require_workspace_object("people", id)?;
         let name = name.trim();
@@ -604,6 +624,7 @@ _>>().map_err(Error::from)
         }
         Ok(())
     }
+    /// 合并人物分组及人脸关联，并更新人物代表向量。
     pub fn merge_people(&mut self, source: &str, target: &str) -> Result<()> {
         self.require_workspace_object("people", source)?;
         self.require_workspace_object("people", target)?;
@@ -629,6 +650,7 @@ _>>().map_err(Error::from)
         self.snapshot = None;
         Ok(())
     }
+    /// 读取素材当前版本的人脸检测和人物归属。
     pub fn faces(&self, asset: AssetId) -> Result<Vec<Face>> {
         let mut stmt=self.db.prepare("SELECT f.id,f.version_id,f.person_id,coalesce(p.name,'未分组'),f.box FROM detected_faces f JOIN assets \
                 a ON a.display_version_id=f.version_id LEFT JOIN people p ON p.id=f.person_id WHERE a.id=?1 ORDER \
@@ -658,6 +680,7 @@ _>>().map_err(Error::from)
             })
             .collect()
     }
+    /// 保存人工人脸归属，并更新相关人物代表数据。
     pub fn assign_face(&mut self, face: &str, person: Option<&str>) -> Result<()> {
         let version: String = self.db.query_row(
             "SELECT version_id FROM detected_faces WHERE id=?1",
@@ -709,6 +732,7 @@ _>>().map_err(Error::from)
         self.snapshot = None;
         Ok(())
     }
+    /// 清理指定 AI 索引数据，按既有规则保留人工内容及其他模型结果。
     pub fn clear_ai_indexes(&mut self, model: &str) -> Result<()> {
         let scope = self.workspace_key();
         let tx = self.db.transaction()?;
@@ -742,6 +766,7 @@ _>>().map_err(Error::from)
 mod tests {
     use super::*;
     #[test]
+    /// 验证旧展示版本迟到的分析不会修改新版本分类。
     fn late_old_version_analysis_cannot_classify_the_new_display_version() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("source.png");
@@ -795,6 +820,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证 Qwen 结果持久化，CLIP 结果不会覆盖分类。
     fn qwen_results_are_persisted_and_clip_no_longer_overwrites_categories() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("cosplay.png");

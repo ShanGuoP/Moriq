@@ -1,5 +1,6 @@
 use super::*;
 impl Library {
+    /// 保存资源库名称和说明等资料，并记录对应活动。
     pub fn update_profile(&mut self, name: &str, description: &str) -> Result<()> {
         let name = name.trim().trim_end_matches(".moriq").trim();
         if name.is_empty()
@@ -18,6 +19,7 @@ impl Library {
         Ok(())
     }
 
+    /// 推进资源库元数据更新时间，供缓存和界面判断是否需要刷新。
     pub(super) fn touch_metadata(&self) -> Result<()> {
         self.db.execute(
             "UPDATE library_state SET updated_at=max(updated_at,?1) WHERE id=1",
@@ -25,6 +27,7 @@ impl Library {
         )?;
         Ok(())
     }
+    /// 更新项目最近访问时间，不把单纯浏览记为素材内容编辑。
     pub fn visit_project(&self, id: ProjectId) -> Result<()> {
         if self.db.execute(
             "UPDATE projects SET visited_at=?1 WHERE id=?2",
@@ -35,6 +38,7 @@ impl Library {
         }
         Ok(())
     }
+    /// 更新所选素材回收站状态并记录活动，沿用当前项目约束。
     pub fn asset_trash_state(&self, id: AssetId) -> Result<Option<bool>> {
         Ok(self
             .db
@@ -45,6 +49,7 @@ impl Library {
             )
             .optional()?)
     }
+    /// 写入带级别、关联素材及重试信息的通知记录。
     pub fn notice(&self, value: &Notice) -> Result<()> {
         if value.title.is_empty()
             || value.title.len() > 512
@@ -64,6 +69,7 @@ value.retry])?;
 
         Ok(())
     }
+    /// 按截止位置标记通知已读，避免消费尚未展示的新通知。
     pub fn read_notifications(&self, through: i64) -> Result<()> {
         self.db.execute(
             "UPDATE notifications SET read_at=?1 WHERE id<=?2 AND read_at IS NULL",
@@ -71,6 +77,7 @@ value.retry])?;
         )?;
         Ok(())
     }
+    /// 使用游标读取有界的活动或通知页面，避免深分页扫描。
     pub fn events(&self, notifications: bool, before: Option<i64>) -> Result<EventPage> {
         let sql = if notifications {
             "SELECT id,at,title,detail,CASE WHEN EXISTS(SELECT 1 FROM assets WHERE id=notifications.asset_id) \
@@ -132,6 +139,7 @@ value.retry])?;
 mod tests {
     use super::*;
     #[test]
+    /// 验证版本 9 升级保留身份、偏好、项目与活动记录。
     fn version_nine_upgrade_keeps_identity_preferences_projects_and_existing_activity() {
         let dir = tempfile::tempdir().unwrap();
         let lib = Library::create(dir.path(), "旧版本").unwrap();
@@ -200,6 +208,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证资料更新原子化、访问不修改内容时间，状态可随备份恢复。
     fn profile_is_atomic_visits_do_not_modify_content_time_and_state_survives_backup() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "库").unwrap();
@@ -230,6 +239,7 @@ mod tests {
         assert_eq!(lib.info().unwrap().name, "显示名称");
     }
     #[test]
+    /// 验证通知游标分页有界，已读截止位置不消费后来通知。
     fn notifications_use_bounded_keyset_pages_and_read_cutoff_never_consumes_future_items() {
         let dir = tempfile::tempdir().unwrap();
         let lib = Library::create(dir.path(), "通知").unwrap();
@@ -268,6 +278,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证活动随事务提交，删除后的历史关联不会触发无效操作。
     fn activity_is_transactional_and_deleted_links_are_inert_history() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "活动").unwrap();

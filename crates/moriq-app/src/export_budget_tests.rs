@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+/// 验证转换导出等待共享预算时仍允许写入端处理其他请求。
 fn converted_export_waits_for_shared_budget_without_blocking_the_writer() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let dir = tempfile::tempdir().unwrap();

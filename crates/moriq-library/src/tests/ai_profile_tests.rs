@@ -1,4 +1,5 @@
 use super::*;
+/// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
 fn fixture() -> (tempfile::TempDir, Library, Asset) {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("sample.png");
@@ -10,6 +11,7 @@ fn fixture() -> (tempfile::TempDir, Library, Asset) {
     let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
     (dir, lib, asset)
 }
+/// 向独立测试配置添加自定义分类项。
 fn add(lib: &mut Library) -> AiProfile {
     let mut p = lib.ai_profile().unwrap();
     p.categories.push(AiCategory {
@@ -21,6 +23,7 @@ fn add(lib: &mut Library) -> AiProfile {
     });
     lib.save_ai_profile(p).unwrap().0
 }
+/// 构造测试所需的分类结果回执。
 fn result(lib: &mut Library, a: &Asset, p: &AiProfile) {
     let value = analysis::qwen_payload_for_profile(
         "qwen_classification",
@@ -34,6 +37,7 @@ fn result(lib: &mut Library, a: &Asset, p: &AiProfile) {
     lib.snapshot = None;
 }
 #[test]
+/// 验证自定义分类具有实际计数、封面与筛选，重命名不改变成员。
 fn custom_group_has_real_count_cover_and_filter_and_rename_keeps_stable_membership() {
     let (_dir, mut lib, a) = fixture();
     let profile = add(&mut lib);
@@ -106,6 +110,7 @@ fn custom_group_has_real_count_cover_and_filter_and_rename_keeps_stable_membersh
     );
 }
 #[test]
+/// 验证隐藏或恢复主题保留素材、原始历史与人工标签。
 fn hiding_and_restoring_a_theme_preserves_assets_raw_history_and_human_tags() {
     let (_dir, mut lib, a) = fixture();
     let mut profile = add(&mut lib);
@@ -157,6 +162,7 @@ fn hiding_and_restoring_a_theme_preserves_assets_raw_history_and_human_tags() {
     );
 }
 #[test]
+/// 验证分类配置按库隔离、可持久化并拒绝过期并发编辑。
 fn profile_is_library_local_durable_and_concurrent_edits_are_rejected() {
     let (dir, mut lib, _a) = fixture();
     let p = add(&mut lib);
@@ -181,6 +187,7 @@ fn profile_is_library_local_durable_and_concurrent_edits_are_rejected() {
     assert_eq!(lib.ai_profile().unwrap(), saved);
 }
 #[test]
+/// 验证定义变化取消旧分类任务，并拒绝迟到分类回执。
 fn definition_changes_cancel_old_jobs_and_reject_late_classification_receipts() {
     let (_dir, mut lib, a) = fixture();
     let mut profile = add(&mut lib);
@@ -217,6 +224,7 @@ fn definition_changes_cancel_old_jobs_and_reject_late_classification_receipts() 
     assert_eq!(lib.outdated_ai_count().unwrap(), 1);
 }
 #[test]
+/// 验证单纯重命名不取消任务，分类名称交换原子完成。
 fn rename_does_not_cancel_jobs_and_label_swaps_are_atomic() {
     let (_dir, mut lib, _a) = fixture();
     let mut p = lib.ai_profile().unwrap();
@@ -239,6 +247,7 @@ fn rename_does_not_cancel_jobs_and_label_swaps_are_atomic() {
     );
 }
 #[test]
+/// 验证停用媒介取消旧分类，模型不能提交停用选项。
 fn disabled_medium_cancels_old_classification_and_cannot_be_returned_by_the_model() {
     let (_dir, mut lib, a) = fixture();
     let mut p = add(&mut lib);
@@ -339,6 +348,7 @@ fn disabled_medium_cancels_old_classification_and_cannot_be_returned_by_the_mode
     assert_eq!(lib.details(a.id).unwrap().manual_tags, vec!["人工保留"]);
 }
 #[test]
+/// 验证配置与自定义输出校验不会放宽允许的分类和数量规则。
 fn profile_validation_and_custom_payload_validation_do_not_broaden_rules() {
     let (_dir, mut lib, _a) = fixture();
     let profile = add(&mut lib);

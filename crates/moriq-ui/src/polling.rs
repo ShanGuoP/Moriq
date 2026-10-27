@@ -1,6 +1,7 @@
 //! Lightweight background polling, separate from diagnostic capture scenarios.
 use super::*;
 impl App {
+    /// 按当前页面与在途任务状态安排必要轮询，避免隐藏页面重复读取。
     pub(super) fn tick(&mut self) -> Task<Message> {
         let language = self.preferences.language;
         if self.drop_import.has_ready() && self.import.is_none() && self.can_start_drop() {
@@ -60,7 +61,9 @@ impl App {
         }
         #[cfg(feature = "capture")]
         if self.launch.capture.is_some()
-            && (!self.loading || self.import.is_some())
+            && (!self.loading
+                || self.import.is_some()
+                || self.launch.panel.as_deref() == Some("interaction-continuity"))
             && !self.switching
         {
             return self.capture_tick();

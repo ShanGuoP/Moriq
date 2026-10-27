@@ -1,6 +1,7 @@
 //! Human-readable managed layout; identities and version links remain in SQLite.
 use super::*;
 impl Library {
+    /// 按扫描结果导入文件，保留相对目录信息和目标项目归属。
     pub fn import_file(
         &mut self,
         file: &ImportFile,
@@ -11,6 +12,7 @@ impl Library {
         self.snapshot = None;
         self.import_inner(&file.path, project, false, referenced, Some(&file.relative))
     }
+    /// 依据导入上下文和相对路径解析或创建目标项目层级。
     pub(super) fn resolve_import_project(
         &self,
         file: &ImportFile,
@@ -37,6 +39,7 @@ impl Library {
         };
         Ok(project)
     }
+    /// 为受管版本选择安全且不覆盖现有内容的存放位置。
     pub(super) fn managed_location(
         &mut self,
         source: &Path,
@@ -163,6 +166,7 @@ impl Library {
             "同名文件过多，请分开导入到不同子目录".into(),
         ))
     }
+    /// 为重复内容建立目标项目所需的独立文件关联。
     pub(super) fn duplicate_project_file(
         &mut self,
         source: &Path,
@@ -189,6 +193,7 @@ impl Library {
         Ok(())
     }
 }
+/// 识别平台保留名称，避免生成无法使用的文件或项目路径。
 pub(crate) fn reserved_component(value: &str) -> bool {
     let base = value
         .split('.')
@@ -206,6 +211,7 @@ pub(crate) fn reserved_component(value: &str) -> bool {
             })
         })
 }
+/// 校验单个目录名称，拒绝危险字符、保留名称和无效路径成分。
 pub(crate) fn validate_component(value: &str) -> Result<()> {
     if value.is_empty()
         || value == "."
@@ -227,6 +233,7 @@ pub(crate) fn validate_component(value: &str) -> Result<()> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    /// 在指定测试路径生成固定颜色的独立图片样本。
     fn picture(path: &Path, color: u8) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         image::RgbImage::from_pixel(24, 16, image::Rgb([color, 80, 140]))
@@ -234,6 +241,7 @@ mod tests {
             .unwrap();
     }
     #[test]
+    /// 验证文件夹导入保留项目树和原始文件名。
     fn folder_import_preserves_project_tree_and_original_names() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("春季拍摄/相机一/照片 001.png");
@@ -268,6 +276,7 @@ mod tests {
         assert_eq!(library.asset_path(asset.id).unwrap(), target);
     }
     #[test]
+    /// 验证同名文件不被覆盖，重复内容可分别存在于两个项目。
     fn name_collision_never_overwrites_and_duplicate_content_is_present_in_both_projects() {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("一/照片.png");
@@ -318,6 +327,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证危险相对路径被拒绝，且不会在库外安装文件。
     fn unsafe_relative_paths_are_rejected_without_installing_outside_the_library() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("原图.png");

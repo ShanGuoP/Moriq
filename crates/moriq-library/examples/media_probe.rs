@@ -3,6 +3,7 @@ use moriq_domain::{ExportFormat, ExportOptions, Query};
 use moriq_library::Library;
 use sha2::{Digest, Sha256};
 use std::{fs, io::Read, path::PathBuf};
+/// 计算验证素材的校验和，用于确认处理前后原片未变。
 fn hash(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
     let mut file = fs::File::open(path)?;
     let mut hash = Sha256::new();
@@ -16,6 +17,7 @@ fn hash(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
+/// 对显式提供的 RAW 样本验证导入、预览与导出，并检查来源内容保持不变。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let source = PathBuf::from(args.next().ok_or("pass fixture path")?);

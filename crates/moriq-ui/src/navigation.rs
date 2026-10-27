@@ -5,6 +5,7 @@ use std::collections::{HashSet, VecDeque};
 #[cfg(test)]
 #[test]
 #[allow(clippy::unwrap_used)]
+/// 验证模型页切库不会恢复旧图库历史覆盖当前页面。
 fn ai_library_switch_does_not_restore_a_saved_gallery_page() {
     let mut app = crate::tests::app();
     app.screen = Screen::Models;
@@ -42,6 +43,7 @@ pub(super) struct Location {
     notes_dirty: bool,
 }
 impl Location {
+    /// 把当前访问位置裁剪为可持久化的轻量浏览状态。
     fn saved(&self) -> SavedVisit {
         SavedVisit {
             library_picker: self.library_picker,
@@ -58,6 +60,7 @@ impl Location {
             card_width: self.card_width,
         }
     }
+    /// 从持久化浏览记录恢复位置，校验滚动和卡片尺寸等数值。
     fn from_saved(value: SavedVisit) -> Self {
         Self {
             surface: surfaces::Surface {
@@ -97,6 +100,7 @@ impl Location {
             notes_dirty: false,
         }
     }
+    /// 比较两条记录是否指向相同页面和查询，供历史合并使用。
     fn same_destination(&self, other: &Self) -> bool {
         self.screen == other.screen
             && self.library_picker == other.library_picker
@@ -117,12 +121,15 @@ pub(super) struct History {
     searching: bool,
 }
 impl History {
+    /// 判断后退历史是否包含可用记录。
     pub fn can_back(&self) -> bool {
         !self.back.is_empty()
     }
+    /// 判断前进历史是否包含可用记录。
     pub fn can_forward(&self) -> bool {
         !self.forward.is_empty()
     }
+    /// 向历史栈追加访问位置，并在达到数量上限时丢弃最旧记录。
     fn push(stack: &mut VecDeque<Location>, location: Location) {
         if stack.len() == HISTORY_LIMIT {
             stack.pop_front();
@@ -131,6 +138,21 @@ impl History {
     }
 }
 impl App {
+    /// 撤销取消搜索产生的临时历史，避免重复返回同一目标。
+    pub(super) fn discard_cancelled_search_history(&mut self) {
+        if self.history.searching {
+            if self
+                .history
+                .back
+                .back()
+                .is_some_and(|location| location.same_destination(&self.location()))
+            {
+                self.history.back.pop_back();
+            }
+            self.history.searching = false;
+        }
+    }
+    /// 生成待持久化的当前位置、后退和前进历史。
     pub(super) fn navigation_snapshot(&self) -> SavedNavigation {
         let mut current = self.location().saved();
         // Opening a library should enter it; picker visits remain in the history.
@@ -141,6 +163,7 @@ impl App {
             forward: self.history.forward.iter().map(Location::saved).collect(),
         }
     }
+    /// 通过服务保存浏览历史，并绑定当前资源库身份。
     pub(super) fn persist_navigation(&self) -> Task<Message> {
         if self.launch.capture.is_some() || self.history.restoring {
             return Task::none();
@@ -156,6 +179,7 @@ impl App {
             move |r| Message::NavigationSaved(id, r),
         )
     }
+    /// 接收历史加载结果，拒绝旧库或已过期的恢复请求。
     pub(super) fn navigation_loaded(
         &mut self,
         id: LibraryId,
@@ -190,6 +214,7 @@ impl App {
         }
         Task::none()
     }
+    /// 冻结当前页面、查询、选择及草稿的会话位置。
     fn location(&self) -> Location {
         Location {
             surface: self.surface(),
@@ -214,17 +239,29 @@ impl App {
             notes_dirty: self.manager.notes_dirty,
         }
     }
+    /// 在处理导航时维护前后历史，合并连续搜索并保留实际目标。
     pub(super) fn commit_navigation(&mut self, message: Message) -> Task<Message> {
+        let page_history = matches!(&message, Message::Back | Message::Forward)
+            && !self.surface_open()
+            && !self.viewer.preview_expanded;
+        if page_history && matches!(&message, Message::Back) && self.responsiveness.replacing() {
+            let pending = self.location();
+            let task = self.cancel_search();
+            History::push(&mut self.history.forward, pending);
+            return task;
+        }
         if matches!(
             &message,
             Message::Navigate(_)
-                | Message::Back
-                | Message::Forward
                 | Message::ShowLibraries
                 | Message::WindowClose
                 | Message::OpenRecent(_)
                 | Message::Ai(AiMessage::SwitchLibrary(_))
-        ) {
+        ) || page_history
+        {
+            if self.responsiveness.replacing() {
+                drop(self.cancel_search());
+            }
             if self.responsiveness.pending() {
                 self.loading = false;
             }
@@ -345,6 +382,7 @@ impl App {
         );
         Task::batch([task, overlay, navigation])
     }
+    /// 执行后退或前进，协调浮层关闭、历史栈及页面恢复。
     pub(super) fn travel(&mut self, forward: bool) -> Task<Message> {
         if self.library.is_none()
             || self.switching
@@ -378,6 +416,7 @@ impl App {
         self.history.searching = false;
         self.restore_location(destination)
     }
+    /// 恢复会话位置及草稿，并重新申请必要的数据读取。
     fn restore_location(&mut self, destination: Location) -> Task<Message> {
         self.library_picker = destination.library_picker;
         self.screen = destination.screen;
@@ -426,6 +465,7 @@ impl App {
             ),
         ])
     }
+    /// 在对应页面布局就绪后恢复滚动，忽略重挂载产生的临时零位置。
     pub(super) fn restore_scroll(&mut self) -> Task<Message> {
         if self.screen == Screen::Assets
             && !self.loading

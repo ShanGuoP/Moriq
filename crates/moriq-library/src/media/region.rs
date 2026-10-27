@@ -16,6 +16,7 @@ pub struct Session {
 }
 
 impl std::fmt::Debug for Session {
+    /// 输出分块会话的诊断摘要，避免格式化完整像素缓冲。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RegionSession")
             .field("width", &self.width)
@@ -23,6 +24,7 @@ impl std::fmt::Debug for Session {
             .finish()
     }
 }
+/// 调用隔离解码程序生成分块缓存，按超时、取消和输出大小控制进程生命周期。
 pub(crate) fn run(
     program: PathBuf,
     input: &Path,
@@ -87,6 +89,7 @@ pub(crate) fn run(
         std::thread::sleep(Duration::from_millis(15));
     }
 }
+/// 读取并校验分块缓存头部，拒绝非法尺寸或格式。
 fn header(file: &mut File) -> Result<(u32, u32, u32, u32)> {
     let mut data = [0u8; 24];
     file.read_exact(&mut data)?;
@@ -108,6 +111,7 @@ fn header(file: &mut File) -> Result<(u32, u32, u32, u32)> {
     Ok((width, height, w, h))
 }
 impl Session {
+    /// 冻结原图来源并建立可复用的区域读取会话，按格式选择缓存与解码路径。
     pub(crate) fn open(
         root: PathBuf,
         version: AssetVersionId,
@@ -203,9 +207,11 @@ impl Session {
         }
         Ok(session)
     }
+    /// 返回本会话单块解码所需的内存预算。
     pub fn tile_memory_mib(&self) -> u32 {
         if self.flat.is_some() { 16 } else { 1024 }
     }
+    /// 在指定取消作用域中读取原图区域。
     pub fn tile_cancellable(
         &self,
         region: ImageRegion,
@@ -214,6 +220,7 @@ impl Session {
         let _scope = crate::cancel::Scope::enter(cancelled);
         self.tile(region)
     }
+    /// 校验请求区域并返回对应像素，复用会话缓存以减少重复解码。
     pub fn tile(&self, region: ImageRegion) -> Result<Pixels> {
         crate::cancel::check()?;
         if region.width == 0
@@ -313,6 +320,7 @@ impl Session {
 mod tests {
     use super::*;
     #[test]
+    /// 验证原图块复用解码缓存、重建损坏内容，清理缓存后有效句柄仍可读。
     fn raster_tiles_reuse_decoded_pixels_rebuild_corruption_and_keep_live_handles_after_trim() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("original.png");

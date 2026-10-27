@@ -11,6 +11,7 @@ pub const PALE: Color = Color::from_rgb8(234, 241, 253);
 pub const GREEN: Color = Color::from_rgb8(0, 190, 144);
 pub const PURPLE: Color = Color::from_rgb8(126, 83, 255);
 pub const CONTROL_LINE: Color = Color::from_rgb8(216, 222, 232);
+/// 根据持久化外观偏好选择应用主题。
 pub fn application_theme(appearance: Appearance) -> Theme {
     if appearance == Appearance::Dark {
         static DARK: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
@@ -44,6 +45,8 @@ pub fn application_theme(appearance: Appearance) -> Theme {
     THEME.clone()
 }
 /// Resolve the existing semantic palette through the theme supplied by Iced.
+///
+/// 按当前明暗主题选择相应颜色值。
 pub fn adaptive(theme: &Theme, color: Color) -> Color {
     if !theme.extended_palette().is_dark {
         return color;
@@ -82,6 +85,7 @@ pub fn adaptive(theme: &Theme, color: Color) -> Color {
         ..resolved
     }
 }
+/// 返回当前主题的主要前景色。
 pub fn foreground(theme: &Theme, color: Color) -> Color {
     // White text and icons over photographs and primary buttons stay white.
     if color == Color::WHITE {
@@ -90,11 +94,13 @@ pub fn foreground(theme: &Theme, color: Color) -> Color {
         adaptive(theme, color)
     }
 }
+/// 为指定语义选择当前主题的文字颜色。
 pub fn text_color(color: Color) -> impl Fn(&Theme) -> iced::widget::text::Style {
     move |theme| iced::widget::text::Style {
         color: Some(foreground(theme, color)),
     }
 }
+/// 生成常规内容面板背景与边框样式。
 pub fn panel(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(adaptive(theme, Color::WHITE).into()),
@@ -107,6 +113,7 @@ pub fn panel(theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+/// 生成侧栏容器样式。
 pub fn sidebar(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(adaptive(theme, BG).into()),
@@ -114,6 +121,7 @@ pub fn sidebar(theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+/// 生成对话框容器样式。
 pub fn modal(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(adaptive(theme, Color::WHITE).into()),
@@ -130,6 +138,7 @@ pub fn modal(theme: &Theme) -> container::Style {
         ..panel(theme)
     }
 }
+/// 生成表单卡片的背景、边框和圆角样式。
 pub fn form_card_style(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(adaptive(theme, Color::from_rgb8(251, 252, 253)).into()),
@@ -142,6 +151,7 @@ pub fn form_card_style(theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+/// 生成当前选中行的视觉样式。
 pub fn selected_row(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(adaptive(theme, PALE).into()),
@@ -153,6 +163,7 @@ pub fn selected_row(theme: &Theme, status: button::Status) -> button::Style {
         ..secondary(theme, status)
     }
 }
+/// 生成弱化背景的按钮样式。
 pub fn pale(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(adaptive(theme, PALE).into()),
@@ -164,6 +175,7 @@ pub fn pale(theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+/// 根据交互状态生成主操作按钮样式。
 pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(
@@ -208,6 +220,7 @@ pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
         ..Default::default()
     }
 }
+/// 根据交互状态生成次操作按钮样式。
 pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(
@@ -237,6 +250,7 @@ pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
         ..Default::default()
     }
 }
+/// 根据交互状态生成删除等破坏性操作按钮样式。
 pub fn destructive(theme: &Theme, status: button::Status) -> button::Style {
     let (background, text_color) = match status {
         button::Status::Disabled => (
@@ -257,6 +271,7 @@ pub fn destructive(theme: &Theme, status: button::Status) -> button::Style {
         ..Default::default()
     }
 }
+/// 生成无突出背景的轻量按钮样式。
 pub fn flat(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: match status {
@@ -279,6 +294,8 @@ pub fn flat(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 /// Quiet, consistently sized controls for library management and sidebar actions.
+///
+/// 生成资源库卡片操作按钮样式。
 pub fn library_action(theme: &Theme, status: button::Status) -> button::Style {
     let mut style = flat(theme, status);
     style.border.radius = 9.0.into();
@@ -295,6 +312,7 @@ pub fn library_action(theme: &Theme, status: button::Status) -> button::Style {
     );
     style
 }
+/// 生成资源库卡片辅助入口样式。
 pub fn library_hint(theme: &Theme) -> container::Style {
     container::Style {
         border: Border {
@@ -310,6 +328,7 @@ pub fn library_hint(theme: &Theme) -> container::Style {
         ..panel(theme)
     }
 }
+/// 生成资源库列表入口的交互样式。
 pub fn library_entry(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let mut style = nav(active)(theme, status);
@@ -325,6 +344,7 @@ pub fn library_entry(active: bool) -> impl Fn(&Theme, button::Status) -> button:
         style
     }
 }
+/// 生成普通导航项的交互样式。
 pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| button::Style {
         background: Some(
@@ -352,6 +372,8 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 /// Selection geometry belongs to the liquid group; the real button keeps input and focus.
+///
+/// 生成与连续选中指示配合的导航项样式。
 pub fn liquid_nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let mut style = nav(active)(theme, status);
@@ -365,6 +387,7 @@ pub fn liquid_nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::St
         style
     }
 }
+/// 根据焦点和交互状态生成单行输入框样式。
 pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: if matches!(status, text_input::Status::Focused { .. }) {
@@ -387,6 +410,7 @@ pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
         selection: adaptive(theme, PALE),
     }
 }
+/// 根据交互状态生成多行编辑器样式。
 pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
     let field = input(
         theme,
@@ -404,6 +428,7 @@ pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style 
         selection: field.selection,
     }
 }
+/// 生成滚动轨道和滑块样式。
 pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
     let mut style = scrollable::default(theme, status);
     style.vertical_rail.background = Some(Background::Color(adaptive(
@@ -423,6 +448,7 @@ pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::St
     style.vertical_rail.scroller.border.radius = 4.0.into();
     style
 }
+/// 生成缩放控件样式。
 pub fn zoom(theme: &Theme, _: slider::Status) -> slider::Style {
     slider::Style {
         rail: slider::Rail {
@@ -444,6 +470,7 @@ pub fn zoom(theme: &Theme, _: slider::Status) -> slider::Style {
         },
     }
 }
+/// 生成任务进度条样式。
 pub fn progress(theme: &Theme) -> iced::widget::progress_bar::Style {
     iced::widget::progress_bar::Style {
         background: adaptive(theme, Color::from_rgb8(227, 233, 242)).into(),

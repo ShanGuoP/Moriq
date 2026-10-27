@@ -1,6 +1,7 @@
 //! Extract only photographic artwork from the user-supplied design references.
 //! This is a development asset pipeline, never a screenshot used as an application UI.
 use std::{error::Error, path::Path};
+/// 从本地设计参考图裁出图片素材，写入界面资源目录供开发使用。
 fn main() -> Result<(), Box<dyn Error>> {
     let target = Path::new("crates/moriq-ui/assets");
     std::fs::create_dir_all(target)?;

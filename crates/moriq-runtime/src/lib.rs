@@ -8,6 +8,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// 按构建时嵌入的清单核对运行组件路径与校验和，拒绝越界、链接和未登记文件。
 pub fn verify_runtime(root: &Path, manifest: &str, replaceable: &[&str]) -> Result<PathBuf> {
     let files: BTreeMap<String, String> =
         serde_json::from_str(manifest.trim_start_matches('\u{feff}'))
@@ -81,6 +82,7 @@ pub fn verify_runtime(root: &Path, manifest: &str, replaceable: &[&str]) -> Resu
     }
     Ok(root)
 }
+/// 检查路径是否为链接或重解析点，阻止运行组件通过链接指向未知位置。
 fn reject_link(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path).map_err(|e| {
         format!(
@@ -105,6 +107,7 @@ fn reject_link(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    /// 验证运行组件清单拒绝内容篡改、路径越界和链接。
     fn manifest_rejects_tampering_escape_and_links() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("worker.mjs"), b"trusted").unwrap();

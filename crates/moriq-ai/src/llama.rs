@@ -26,6 +26,7 @@ struct Server {
 }
 
 impl Drop for Server {
+    /// 终止并等待本实例的模型服务进程，释放模型文件租约。
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -33,12 +34,15 @@ impl Drop for Server {
 }
 
 impl Server {
+    /// 返回当前受控模型服务监听的本机端口。
     fn port(&self) -> u16 {
         self.port
     }
+    /// 借用该服务实例的认证密钥，仅用于本机请求。
     fn secret(&self) -> &str {
         &self.secret
     }
+    /// 读取有界的运行器诊断尾部，补充失败原因。
     fn error_detail(&mut self) -> String {
         if let Ok(mut file) = self.diagnostics.reopen() {
             let mut bytes = Vec::new();
@@ -60,16 +64,19 @@ struct ServerLease<'a> {
 }
 impl std::ops::Deref for ServerLease<'_> {
     type Target = Option<Server>;
+    /// 借用租约保护的模型服务状态。
     fn deref(&self) -> &Self::Target {
         &self.value
     }
 }
 impl std::ops::DerefMut for ServerLease<'_> {
+    /// 在持锁租约内修改模型服务状态。
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 impl Drop for ServerLease<'_> {
+    /// 按常驻策略释放模型服务，覆盖正常结束及所有提前返回路径。
     fn drop(&mut self) {
         // Cover every early return, including malformed model replies and policy changes during inference.
         if !self.keep.load(Ordering::Acquire) {
@@ -78,6 +85,7 @@ impl Drop for ServerLease<'_> {
     }
 }
 
+/// 更新模型常驻策略；关闭常驻时尝试释放空闲运行器。
 pub fn set_keep_loaded(value: bool) -> Result<()> {
     KEEP_LOADED.store(value, Ordering::Release);
     if !value && let Ok(mut server) = SERVER.get_or_init(|| Mutex::new(None)).try_lock() {
@@ -86,6 +94,7 @@ pub fn set_keep_loaded(value: bool) -> Result<()> {
     Ok(())
 }
 
+/// 定位 llama.cpp 运行目录，并用构建时嵌入的清单校验组件。
 fn llama_root() -> Result<PathBuf> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent = exe.parent().ok_or("程序目录不可用")?;
@@ -108,6 +117,7 @@ fn llama_root() -> Result<PathBuf> {
     )
 }
 
+/// 向本机回环地址申请临时端口，供受控模型服务启动。
 fn free_port() -> Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     listener
@@ -116,6 +126,7 @@ fn free_port() -> Result<u16> {
         .map_err(|e| e.to_string())
 }
 
+/// 校验模型租约后启动本机模型服务，设置资源参数、认证和受限环境。
 fn start(model_root: &Path, cancel: &AtomicBool) -> Result<Server> {
     let root = llama_root()?;
     let lease = crate::models::verified_lease("qwen35-4b")?;
@@ -187,6 +198,7 @@ fn start(model_root: &Path, cancel: &AtomicBool) -> Result<Server> {
     Ok(server)
 }
 
+/// 等待模型服务健康检查通过；取消、子进程退出或超时均返回错误。
 fn wait_ready(server: &mut Server, cancel: &AtomicBool) -> Result<()> {
     let deadline = Instant::now() + HEALTH_TIMEOUT;
     let client = reqwest::blocking::Client::builder()
@@ -220,12 +232,14 @@ fn wait_ready(server: &mut Server, cancel: &AtomicBool) -> Result<()> {
     Err("Qwen 模型启动超时，请重试或检查可用内存".into())
 }
 
+/// 解析已安装 Qwen 权重的规范路径。
 fn model_root() -> Result<PathBuf> {
     crate::installed_path("qwen35-4b")?
         .canonicalize()
         .map_err(|e| e.to_string())
 }
 
+/// 取得已就绪的模型服务租约，必要时启动或替换失效实例。
 fn ensure_server(cancel: &AtomicBool) -> Result<ServerLease<'static>> {
     let mutex = SERVER.get_or_init(|| Mutex::new(None));
     let mut guard = loop {
@@ -259,6 +273,7 @@ fn ensure_server(cancel: &AtomicBool) -> Result<ServerLease<'static>> {
     })
 }
 
+/// 释放当前受控模型服务及其模型租约。
 pub fn unload() -> Result<()> {
     let mutex = SERVER.get_or_init(|| Mutex::new(None));
     match mutex.try_lock() {
@@ -268,6 +283,7 @@ pub fn unload() -> Result<()> {
     Ok(())
 }
 
+/// 根据启用分类及定义构造分类提示词，沿用主题数量限制。
 fn classify_prompt(profile: &moriq_domain::AiProfile) -> String {
     let definitions = profile
         .categories
@@ -282,10 +298,12 @@ fn classify_prompt(profile: &moriq_domain::AiProfile) -> String {
     )
 }
 
+/// 构造图片描述与标签提示词，约束输出语言及内容格式。
 fn describe_prompt() -> String {
     "请根据图片可见内容生成中文描述和检索标签。描述最多300字，说明主体、环境、构图和明显动作；标签0到12个，单个最多24字，不凑数，不重复近义词。禁止猜测人物姓名、角色出处、拍摄地点、职业和具体物品型号；看不清的细长物写“手持物”等可确认描述。只报告可见内容。只输出JSON。".into()
 }
 
+/// 为指定推理任务构造有界 JSON 输出结构。
 fn schema(task: &str, profile: &moriq_domain::AiProfile) -> Value {
     let mut media = profile
         .categories
@@ -335,6 +353,7 @@ fn schema(task: &str, profile: &moriq_domain::AiProfile) -> Value {
     }
 }
 
+/// 清理标签空白、重复和约定词汇，生成稳定的标签列表。
 fn normalize_tags(tags: &[Value]) -> Result<Vec<String>> {
     if tags.len() > 12 {
         return Err("Qwen 标签数量超出协议限制".into());
@@ -361,6 +380,7 @@ fn normalize_tags(tags: &[Value]) -> Result<Vec<String>> {
     Ok(result)
 }
 
+/// 使用默认分类配置执行 Qwen 图片任务。
 pub fn infer(
     task: &str,
     image_path: &Path,
@@ -373,6 +393,7 @@ pub fn infer(
         &moriq_domain::AiProfile::default(),
     )
 }
+/// 向受控服务发送推理请求，监控取消并在中断时回收所属进程。
 fn request_controlled(
     server: &mut Option<Server>,
     body: Vec<u8>,
@@ -448,6 +469,7 @@ fn request_controlled(
     result
 }
 
+/// 按指定词表准备图片、提示词和输出结构，再校验并返回推理结果。
 pub fn infer_with_profile(
     task: &str,
     image_path: &Path,
@@ -522,11 +544,14 @@ pub fn infer_with_profile(
     Ok(result)
 }
 
+/// 按字符边界截短模型文本，避免切断 UTF-8 编码。
 fn truncate(value: &str) -> String {
     value.chars().take(1024).collect()
 }
 
 /// Hold one owned server across detection and portrait comparisons.
+///
+/// 执行受控视觉会话，供检测及图片比较等任务复用。
 pub(super) fn vision_session<T>(
     cancel: &AtomicBool,
     run: impl FnOnce(&mut dyn FnMut(&[&Path], &str, Value) -> Result<Value>) -> Result<T>,
@@ -569,6 +594,7 @@ pub(super) fn vision_session<T>(
     run(&mut request)
 }
 
+/// 把图片字节编码为标准 Base64，处理尾部填充以供视觉请求使用。
 fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -600,6 +626,7 @@ fn base64_encode(data: &[u8]) -> String {
 mod tests {
     use super::*;
     #[test]
+    /// 验证停用分类不会进入提示词或结构化输出候选。
     fn disabled_media_and_themes_are_excluded_from_prompt_and_output_schema() {
         let mut p = moriq_domain::AiProfile::default();
         for c in &mut p.categories {
@@ -640,6 +667,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证自定义主题定义和数量上限同时约束提示词与输出结构。
     fn custom_theme_definitions_and_limit_drive_the_prompt_and_schema() {
         let mut p = moriq_domain::AiProfile {
             max_themes: 5,
@@ -672,6 +700,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Base64 编码的尾部填充符合标准。
     fn base64_matches_standard_padding() {
         assert_eq!(base64_encode(b"good"), "Z29vZA==");
         assert_eq!(base64_encode(b"go"), "Z28=");
@@ -679,6 +708,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证标签去空白、去重及约定词汇的本地化。
     fn tags_are_trimmed_deduplicated_and_cosplay_is_localized() {
         let tags = vec![
             json!(" Cosplay "),
@@ -694,6 +724,7 @@ mod tests {
     }
     #[test]
     #[ignore = "subprocess fixture, invoked only by cancellation test"]
+    /// 运行仅供隔离取消测试调用的伪模型服务子进程。
     fn fake_server_child() {
         let Ok(port) = std::env::var("MORIQ_FAKE_QWEN_PORT") else {
             return;
@@ -715,6 +746,7 @@ mod tests {
         std::thread::sleep(Duration::from_secs(15));
     }
     #[test]
+    /// 验证 HTTP 推理阻塞时取消仍能及时回收所属模型进程。
     fn cancelling_a_blocked_http_inference_reaps_the_owned_process_promptly() {
         let dir = tempfile::tempdir().expect("temp");
         let ready = dir.path().join("ready");
@@ -758,6 +790,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(4));
     }
     #[test]
+    /// 验证按需模型租约在提前返回路径也会释放服务进程。
     fn on_demand_lease_releases_the_process_even_when_an_operation_returns_early() {
         let dir = tempfile::tempdir().expect("temp");
         let port = free_port().expect("port");

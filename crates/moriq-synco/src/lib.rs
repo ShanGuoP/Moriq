@@ -15,6 +15,7 @@ pub struct Client {
     base: String,
 }
 impl Client {
+    /// 先发现同用户的 Synco 服务，必要时串行启动程序并等待服务就绪。
     pub async fn discover_or_start(executable: Option<PathBuf>) -> Result<Self> {
         if !cfg!(windows) {
             return Err("当前 Synco v1 协议仅适用于 Windows".into());
@@ -78,6 +79,7 @@ impl Client {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
+    /// 读取本机服务发现信息并校验协议和实例身份。
     pub async fn discover() -> Result<Self> {
         if !cfg!(windows) {
             return Err("当前 Synco v1 协议仅适用于 Windows；macOS 尚未定义交接协议".into());
@@ -110,6 +112,7 @@ impl Client {
         )
         .await
     }
+    /// 仅连接协议 v1 的本机回环服务，并向服务端核对实例身份。
     pub async fn connect(base: &str, instance: &str, protocol: u32) -> Result<Self> {
         let url = reqwest::Url::parse(base).map_err(|_| "Synco 地址无效")?;
         if protocol != 1
@@ -147,6 +150,7 @@ impl Client {
         }
         Ok(client)
     }
+    /// 查询指定客户端任务；任务不存在时返回空值。
     pub async fn get(&self, task: &str, client: &str) -> Result<Option<Value>> {
         let response = self
             .http
@@ -160,6 +164,7 @@ impl Client {
         }
         bounded_json(response).await.map(Some)
     }
+    /// 向本机服务发送任务请求，并解析有界响应。
     pub async fn send(&self, spec: &Value) -> Result<Value> {
         let response = self
             .http
@@ -170,6 +175,7 @@ impl Client {
             .map_err(|e| e.to_string())?;
         bounded_json(response).await
     }
+    /// 确认已接收任务结果，供远端幂等清理返回数据。
     pub async fn ack(&self, task: &str, body: &Value) -> Result<()> {
         let response = self
             .http
@@ -181,6 +187,7 @@ impl Client {
         bounded_json(response).await?;
         Ok(())
     }
+    /// 向本机服务请求取消指定任务。
     pub async fn cancel(&self, task: &str, client: &str) -> Result<()> {
         let response = self
             .http
@@ -193,6 +200,7 @@ impl Client {
         Ok(())
     }
 }
+/// 限制响应字节数并校验 HTTP 状态，再解析 JSON 内容。
 async fn bounded_json(mut response: reqwest::Response) -> Result<Value> {
     let status = response.status();
     let mut bytes = Vec::new();
@@ -221,6 +229,7 @@ async fn bounded_json(mut response: reqwest::Response) -> Result<Value> {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+    /// 启动隔离的本机协议替身服务，记录请求供断言检查。
     fn server(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -261,6 +270,7 @@ mod tests {
         (base, thread)
     }
     #[test]
+    /// 验证传输固定本机实例身份，重试保留原请求内容。
     fn transport_pins_loopback_instance_and_keeps_retry_payload() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             assert!(Client::connect("http://example.com", "a", 1).await.is_err());

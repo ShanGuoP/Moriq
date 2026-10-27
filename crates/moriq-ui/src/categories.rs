@@ -34,10 +34,12 @@ pub enum CategoryMessage {
     TemplateStored(LibraryId, u64, Result<AiProfile, String>),
     Saved(LibraryId, u64, Result<AiProfile, String>),
 }
+/// 把分类编辑器内部操作转换为应用消息。
 fn message(event: CategoryMessage) -> Message {
     Message::Ai(AiMessage::Categories(event))
 }
 impl State {
+    /// 将当前选中分类同步到编辑控件，保留对应草稿。
     fn sync_editor(&mut self) {
         let value = self
             .selected
@@ -47,6 +49,7 @@ impl State {
         self.definition_editor = text_editor::Content::with_text(value);
     }
 }
+/// 按分类身份取得当前配置中的显示名称。
 pub(super) fn category_label(language: Language, c: &AiCategory) -> String {
     if AI_MEDIA
         .iter()
@@ -58,6 +61,7 @@ pub(super) fn category_label(language: Language, c: &AiCategory) -> String {
         c.label.clone()
     }
 }
+/// 为媒介或主题分类选择相应图标。
 pub(super) fn category_icon(id: &str) -> crate::icons::Icon {
     use crate::icons::Icon;
     match id {
@@ -74,6 +78,7 @@ pub(super) fn category_icon(id: &str) -> crate::icons::Icon {
     }
 }
 impl App {
+    /// 维护分类编辑草稿、启用状态和保存回执，拒绝其他库的旧结果。
     pub(super) fn category_message(&mut self, event: CategoryMessage) -> Task<Message> {
         let language = self.preferences.language;
         let Some(owner) = self.library.as_ref().map(|l| l.info.id) else {
@@ -278,6 +283,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建分类名称、定义和主题限制的编辑区。
     pub(super) fn category_editor(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let state = &self.ai.categories;
@@ -458,6 +464,7 @@ impl App {
         }
         view.into()
     }
+    /// 构建分类表单的模板、取消和保存操作。
     pub(super) fn category_footer(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let state = &self.ai.categories;
@@ -501,6 +508,7 @@ impl App {
             .spacing(10)
             .into()
     }
+    /// 把分类分组类型转换为当前语言的标题。
     pub(super) fn group_label(&self, group: &AiGroup) -> String {
         let builtin = AI_MEDIA
             .iter()

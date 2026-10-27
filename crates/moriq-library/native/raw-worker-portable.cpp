@@ -1,4 +1,4 @@
-// Standalone LibRaw decoder for Unix builds. No system image codec dependency.
+﻿// Standalone LibRaw decoder for Unix builds. No system image codec dependency.
 #include <libraw/libraw.h>
 #include <algorithm>
 #include <cmath>
@@ -17,10 +17,12 @@
 #include <mach/mach.h>
 #endif
 static std::atomic<uint64_t> memory_limit{1536ULL*1024*1024};
+// 设置便携 RAW 解码的数据内存上限，并同步监控线程使用的预算。
 static void set_memory_limit(uint32_t mib){
     memory_limit=uint64_t(mib)*1024*1024;
     rlimit memory{memory_limit.load(),1536ULL*1024*1024};if(setrlimit(RLIMIT_DATA,&memory)!=0)std::_Exit(3);
 }
+// 设置 CPU 和初始内存限制，并监视父进程及平台支持的驻留内存。
 static void guard(pid_t parent,bool probe){
     rlimit cpu{90,90};if(setrlimit(RLIMIT_CPU,&cpu)!=0)std::_Exit(3);
     set_memory_limit(probe?192:1536);
@@ -31,6 +33,7 @@ static void guard(pid_t parent,bool probe){
 #endif
         std::this_thread::sleep_for(std::chrono::milliseconds(100));}}).detach();
 }
+// 解析便携 RAW 工作参数，执行预算探测或传感器解码，并写出受限尺寸的 RGBA 协议。
 int main(int argc,char**argv){
     const bool probe=argc==6&&std::strcmp(argv[5],"--probe")==0;
     if(argc!=5&&!probe)return 2;const unsigned edge=std::strtoul(argv[3],nullptr,10);if(edge>65535)return 2;guard(std::strtol(argv[4],nullptr,10),probe);

@@ -1,5 +1,6 @@
 use super::*;
 impl Library {
+    /// 查询当前项目所属的虚拟文件夹及其成员摘要。
     pub fn virtual_folders(&self) -> Result<Vec<VirtualFolder>> {
         // SQLite permits outer references in WHERE, but not this subquery's ORDER BY.
         let mut stmt = self.db.prepare(
@@ -38,6 +39,7 @@ impl Library {
             })
             .collect()
     }
+    /// 创建虚拟文件夹或收藏分组，并登记当前项目归属。
     pub fn create_virtual_folder(&mut self, name: &str, favorite_group: bool) -> Result<String> {
         let name = name.trim();
         if name.is_empty() || name.len() > 256 {
@@ -57,6 +59,7 @@ impl Library {
         tx.commit()?;
         Ok(id)
     }
+    /// 校验名称和项目归属后更新虚拟文件夹名称。
     pub fn rename_virtual_folder(&mut self, id: &str, name: &str) -> Result<()> {
         self.require_workspace_object("folders", id)?;
         let name = name.trim();
@@ -72,6 +75,7 @@ impl Library {
         }
         Ok(())
     }
+    /// 删除当前项目中的虚拟文件夹及成员关联，保留素材本体。
     pub fn delete_virtual_folder(&mut self, id: &str) -> Result<()> {
         self.require_workspace_object("folders", id)?;
         self.db
@@ -79,6 +83,7 @@ impl Library {
         self.snapshot = None;
         Ok(())
     }
+    /// 调整虚拟文件夹的素材成员，并校验素材的当前项目范围。
     pub fn virtual_folder_members(
         &mut self,
         folder: &str,
@@ -117,6 +122,7 @@ impl Library {
         self.snapshot = None;
         Ok(())
     }
+    /// 返回分组可用封面；指定封面失效时按有效成员回退。
     pub fn virtual_folder_cover(&mut self, folder: &str, asset: AssetId) -> Result<()> {
         self.require_workspace_object("folders", folder)?;
         self.require_workspace_assets(&[asset])?;
@@ -141,6 +147,7 @@ impl Library {
 mod tests {
     use super::*;
     #[test]
+    /// 验证文件夹或集合读取失败不会隐藏其他管理摘要。
     fn broken_folder_and_collection_reads_do_not_hide_jobs_tags_or_statistics() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "隔离读取").unwrap();
@@ -184,6 +191,7 @@ mod tests {
         assert!(lib.organizer().unwrap().errors.is_empty());
     }
     #[test]
+    /// 验证分组封面仅使用有效成员，失效后按稳定规则回退。
     fn covers_use_live_members_and_fall_back_deterministically() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "分组封面").unwrap();

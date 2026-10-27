@@ -1,3 +1,4 @@
+# 按固定修订和 SHA-256 准备 Qwen 运行组件，离线模式仅使用本地已验证归档。
 param([switch]$Offline)
 $ErrorActionPreference='Stop'
 $projectRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -8,6 +9,7 @@ $archive=Join-Path $cache 'llama-b11869-bin-win-vulkan-x64.zip'
 $sha='62d6fe2a8614d9b8a5c1e0484350fd6d91779661f84220617ad296672ef640a0'
 $url='https://github.com/ggml-org/llama.cpp/releases/download/b11869/llama-b11869-bin-win-vulkan-x64.zip'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
+# 缺少缓存时下载到临时文件，核对内容后才发布为可复用归档。
 if(-not(Test-Path -LiteralPath $archive)){
     if($Offline){throw 'Missing offline llama.cpp archive in target/downloads'}
     Invoke-WebRequest -Uri $url -OutFile ($archive+'.part')
@@ -16,6 +18,7 @@ if(-not(Test-Path -LiteralPath $archive)){
 }
 if((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha){throw 'llama archive checksum mismatch'}
 # Only this generated application-owned runtime is replaced.
+# 只替换 target 内的生成目录，并拒绝清理包含重解析点的运行目录。
 $prefix=[IO.Path]::GetFullPath($targetRoot)+[IO.Path]::DirectorySeparatorChar
 if(-not [IO.Path]::GetFullPath($runtime).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Invalid runtime cleanup path'}
 if(Test-Path -LiteralPath $runtime){
@@ -38,6 +41,7 @@ try {
     $notices=Join-Path $targetRoot 'package-reports/runtime-notices/ai/llama'
     New-Item -ItemType Directory -Path $notices -Force | Out-Null
     Get-ChildItem -LiteralPath $source -Filter 'LICENSE*' -File | Copy-Item -Destination $notices -Force
+    # 分别生成 llama 子目录与完整 AI 目录的校验清单，供程序启动时验证。
     $llamaChecksums=[ordered]@{}
     foreach($file in (Get-ChildItem -LiteralPath $llama -File | Sort-Object Name)){
         $llamaChecksums[$file.Name]=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()

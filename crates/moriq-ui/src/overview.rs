@@ -8,6 +8,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Border, Color, ContentFit, Length};
 impl App {
+    /// 构建首页资源库摘要、项目和收藏分类区域。
     pub(super) fn overview(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let Some(library) = &self.library else {
@@ -444,6 +445,7 @@ impl App {
             .height(Length::Fill)
             .into()
     }
+    /// 构建首页常用操作按钮。
     fn quick_action<'a>(
         &self,
         kind: Icon,
@@ -489,6 +491,7 @@ impl App {
         .on_press(message)
         .into()
     }
+    /// 构建资源库信息与维护入口区域。
     fn library_details(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let Some(library) = &self.library else {
@@ -650,6 +653,7 @@ impl App {
         .into()
     }
 }
+/// 构建首页顶部的单项统计展示。
 fn hero_stat<'a>(kind: Icon, color: Color, value: String, label: &str) -> Element<'a, Message> {
     container(
         row![
@@ -690,6 +694,7 @@ fn hero_stat<'a>(kind: Icon, color: Color, value: String, label: &str) -> Elemen
     })
     .into()
 }
+/// 构建资源库资料的名称和值展示行。
 fn info_row<'a>(label: &str, value: String) -> Element<'a, Message> {
     row![
         muted(label).width(80),

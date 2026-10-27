@@ -1,4 +1,5 @@
 use std::{env, path::PathBuf};
+/// 准备 AI 构建所需的运行组件清单和原生辅助程序，并登记重建依赖。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ai-runtime");
     let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR missing")?);

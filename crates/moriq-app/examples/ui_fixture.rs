@@ -1,10 +1,12 @@
 //! Generated UI acceptance fixture, never production library data.
 use moriq_domain::*;
+/// 启动异步运行环境生成独立的界面验收资源库。
 fn main() -> Result<(), String> {
     tokio::runtime::Runtime::new()
         .map_err(|e| e.to_string())?
         .block_on(run())
 }
+/// 在隔离配置下创建项目与暂停任务样本，登记为可打开的验收库。
 async fn run() -> Result<(), String> {
     if std::env::var("MORIQ_ISOLATED_LIFECYCLE_PROBE").as_deref() != Ok("1") {
         return Err("isolated settings required".into());

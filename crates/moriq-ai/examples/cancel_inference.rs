@@ -3,6 +3,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+/// 对已安装模型验证主动取消和进程回收，输出取消耗时且不写入资源库。
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let model = args.next().ok_or("usage: cancel_inference MODEL IMAGE")?;

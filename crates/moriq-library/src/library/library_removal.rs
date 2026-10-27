@@ -8,6 +8,7 @@ pub struct Plan {
     pub name: String,
     pub assets: u64,
 }
+/// 校验待移除路径的文件类型，拒绝链接等不适合直接删除的对象。
 fn regular(path: &Path) -> Result<fs::Metadata> {
     let meta = fs::symlink_metadata(path)?;
     #[cfg(windows)]
@@ -24,6 +25,7 @@ fn regular(path: &Path) -> Result<fs::Metadata> {
     }
     Ok(meta)
 }
+/// 检查资源库身份、目录内容与删除范围，生成可供确认的移除计划。
 pub fn inspect(path: &Path) -> Result<Plan> {
     if !path.is_absolute() {
         return Err(Error::Invalid("资源库路径必须为绝对路径".into()));
@@ -73,6 +75,7 @@ pub fn inspect(path: &Path) -> Result<Plan> {
         assets,
     })
 }
+/// 按已确认的计划移除受管资源库内容，校验锁和身份并保留外部引用原片。
 pub fn execute(plan: &Plan) -> Result<()> {
     if inspect(&plan.root)? != *plan {
         return Err(Error::Invalid(
@@ -152,6 +155,7 @@ pub fn execute(plan: &Plan) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    /// 验证资源库删除受锁和身份校验保护，并保留引用原片。
     fn deletion_is_locked_identity_checked_and_preserves_referenced_originals() {
         let dir = tempfile::tempdir().unwrap();
         let outside = dir.path().join("original.txt");
@@ -170,6 +174,7 @@ mod tests {
         assert_eq!(fs::read(outside).unwrap(), b"preserve");
     }
     #[test]
+    /// 验证移除流程拒绝嵌套资源库和非资源库根目录。
     fn removal_rejects_nested_libraries_and_non_library_roots() {
         let dir = tempfile::tempdir().unwrap();
         assert!(inspect(dir.path()).is_err());
@@ -183,6 +188,7 @@ mod tests {
         assert!(root.exists());
     }
     #[test]
+    /// 验证中断删除标记阻止误打开，重新确认后可重试。
     fn interrupted_deletion_marker_blocks_reopen_but_can_be_retried_after_confirmation() {
         let dir = tempfile::tempdir().unwrap();
         let lib = Library::create(dir.path(), "interrupted").unwrap();

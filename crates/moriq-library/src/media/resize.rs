@@ -1,9 +1,12 @@
 use super::*;
 /// SIMD area filtering, preserving aspect, pixel type and premultiplied alpha.
 /// Only the small output is allocated; source pixels are borrowed without a full-size conversion.
+///
+/// 按最长边等比缩小图像，不放大已经足够小的来源。
 pub(super) fn fit(source: &image::DynamicImage, longest: u32) -> Result<image::DynamicImage> {
     fit_with(source, longest, Resampling::Area)
 }
+/// 使用指定滤镜执行有界缩放，保留图像比例及透明信息。
 pub(super) fn fit_with(
     source: &image::DynamicImage,
     longest: u32,
@@ -38,6 +41,7 @@ pub(super) fn fit_with(
 mod tests {
     use super::*;
     #[test]
+    /// 验证有界缩放保留比例、透明信息，且不放大小图。
     fn bounded_resizing_preserves_aspect_small_images_and_transparency() {
         let source = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
             4032,

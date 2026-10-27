@@ -1,6 +1,7 @@
 use super::*;
 
 impl Library {
+    /// 读取指定版本的有界缩略图；缓存不存在时返回空值。
     pub fn thumbnail(&self, version: AssetVersionId) -> Result<Option<Pixels>> {
         let path = safe_path(&self.root, &format!("thumbnails/256/{version}.png"))?;
         if !path.exists() {
@@ -15,6 +16,7 @@ impl Library {
         Ok(Some(pixels(reader.decode()?)))
     }
 
+    /// 读取素材当前展示版本的预览像素，复用统一媒体来源流程。
     pub fn preview(&self, id: AssetId) -> Result<Pixels> {
         self.media_source(id)?.preview().map(|p| p.image)
     }

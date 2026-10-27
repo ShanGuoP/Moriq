@@ -2,6 +2,7 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// 解析受管待删除路径，拒绝库外位置及不允许的文件关联。
 fn owned_path(root: &Path, relative: &str) -> Result<PathBuf> {
     let import_stage = relative.strip_prefix("staging/").is_some_and(|name| {
         name.strip_suffix(".part")
@@ -26,6 +27,7 @@ fn owned_path(root: &Path, relative: &str) -> Result<PathBuf> {
     no_links_path(root, relative)
 }
 
+/// 验证删除路径及其父级不含链接，防止删除越过受管范围。
 fn no_links_path(root: &Path, relative: &str) -> Result<PathBuf> {
     let resolved = safe_path(root, relative)?;
     // Never follow an injected link even if it points to a different file inside this library.
@@ -40,6 +42,7 @@ fn no_links_path(root: &Path, relative: &str) -> Result<PathBuf> {
 }
 
 impl Library {
+    /// 冻结当前项目回收站中的素材身份列表。
     pub fn trash_snapshot(&self) -> Result<Vec<AssetId>> {
         self.db
             .prepare(&format!(
@@ -50,6 +53,7 @@ impl Library {
             .map(|r| Ok(AssetId(parse_id(&r?)?)))
             .collect()
     }
+    /// 重新筛选仍在回收站中的指定素材，再执行一批永久删除。
     pub fn purge_trash_chunk(&mut self, ids: &[AssetId]) -> Result<PurgeReport> {
         let mut current = Vec::new();
         for id in ids {
@@ -68,6 +72,8 @@ impl Library {
         self.purge(&current)
     }
     /// Only assets already in the trash can be removed. The caller freezes the confirmed IDs.
+    ///
+    /// 校验已确认素材范围后永久删除，仅接受回收站中的素材。
     pub fn purge(&mut self, ids: &[AssetId]) -> Result<PurgeReport> {
         self.require_workspace_assets(ids)?;
         if ids.is_empty() || ids.len() > 10000 {
@@ -76,6 +82,7 @@ impl Library {
         self.recover_purges()?;
         self.run_purge(ids, None)
     }
+    /// 以暂存移动、数据库提交和恢复日志完成删除，失败时尝试恢复原位置。
     pub(super) fn run_purge(
         &mut self,
         ids: &[AssetId],
@@ -127,9 +134,11 @@ impl Library {
     }
 
     #[cfg(test)]
+    /// 在删除测试中提交指定删除日志与素材范围。
     fn commit_purge(&mut self, job: &str, ids: &[AssetId]) -> Result<()> {
         self.commit_purge_for(job, ids, None)
     }
+    /// 在事务中删除已冻结范围的数据关联，并登记删除已提交。
     fn commit_purge_for(
         &mut self,
         job: &str,
@@ -179,9 +188,11 @@ impl Library {
         Ok(())
     }
     #[cfg(test)]
+    /// 为删除故障测试准备受管文件清单与恢复日志。
     fn prepare_purge(&mut self, ids: &[AssetId]) -> Result<(String, Vec<(String, String)>)> {
         self.prepare_purge_for(ids, None)
     }
+    /// 收集删除涉及的受管文件和关联，写入可恢复的删除准备日志。
     fn prepare_purge_for(
         &mut self,
         ids: &[AssetId],
@@ -330,6 +341,7 @@ _>>()?);
         Ok((job, files))
     }
 
+    /// 逐项处理未完成的删除日志，保留无法安全判定的文件。
     pub(super) fn recover_purges(&mut self) -> Result<()> {
         let jobs = self
             .db
@@ -342,6 +354,7 @@ _>>()?);
         Ok(())
     }
 
+    /// 按单项删除日志的提交状态恢复原文件或清理隔离内容。
     fn recover_purge(&mut self, job: &str, committed: bool) -> Result<()> {
         parse_id(job)?;
         let files = self
@@ -406,6 +419,7 @@ _>>()?);
 mod tests {
     use super::*;
     #[test]
+    /// 验证隔离目录中的未知文件不阻止已提交或已回滚删除收尾。
     fn stray_files_do_not_block_committed_or_rolled_back_purges() {
         for committed in [false, true] {
             let (_dir, mut lib, assets) = fixture();
@@ -434,6 +448,7 @@ mod tests {
         }
     }
     #[test]
+    /// 验证项目删除清理中断导入，失败时整体回滚。
     fn project_delete_cleans_interrupted_imports_without_recovery_and_rolls_back_on_failure() {
         let (dir, mut library, assets) = fixture();
         let root = library.create_project("删除中断导入").unwrap();
@@ -564,6 +579,7 @@ project.to_string()]).unwrap();
         assert_eq!(library.info().unwrap().count, before);
     }
     #[test]
+    /// 验证项目删除清理独占内容与别名，保留共享内容和外部原片。
     fn project_delete_removes_exclusive_content_and_aliases_but_preserves_shared_and_reference_sources()
      {
         let (dir, mut library, assets) = fixture();
@@ -658,6 +674,7 @@ project.to_string()]).unwrap();
         assert_eq!(library.info().unwrap().projects.len(), 1);
     }
     #[test]
+    /// 验证删除范围变化会被拒绝，数据库失败会恢复有效素材。
     fn project_delete_rejects_changed_scope_and_database_failure_restores_live_assets() {
         let (_dir, mut library, assets) = fixture();
         let project = library.create_project("测试项目").unwrap();
@@ -688,6 +705,7 @@ project.to_string()]).unwrap();
         assert_eq!(library.delete_project_contents(&plan).unwrap().deleted, 0);
     }
     #[test]
+    /// 验证项目删除日志能够处理提交前后两种中断状态。
     fn project_delete_journal_recovers_both_sides_of_commit() {
         for committed in [false, true] {
             let (_dir, mut library, assets) = fixture();
@@ -725,6 +743,7 @@ project.to_string()]).unwrap();
             );
         }
     }
+    /// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
     fn fixture() -> (tempfile::TempDir, Library, Vec<Asset>) {
         let dir = tempfile::tempdir().unwrap();
         let mut library = Library::create(dir.path(), "删除测试").unwrap();
@@ -739,6 +758,7 @@ project.to_string()]).unwrap();
         (dir, library, assets)
     }
     #[test]
+    /// 验证永久删除清理别名、标签和搜索索引，保留外部原片。
     fn permanent_delete_removes_aliases_tags_and_search_but_preserves_external_original() {
         let (dir, mut library, assets) = fixture();
         let asset = assets[0].id;
@@ -819,6 +839,7 @@ project.to_string()]).unwrap();
         );
     }
     #[test]
+    /// 验证重新打开会恢复尚未提交、只完成部分暂存的删除。
     fn reopening_restores_half_staged_uncommitted_delete() {
         let (_dir, mut library, assets) = fixture();
         let id = assets[0].id;
@@ -845,6 +866,7 @@ project.to_string()]).unwrap();
         assert_eq!(reopened.purge(&[id]).unwrap().deleted, 1);
     }
     #[test]
+    /// 验证数据库失败时元数据和所有已移动文件一起恢复。
     fn database_failure_rolls_back_metadata_and_all_moved_files() {
         let (_dir, mut library, assets) = fixture();
         let id = assets[0].id;
@@ -864,6 +886,7 @@ project.to_string()]).unwrap();
         assert_eq!(library.purge(&[id]).unwrap().deleted, 1);
     }
     #[test]
+    /// 验证已提交删除恢复仅清理隔离文件，保留旧路径后来创建的新文件。
     fn committed_recovery_only_unlinks_quarantine_and_preserves_new_file_at_old_name() {
         let (_dir, mut library, assets) = fixture();
         let id = assets[0].id;
@@ -885,6 +908,7 @@ project.to_string()]).unwrap();
         }
     }
     #[test]
+    /// 验证显式永久删除会清理关联 Synco 任务与受管传输副本。
     fn explicit_purge_removes_active_synco_task_and_handoff_copy() {
         let (_dir, mut library, assets) = fixture();
         let id = assets[0].id;
@@ -908,6 +932,7 @@ project.to_string()]).unwrap();
         );
     }
     #[test]
+    /// 验证 Synco 状态不阻止显式项目删除，其他项目共享任务仍保留。
     fn synco_states_never_block_explicit_project_deletion_and_shared_tasks_are_retained() {
         for state in [
             "queued",
@@ -970,6 +995,7 @@ asset.version_id.to_string()]).unwrap();
         assert_eq!(lib.details(asset).unwrap().projects, vec![retained]);
     }
     #[test]
+    /// 验证大小写别名属于其他素材时不会误删共享文件。
     fn case_alias_owned_by_another_asset_prevents_deleting_shared_file() {
         let (_dir, mut library, assets) = fixture();
         let id = assets[0].id;
@@ -996,6 +1022,7 @@ asset.version_id.to_string()]).unwrap();
         assert!(library.details(id).is_ok());
     }
     #[test]
+    /// 验证资源库元数据路径不能冒充媒体路径被删除。
     fn library_metadata_path_cannot_be_deleted_as_media() {
         let (_dir, mut library, assets) = fixture();
         let id = assets[0].id;

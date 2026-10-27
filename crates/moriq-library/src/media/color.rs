@@ -1,6 +1,7 @@
 //! Shared source ICC -> sRGB conversion for import, preview and converted export.
 use super::*;
 use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
+/// 依据嵌入的 ICC 配置将图像转换为 sRGB，拒绝无效配置而不静默改变色彩语义。
 pub(super) fn to_srgb(
     image: image::DynamicImage,
     icc: Option<&[u8]>,
@@ -53,6 +54,7 @@ mod tests {
     use image::ImageEncoder;
     #[cfg(windows)]
     #[test]
+    /// 验证系统预览与原图区域都将 Adobe RGB 转为 sRGB。
     fn wic_preview_and_region_convert_adobe_rgb_to_srgb() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("AdobeRGB.png");
@@ -115,6 +117,7 @@ mod tests {
         assert_eq!(fs::read(source).unwrap(), original);
     }
     #[test]
+    /// 验证预览、原图与转换导出使用一致色彩空间且不修改原片。
     fn icc_preview_full_resolution_and_converted_export_share_srgb_without_touching_original() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("AdobeRGB.png");
@@ -169,6 +172,7 @@ mod tests {
         assert_eq!(fs::read(source).unwrap(), original);
     }
     #[test]
+    /// 验证无效 ICC 不会被静默交给系统解码器规避校验。
     fn invalid_icc_is_not_silently_redecoded_through_a_system_codec() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("bad.png");

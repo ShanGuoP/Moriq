@@ -2,6 +2,7 @@
 use super::*;
 use std::{fs, path::Path};
 
+/// 递归扫描显式来源，通过有界通道输出文件及相对目录，并响应停止信号。
 pub(super) fn walk(
     root: &Path,
     paths: Vec<PathBuf>,

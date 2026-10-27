@@ -15,6 +15,7 @@ NOTICE_NAME = re.compile(
 )
 
 
+# 根据路径各段识别独立许可说明文件，排除具有运行用途的代码和二进制文件。
 def notice_path(relative):
     for part in Path(relative).parts:
         if part.lower() == "licensecheck.json":
@@ -26,6 +27,7 @@ def notice_path(relative):
     return False
 
 
+# 遍历生成的运行目录，拒绝链接和越界路径，并排除重复的解压目录。
 def runtime_paths(runtime):
     for directory, folders, files in os.walk(runtime, followlinks=False):
         base = Path(directory)
@@ -40,6 +42,7 @@ def runtime_paths(runtime):
         yield base, folders, files
 
 
+# 先复制并校验许可说明到包外档案，再删除运行目录中的对应副本并记录清单。
 def prune(label):
     runtime = ROOT / {"ai": "target/ai-runtime", "codecs": "target/codecs/runtime"}[label]
     archive = ROOT / "target/package-reports/runtime-notices" / label
@@ -73,6 +76,7 @@ def prune(label):
     print(json.dumps({"runtime": label, "notices_archived_outside_package": len(entries)}))
 
 
+# 检查最终包目录是否还留有应已归档的独立许可说明。
 def check(runtime):
     if not runtime.is_dir():
         raise RuntimeError(f"Missing package directory: {runtime}")

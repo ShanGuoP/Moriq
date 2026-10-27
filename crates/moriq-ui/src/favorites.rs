@@ -16,6 +16,17 @@ pub(super) struct Favorites {
     pub deferred: Option<Message>,
 }
 impl App {
+    /// 处理等待收藏写入期间的导航回执。
+    pub(super) fn favorite_wait_message(&self) -> Option<&'static str> {
+        self.favorites.deferred.as_ref().map(|message| {
+            if matches!(message, Message::WindowClose) {
+                tr!(self.preferences.language, "正在保存收藏，完成后关闭…" => "Saving favorites, then closing…")
+            } else {
+                tr!(self.preferences.language, "正在保存收藏，完成后继续操作…" => "Saving favorites, then continuing…")
+            }
+        })
+    }
+    /// 收藏写入尚未完成时保留导航请求，避免旧状态覆盖新页面。
     pub(super) fn defer_favorite_navigation(&mut self, message: &Message) -> bool {
         if !self.favorites.pending.is_empty()
             && matches!(
@@ -35,6 +46,7 @@ impl App {
         }
         false
     }
+    /// 返回素材尚未确认的收藏目标状态。
     pub(super) fn pending_favorite(&self, id: AssetId) -> Option<bool> {
         self.favorites
             .pending
@@ -48,6 +60,7 @@ impl App {
                     .map(|(value, _)| *value)
             })
     }
+    /// 把收藏状态同步到当前可见的素材与摘要，提供即时反馈。
     pub(super) fn paint_favorite(&mut self, id: AssetId, value: bool) {
         for tile in self.tiles.iter_mut().chain(self.neighbors.iter_mut()) {
             if tile.asset.id == id {
@@ -58,6 +71,7 @@ impl App {
             asset.favorite = value;
         }
     }
+    /// 接收收藏切换，更新展示并启动受控保存。
     pub(super) fn favorite(&mut self, id: AssetId, value: bool) -> Task<Message> {
         let Some(owner) = self.library.as_ref().map(|l| l.info.id) else {
             return Task::none();
@@ -98,6 +112,7 @@ impl App {
         self.status = tr!(self.preferences.language,"正在保存收藏…"=>"Saving favorite…").into();
         self.write_favorite(owner, id, request, value)
     }
+    /// 提交当前待保存收藏值，避免同一素材并发写入乱序。
     fn write_favorite(
         &self,
         owner: LibraryId,
@@ -111,6 +126,7 @@ impl App {
             move |r| Message::FavoriteSaved(owner, id, request, r),
         )
     }
+    /// 核对收藏保存回执，处理后续目标值或失败恢复。
     pub(super) fn favorite_saved(
         &mut self,
         owner: LibraryId,
@@ -177,6 +193,7 @@ impl App {
 mod tests {
     use super::*;
     #[test]
+    /// 验证关闭等待最新收藏写入，旧分页数据不会清除收藏反馈。
     fn closing_waits_for_the_latest_favorite_and_old_page_data_cannot_clear_its_heart() {
         let mut app = crate::tests::app();
         let owner = app.library.as_ref().unwrap().info.id;
@@ -189,8 +206,13 @@ mod tests {
         let request = app.favorites.request;
         drop(app.update(Message::WindowClose));
         assert!(matches!(app.favorites.deferred, Some(Message::WindowClose)));
+        assert_eq!(
+            app.favorite_wait_message(),
+            Some("正在保存收藏，完成后关闭…")
+        );
         drop(app.update(Message::FavoriteSaved(owner, asset.id, request, Ok(()))));
         assert!(app.favorites.deferred.is_none());
+        assert!(app.favorite_wait_message().is_none());
         assert_eq!(app.pending_favorite(asset.id), Some(true));
         let generation = app.generation;
         drop(app.update(Message::PageLoaded(
@@ -208,6 +230,7 @@ mod tests {
         assert!(app.tiles[0].asset.favorite);
     }
     #[test]
+    /// 验证收藏反馈即时、写入合并，最新保存失败后正确回退。
     fn feedback_is_immediate_writes_are_coalesced_and_failed_latest_write_rolls_back() {
         let mut app = crate::tests::app();
         let owner = app.library.as_ref().unwrap().info.id;

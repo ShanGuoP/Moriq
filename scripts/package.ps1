@@ -1,3 +1,4 @@
+# 准备运行组件、执行质量检查并生成便携包；公开发布模式还要求干净源码与来源清单。
 param(
     [ValidateSet('Release','Debug')][string]$Configuration='Release',
     [switch]$Offline,
@@ -11,12 +12,15 @@ $packageRoot=Join-Path $targetRoot 'package'
 $reportsRoot=Join-Path $targetRoot 'package-reports'
 . (Join-Path $PSScriptRoot 'ai-runtime-files.ps1')
 $previousBuildId=$env:MORIQ_BUILD_ID
+# 公开发布先检查源码状态，防止把未提交内容标成可复现的正式版本。
 if($PublicRelease){
     $sourceStatus=& git -C $projectRoot status --porcelain
     if($sourceStatus){throw 'Public release requires a clean working tree; development package remains available without -PublicRelease'}
 }
+# 按固定版本准备媒体和 AI 组件，后续打包与校验使用同一份清单。
 & (Join-Path $PSScriptRoot 'prepare-codecs.ps1') -Offline:$Offline
 & (Join-Path $PSScriptRoot 'prepare-ai-runtime.ps1') -Offline:$Offline
+# 在项目根目录生成构建身份，并在退出时恢复环境和工作位置。
 Push-Location -LiteralPath $projectRoot
 try {
     & python (Join-Path $PSScriptRoot 'release-metadata.py') identity

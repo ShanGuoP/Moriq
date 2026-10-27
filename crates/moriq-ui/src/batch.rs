@@ -7,6 +7,7 @@ pub struct ProjectTarget {
     label: String,
 }
 impl std::fmt::Display for ProjectTarget {
+    /// 输出批量操作目标项目的显示标签。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
@@ -40,6 +41,7 @@ pub enum BatchMessage {
     Stored(LibraryId, Result<(), String>),
 }
 impl App {
+    /// 维护批量编辑草稿、选择范围和提交回执。
     pub(super) fn batch_message(&mut self, event: BatchMessage) -> Task<Message> {
         let language = self.preferences.language;
         match event {
@@ -115,6 +117,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建批量编辑表单及确认入口。
     pub(super) fn batch_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let unchanged = ProjectTarget {

@@ -1,3 +1,4 @@
+-- 增加项目访问、通知和资源库更新时间等状态，并维护相关查询和索引。
 ALTER TABLE projects ADD COLUMN visited_at INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX projects_recent ON projects(visited_at DESC,id);
 ALTER TABLE activity ADD COLUMN asset_id TEXT;

@@ -3,15 +3,19 @@ use crate::Result;
 use serde_json::Value;
 use std::process::Command;
 
+/// 把模型加载偏好交给受控运行器，统一常驻与按需释放策略。
 pub fn set_keep_loaded(value: bool) -> Result<()> {
     crate::llama::set_keep_loaded(value)
 }
+/// 释放模型运行器持有的进程和相关资源。
 pub fn unload() -> Result<()> {
     crate::llama::unload()
 }
+/// 使用默认取消标志执行指定已登记模型的推理。
 pub fn infer(id: &str, request: Value) -> Result<Value> {
     infer_controlled(id, request, &std::sync::atomic::AtomicBool::new(false))
 }
+/// 校验模型及输入后执行可取消推理，拒绝已退役或不受支持的模型。
 pub fn infer_controlled(
     id: &str,
     request: Value,
@@ -28,6 +32,7 @@ pub fn infer_controlled(
     )
 }
 
+/// 为模型工作进程建立受控启动命令，沿用父进程及资源保护规则。
 pub(crate) fn guarded_command(executable: &std::path::Path) -> Result<Command> {
     #[cfg(windows)]
     {
@@ -68,6 +73,7 @@ pub(crate) fn guarded_command(executable: &std::path::Path) -> Result<Command> {
 #[cfg(test)]
 mod tests {
     #[test]
+    /// 验证已退役模型不会启动任何推理运行器。
     fn retired_models_never_start_a_runtime() {
         for model in ["chinese-clip", "florence", "faces"] {
             assert!(super::infer(model, serde_json::json!({})).is_err());

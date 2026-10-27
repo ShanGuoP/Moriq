@@ -13,6 +13,7 @@ pub(super) struct Storage {
     volume_request: u64,
 }
 impl Storage {
+    /// 清除空间统计与取消状态，使旧库结果无法覆盖新库。
     pub fn reset(&mut self) {
         if let Some(control) = &self.control {
             control.cancel.store(true, Ordering::Relaxed);
@@ -35,6 +36,7 @@ pub enum StorageMessage {
     Volume(LibraryId, u64, Result<(u64, u64), String>),
 }
 impl App {
+    /// 读取当前资源库所在卷的容量信息。
     pub(super) fn load_volume(&mut self) -> Task<Message> {
         let Some(lib) = &self.library else {
             return Task::none();
@@ -47,6 +49,7 @@ impl App {
             Message::Storage(StorageMessage::Volume(id, request, r))
         })
     }
+    /// 处理空间扫描、缓存清理和结果回执。
     pub(super) fn storage_message(&mut self, event: StorageMessage) -> Task<Message> {
         let language = self.preferences.language;
         match event {
@@ -123,6 +126,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建占用分类、卷容量和缓存管理面板。
     pub(super) fn storage_panel(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let mut content=column![muted(tr!(language, "统计当前资源库内的实际文件分配空间，硬链接按文件身份去重。外部引用原片仅显示登记量，不扫描来源磁盘；采样期间文件可能变化。" => "Measure allocated disk space within this library. Hard links are deduplicated by file identity. External originals show registered sizes only; their drives are not scanned. Files may change during sampling."))].spacing(12);

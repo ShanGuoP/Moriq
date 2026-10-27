@@ -1,5 +1,6 @@
 //! Bounded local SVG rendering. No file resolver or network resources.
 use super::*;
+/// 从本地 SVG 建立渲染树，并按资源读取策略限制外部内容。
 fn tree(file: File) -> Result<resvg::usvg::Tree> {
     let mut bytes = Vec::new();
     file.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
@@ -26,6 +27,7 @@ fn tree(file: File) -> Result<resvg::usvg::Tree> {
     resvg::usvg::Tree::from_data(&bytes, &options)
         .map_err(|e| Error::Invalid(format!("SVG 无法解析：{e}")))
 }
+/// 将渲染器的预乘像素转换为统一 RGBA 输出。
 fn rgba(mut pixmap: resvg::tiny_skia::Pixmap) -> Result<image::RgbaImage> {
     let (w, h) = (pixmap.width(), pixmap.height());
     for p in pixmap.data_mut().as_chunks_mut::<4>().0 {
@@ -40,6 +42,7 @@ fn rgba(mut pixmap: resvg::tiny_skia::Pixmap) -> Result<image::RgbaImage> {
     image::RgbaImage::from_raw(w, h, pixmap.take())
         .ok_or_else(|| Error::Invalid("SVG 像素无效".into()))
 }
+/// 按指定原图区域栅格化 SVG，返回用于查看器的像素块。
 pub(super) fn svg_region(file: File, region: ImageRegion) -> Result<Pixels> {
     let tree = tree(file)?;
     let scale = 1. / region.level as f32;
@@ -60,6 +63,7 @@ pub(super) fn svg_region(file: File, region: ImageRegion) -> Result<Pixels> {
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     Ok(pixels(image::DynamicImage::ImageRgba8(rgba(pixmap)?)))
 }
+/// 按目标最长边栅格化 SVG，输出与其他媒体一致的解码结果。
 pub(super) fn svg(file: File, edge: u32) -> Result<native::Decoded> {
     let tree = tree(file)?;
     let size = tree.size();
@@ -98,6 +102,7 @@ pub(super) fn svg(file: File, edge: u32) -> Result<native::Decoded> {
 mod tests {
     use super::*;
     #[test]
+    /// 验证 SVG 导入、预览、导出和维护复用同一本地渲染流程。
     fn svg_import_preview_export_and_maintenance_use_the_same_local_renderer() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shape.svg");

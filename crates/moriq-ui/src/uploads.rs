@@ -1,5 +1,6 @@
 use super::*;
 impl App {
+    /// 按当前界面上传预算把已读取像素转为图像句柄，避免单帧大量上传。
     pub(super) fn drain_uploads(&mut self) {
         if self.generation != self.upload_generation
             || self.library.as_ref().map(|l| l.info.id) != self.upload_owner

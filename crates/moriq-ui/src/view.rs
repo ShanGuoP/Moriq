@@ -11,6 +11,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Border, Color, Length};
 impl App {
+    /// 取得当前实际展示的主页面身份。
     pub(super) fn content_screen(&self) -> Option<Screen> {
         if self.library_picker {
             None
@@ -20,6 +21,7 @@ impl App {
             None
         }
     }
+    /// 构建固定页面外壳，保持导航、标题栏与内容区域布局一致。
     pub(super) fn shell(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let content = match self.content_screen() {
@@ -56,7 +58,9 @@ impl App {
         ]
         .into();
         let mut body = column![self.header(), content].height(Length::Fill);
-        let status = if let Some(import) = &self.import {
+        let status = if let Some(waiting) = self.favorite_wait_message() {
+            waiting.to_owned()
+        } else if let Some(import) = &self.import {
             trf!(language, "{} {} / {} · 解码 {} / 上限 {} · 峰值 {} · 等待内存 {}" => "{} {} / {} · Decoding {} / limit {} · Peak {} · Waiting for memory {}",
                 if import.scanning.load(Ordering::Relaxed) {
                     tr!(language, "扫描并导入" => "Scanning and importing")
@@ -380,6 +384,7 @@ impl App {
             .height(Length::Fill)
             .into()
     }
+    /// 构建顶部标题、导航和主要操作区域。
     fn header(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         // Fixed chrome slots: page-specific labels never move search or window controls.
@@ -630,6 +635,7 @@ impl App {
         })
         .into()
     }
+    /// 构建单项侧栏导航入口及选中状态。
     fn nav_row(
         &self,
         kind: Icon,
@@ -688,6 +694,7 @@ impl App {
             control.into()
         }
     }
+    /// 构建资源库、项目和分类导航区域。
     fn sidebar(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let logo = container(

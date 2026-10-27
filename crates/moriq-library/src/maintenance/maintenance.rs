@@ -36,6 +36,8 @@ pub enum Outcome {
 impl Outcome {
     /// Shared accounting for synchronous tools and the asynchronous coordinator.
     /// Repairs remain version-checked mutations on the library writer.
+    ///
+    /// 把单个检查结果计入报告，并返回仍需写入端复核的修复候选。
     pub fn record(self, report: &mut MaintenanceReport) -> Option<Repair> {
         report.checked += 1;
         let warning = match self {
@@ -60,6 +62,7 @@ impl Outcome {
 }
 
 impl Library {
+    /// 冻结检查所需的目录、读取连接池和资源库租约。
     pub fn maintenance_plan(&self) -> Plan {
         Plan {
             readers: self.readers.clone(),
@@ -68,6 +71,7 @@ impl Library {
         }
     }
 
+    /// 复核版本校验和与来源路径后提交缓存修复；过期修复返回未应用。
     pub fn apply_cache_repair(&mut self, repair: Repair) -> Result<bool> {
         let hash: Option<String> = self
             .db
@@ -105,6 +109,8 @@ impl Library {
 impl Plan {
     /// A private, file-backed SQLite temp snapshot bounds Rust memory and releases the WAL read
     /// transaction before media I/O. Imports and edits can continue on the library writer.
+    ///
+    /// 在写入线程外检查来源和缓存，逐项报告结果并响应取消。
     pub fn run(
         self,
         repair: bool,
@@ -272,6 +278,7 @@ impl Plan {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    /// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
     fn fixture() -> (tempfile::TempDir, Library) {
         let dir = tempfile::tempdir().unwrap();
         let mut library = Library::create(dir.path(), "维护测试").unwrap();
@@ -285,6 +292,7 @@ mod tests {
         (dir, library)
     }
     #[test]
+    /// 验证快照修复不阻塞编辑，也不会把之后导入混入检查范围。
     fn snapshot_repair_allows_writer_edits_and_does_not_include_new_imports() {
         let (dir, mut library) = fixture();
         let assets = library.page(&Query::default(), 0, 10).unwrap().assets;
@@ -331,6 +339,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证取消维护丢弃待提交修复并释放读取租约。
     fn cancellation_drops_pending_repairs_and_releases_library_lease() {
         let (dir, library) = fixture();
         let root = library.root.clone();
@@ -356,6 +365,7 @@ mod tests {
         drop(dir);
     }
     #[test]
+    /// 验证过期修复不会覆盖重定位后的外部引用缓存。
     fn stale_repair_does_not_overwrite_relocated_reference_cache() {
         let (dir, mut library) = fixture();
         let source = dir.path().join("外部.png");

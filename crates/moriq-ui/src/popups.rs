@@ -7,12 +7,14 @@ use crate::{
 };
 use iced::widget::{Space, button, column, container, mouse_area, row, stack, text};
 impl App {
+    /// 判断当前浮层是否采用紧凑展示布局。
     pub(super) fn compact_panel(&self) -> bool {
         matches!(
             self.manager.panel,
             Some(Panel::AssetMenu | Panel::Menu | Panel::ViewOptions | Panel::Import)
         )
     }
+    /// 构建当前上下文菜单或弹出区域，保留底层控件树状态。
     pub(super) fn popup<'a>(&'a self, base: Element<'a, Message>) -> Element<'a, Message> {
         let language = self.preferences.language;
         use ManageMessage::*;

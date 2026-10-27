@@ -21,6 +21,7 @@ pub struct AiProfile {
     pub categories: Vec<AiCategory>,
 }
 impl Default for AiProfile {
+    /// 生成默认媒介与主题词表、识别说明和主题数量限制。
     fn default() -> Self {
         Self {
             revision: 1,
@@ -44,6 +45,7 @@ impl Default for AiProfile {
     }
 }
 impl AiProfile {
+    /// 合并分类模板，保留旧分类身份并隐藏模板中未包含的已有项。
     pub fn with_template(&self, template: &Self) -> Result<Self, &'static str> {
         template.validate()?;
         let mut profile = template.clone();
@@ -62,6 +64,7 @@ impl AiProfile {
         profile.validate()?;
         Ok(profile)
     }
+    /// 校验分类身份、名称、说明与启用数量，控制推理上下文预算。
     pub fn validate(&self) -> Result<(), &'static str> {
         let active = self
             .categories
@@ -119,6 +122,7 @@ impl AiProfile {
         Ok(())
     }
 }
+/// 返回固定分类对应的默认识别说明。
 pub fn ai_definition(id: &str) -> &str {
     match id {
         "photography" => "相机拍摄的真实可见场景，包括对屏幕或印刷品的拍摄，不判断是否由 AI 生成。",
@@ -162,6 +166,7 @@ pub const AI_THEMES: &[(&str, &str)] = &[
     ("cosplay", "角色扮演"),
     ("interface_document", "界面与文档"),
 ];
+/// 把稳定分类身份转换为缺省显示名称。
 pub fn ai_label(id: &str) -> &str {
     AI_MEDIA
         .iter()

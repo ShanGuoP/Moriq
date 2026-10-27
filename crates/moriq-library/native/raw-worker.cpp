@@ -1,4 +1,4 @@
-// LibRaw is the decoder. WIC here only resizes an already decoded RGB bitmap.
+﻿// LibRaw is the decoder. WIC here only resizes an already decoded RGB bitmap.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <libraw/libraw.h>
@@ -13,6 +13,7 @@
 #include <memory>
 #include "raw-budget.h"
 using Microsoft::WRL::ComPtr;
+// 设置 Windows 作业对象的内存和 CPU 限制，父进程退出时结束解码。
 static HANDLE guard(DWORD parent,bool probe) {
     HANDLE handle=OpenProcess(SYNCHRONIZE,FALSE,parent);
     if(!handle) ExitProcess(3);
@@ -25,6 +26,7 @@ static HANDLE guard(DWORD parent,bool probe) {
     if(!job||!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits))||!AssignProcessToJobObject(job,GetCurrentProcess())) ExitProcess(3);
     return job;
 }
+// 执行 RAW 预算探测或 LibRaw 传感器解码，仅用 WIC 缩放已解码像素并输出 RGBA。
 int wmain(int argc,wchar_t** argv) {
     const bool probe=argc==6&&wcscmp(argv[5],L"--probe")==0;
     if(argc!=5&&!probe) return 2;

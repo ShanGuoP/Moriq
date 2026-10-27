@@ -9,6 +9,7 @@ pub struct References {
     _directory: tempfile::TempDir,
     pub items: Vec<(String, PathBuf)>,
 }
+/// 从当前项目读取人脸参考资料，并在扫描期间响应取消。
 pub(crate) fn references(
     pool: &Arc<read_pool::ReadPool>,
     scope: &str,
@@ -48,12 +49,14 @@ pub(crate) fn references(
         items,
     })
 }
+/// 计算候选人脸框的重叠比例，用于排除重复检测。
 fn overlap(a: [f32; 4], b: [f32; 4]) -> f32 {
     let width = ((a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0])).max(0.0);
     let height = ((a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1])).max(0.0);
     let area = width * height;
     area / (a[2] * a[3] + b[2] * b[3] - area).max(f32::EPSILON)
 }
+/// 保存 Qwen 人脸结果和人物匹配，维持版本及项目归属约束。
 pub(crate) fn store(
     db: &Connection,
     version: &str,
@@ -172,6 +175,7 @@ pub(crate) fn store(
 mod tests {
     use super::*;
     #[test]
+    /// 验证 Qwen 人物分组持久化，人工修正保留且参考来自有效人脸。
     fn qwen_groups_are_durable_manual_corrections_survive_and_references_use_live_faces() {
         let dir = tempfile::tempdir().unwrap();
         let mut lib = Library::create(dir.path(), "Qwen人物").unwrap();
@@ -241,6 +245,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证无效结果、旧版本及回收站版本不会替换人物分组。
     fn invalid_results_and_old_or_trashed_versions_do_not_replace_groups() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("image.png");

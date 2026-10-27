@@ -25,10 +25,12 @@ pub enum LibraryMessage {
     Closed(u64, bool, Result<(), String>),
     Finished(u64, Result<UserSettings, String>),
 }
+/// 把资源库管理操作转换为应用消息。
 fn msg(value: LibraryMessage) -> Message {
     Message::Libraries(value)
 }
 impl App {
+    /// 处理资源库创建、打开、卡片配置和移除，并拒绝过期回执。
     pub(super) fn library_message(&mut self, event: LibraryMessage) -> Task<Message> {
         use LibraryMessage::*;
         match event {
@@ -189,6 +191,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建资源库卡片操作与资料编辑表单。
     pub(super) fn library_actions_form(&self) -> Element<'_, Message> {
         use LibraryMessage::*;
         let language = self.preferences.language;

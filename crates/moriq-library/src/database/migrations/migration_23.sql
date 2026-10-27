@@ -1,3 +1,4 @@
+-- 分离 AI 历史回执、有效结果与人工覆盖，建立统一可见内容和搜索视图。
 -- Keep immutable task receipts separate from the effective per-version pointers.
 CREATE TABLE ai_analysis_runs(
  id INTEGER PRIMARY KEY,version_id TEXT NOT NULL REFERENCES asset_versions(id) ON DELETE CASCADE,

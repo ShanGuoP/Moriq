@@ -45,6 +45,7 @@ pub(super) struct ProjectDestination {
     pub name: String,
 }
 impl std::fmt::Display for ProjectDestination {
+    /// 输出素材复制目标项目的显示名称。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.name)
     }
@@ -207,6 +208,7 @@ pub enum ManageMessage {
     Checked(LibraryId, Result<MaintenanceReport, String>),
 }
 impl App {
+    /// 刷新项目、标签、分类和任务摘要，绑定当前库请求身份。
     pub(super) fn refresh_organizer(&mut self) -> Task<Message> {
         self.sync_project_workspace();
         let Some(library) = &self.library else {
@@ -235,6 +237,7 @@ impl App {
             }),
         ])
     }
+    /// 刷新受外观或素材变化影响的图片资料。
     pub(super) fn refresh_visuals(&mut self) -> Task<Message> {
         let Some(library) = &self.library else {
             return Task::none();
@@ -247,6 +250,7 @@ impl App {
             Message::Manage(ManageMessage::OverviewLoaded(id, request, result))
         })
     }
+    /// 异步读取当前资源库封面，并拒绝旧库封面回执。
     pub(super) fn refresh_cover(&mut self) -> Task<Message> {
         let Some(library) = &self.library else {
             return Task::none();
@@ -265,12 +269,15 @@ impl App {
             move |result| Message::Manage(ManageMessage::CoverLoaded(id, request, result)),
         )
     }
+    /// 刷新素材查询相关资料和可见内容。
     pub(super) fn refresh_catalog(&mut self) -> Task<Message> {
         Task::batch([self.refresh_organizer(), self.refresh_visuals()])
     }
+    /// 刷新资源库资料及管理摘要。
     pub(super) fn refresh_library(&mut self) -> Task<Message> {
         Task::batch([self.refresh_catalog(), self.refresh_cover()])
     }
+    /// 重新读取选中素材详情，保留请求和版本身份。
     pub(super) fn refresh_details(&self) -> Task<Message> {
         let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) else {
             return Task::none();
@@ -285,6 +292,7 @@ impl App {
         })
     }
 
+    /// 按当前单选或批量选择状态收集有效素材身份。
     pub(super) fn selected_ids(&self) -> Vec<AssetId> {
         if self.manager.selection.enabled {
             self.manager.selection.assets.iter().copied().collect()
@@ -292,6 +300,7 @@ impl App {
             self.viewer.selected.iter().map(|a| a.id).collect()
         }
     }
+    /// 处理素材编辑、项目管理和上下文操作，维护独立草稿与请求回执。
     pub(super) fn manage_message(&mut self, event: ManageMessage) -> Task<Message> {
         if self.libraries.busy {
             return Task::none();
@@ -1531,6 +1540,7 @@ impl App {
         }
         Task::none()
     }
+    /// 构建当前管理面板或对话框，保持底层浏览上下文。
     pub(super) fn management_overlay<'a>(
         &'a self,
         base: Element<'a, Message>,
@@ -1729,6 +1739,12 @@ impl App {
                 self.viewer.selected.is_some()
             };
             let available = match &event {
+                ManageMessage::Menu
+                | ManageMessage::Help
+                | ManageMessage::Licenses
+                | ManageMessage::Tasks
+                | ManageMessage::ViewOptions
+                | ManageMessage::Filters => true,
                 ManageMessage::CancelCheck => true,
                 ManageMessage::SaveCollection => {
                     !self.manager.busy && !self.manager.collection_name.trim().is_empty()
@@ -2413,6 +2429,7 @@ impl App {
     }
 }
 
+/// 按项目身份取得当前管理摘要中的显示名称。
 pub(super) fn project_label(projects: &[moriq_domain::Project], id: ProjectId) -> String {
     let mut parts = Vec::new();
     let mut cursor = Some(id);

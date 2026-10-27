@@ -5,6 +5,7 @@ pub struct Plan {
     _lease: std::sync::Arc<File>,
 }
 impl Library {
+    /// 冻结缓存目录与资源库租约，供媒体线程执行缓存管理。
     pub fn cache_plan(&self) -> Plan {
         Plan {
             root: self.root.clone(),
@@ -13,6 +14,7 @@ impl Library {
     }
 }
 impl Plan {
+    /// 按字节预算淘汰可重建缓存，并返回清理统计。
     pub fn trim(self, budget: u64) -> Result<CacheReport> {
         let snapshot = tempfile::NamedTempFile::new()?;
         let mut db = Connection::open(snapshot.path())?;

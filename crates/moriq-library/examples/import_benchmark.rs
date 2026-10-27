@@ -1,6 +1,7 @@
 //! Explicit generated-media benchmark; never run on user folders.
 use moriq_library::Library;
 use std::{path::PathBuf, time::Instant};
+/// 使用显式指定的测试素材测量导入耗时，并输出统计结果。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let input = PathBuf::from(args.next().ok_or("input directory")?);

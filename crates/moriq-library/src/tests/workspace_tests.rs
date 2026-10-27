@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+/// 验证真实版本 24 数据在项目范围表尚未建立时也能正确升级。
 fn real_schema_24_shared_assets_upgrade_before_workspace_tables_exist() {
     let (_dir, mut lib, a, b, first, second) = fixture();
     lib.set_workspace(None);
@@ -45,6 +46,7 @@ fn real_schema_24_shared_assets_upgrade_before_workspace_tables_exist() {
     );
 }
 
+/// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
 fn fixture() -> (
     tempfile::TempDir,
     Library,
@@ -71,6 +73,7 @@ fn fixture() -> (
 }
 
 #[test]
+/// 验证默认布局查询遵守当前项目范围。
 fn default_layout_query_respects_the_selected_workspace() {
     let (_dir, mut lib, a, b, _, _) = fixture();
     for project in [a, b] {
@@ -82,6 +85,7 @@ fn default_layout_query_respects_the_selected_workspace() {
 }
 
 #[test]
+/// 验证各项目分类、标签、搜索和统计重开后仍然独立。
 fn project_profiles_labels_search_tags_and_statistics_stay_independent_after_reopen() {
     let (_dir, mut lib, a, b, first, second) = fixture();
     for (project, asset) in [(a, &first), (b, &second)] {
@@ -194,6 +198,7 @@ fn project_profiles_labels_search_tags_and_statistics_stay_independent_after_reo
 }
 
 #[test]
+/// 验证任务冻结项目配置，其他项目编辑不取消或改变工作目标。
 fn jobs_freeze_project_profile_and_other_project_edits_do_not_cancel_or_retarget_work() {
     let (_dir, mut lib, a, b, first, _second) = fixture();
     lib.set_workspace(Some(a));
@@ -238,6 +243,7 @@ fn jobs_freeze_project_profile_and_other_project_edits_do_not_cancel_or_retarget
 }
 
 #[test]
+/// 验证文件夹、集合、人物和复制选项遵守项目归属。
 fn folders_collections_people_and_copy_options_have_project_ownership() {
     let (_dir, mut lib, a, b, first, second) = fixture();
     lib.set_workspace(Some(a));
@@ -320,6 +326,7 @@ fn folders_collections_people_and_copy_options_have_project_ownership() {
 }
 
 #[test]
+/// 验证模板和父子项目配置独立，复制分类按名称映射。
 fn templates_and_parent_projects_are_independent_and_copied_taxonomy_maps_by_label() {
     let (_dir, mut lib, a, b, first, _) = fixture();
     let child = lib
@@ -372,6 +379,7 @@ fn templates_and_parent_projects_are_independent_and_copied_taxonomy_maps_by_lab
 }
 
 #[test]
+/// 验证版本 25 升级拆分共享分组，故障时原子回滚。
 fn schema_25_upgrade_splits_shared_people_folders_and_collections_with_atomic_rollback() {
     let (_dir, mut lib, a, b, first, second) = fixture();
     lib.set_workspace(None);

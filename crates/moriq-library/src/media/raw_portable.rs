@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 #[cfg(bundled_libraw)]
+/// 取得当前构建可用的便携 RAW 工作程序，缺少打包组件时返回错误。
 pub(crate) fn worker() -> Result<PathBuf> {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/raw-runtime/raw-worker"));
     let hash = format!("{:x}", Sha256::digest(bytes));
@@ -30,11 +31,13 @@ pub(crate) fn worker() -> Result<PathBuf> {
     Ok(path)
 }
 #[cfg(not(bundled_libraw))]
+/// 取得当前构建可用的便携 RAW 工作程序，缺少打包组件时返回错误。
 pub(crate) fn worker() -> Result<PathBuf> {
     Err(Error::Invalid(
         "此构建缺少内置 LibRaw 组件，请使用完整发行包".into(),
     ))
 }
+/// 调用便携 RAW 工作程序进行有界解码，并校验结果尺寸与像素数据。
 pub fn decode(path: &Path, edge: u32) -> Result<native::Decoded> {
     if edge > 65535 {
         return Err(Error::Invalid("RAW 输出尺寸超出预算".into()));

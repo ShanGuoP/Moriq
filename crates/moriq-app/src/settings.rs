@@ -8,6 +8,7 @@ pub struct LibraryCard {
 }
 
 impl Service {
+    /// 读取资源库卡片所需的详细摘要和封面信息。
     pub async fn library_card_details(&self, paths: Vec<PathBuf>) -> Result<Vec<LibraryCard>> {
         let slot = self
             .read_slots
@@ -32,6 +33,7 @@ impl Service {
         .await
         .map_err(|e| e.to_string())
     }
+    /// 保存界面配置并返回更新后的设置。
     pub async fn interface_preferences(
         &self,
         language: Language,
@@ -44,18 +46,21 @@ impl Service {
         })
         .await
     }
+    /// 持久化减少动态效果的偏好。
     pub async fn reduced_motion(&self, enabled: bool) -> Result<UserSettings> {
         self.call(move |_| {
             moriq_library::settings::reduced_motion(enabled).map_err(|e| e.to_string())
         })
         .await
     }
+    /// 保存诊断日志开关。
     pub async fn diagnostic_logging(&self, enabled: bool) -> Result<UserSettings> {
         self.call(move |_| {
             moriq_library::settings::diagnostic_logging(enabled).map_err(|e| e.to_string())
         })
         .await
     }
+    /// 读取最近资源库列表并生成可展示的卡片资料。
     pub async fn library_cards(
         &self,
         paths: Vec<PathBuf>,
@@ -67,12 +72,14 @@ impl Service {
             .map(|card| (card.path, card.cover))
             .collect())
     }
+    /// 保存 Synco 程序和连接偏好。
     pub async fn synco_preferences(&self, value: SyncoPreferences) -> Result<UserSettings> {
         self.call(move |_| {
             moriq_library::settings::synco_preferences(value).map_err(|e| e.to_string())
         })
         .await
     }
+    /// 保存模型下载来源和加载策略。
     pub async fn ai_preferences(&self, value: AiPreferences) -> Result<UserSettings> {
         let preferences = self
             .call(move |_| {
@@ -82,31 +89,37 @@ impl Service {
         self.ai_policy(value).await?;
         Ok(preferences)
     }
+    /// 更新实际模型加载策略，并与用户偏好保持一致。
     pub async fn ai_policy(&self, value: AiPreferences) -> Result<()> {
         tokio::task::spawn_blocking(move || moriq_ai::set_keep_loaded(!value.on_demand))
             .await
             .map_err(|e| e.to_string())?
     }
+    /// 保存并应用导入并发和内存偏好。
     pub async fn import_preferences(&self, value: ImportPreferences) -> Result<UserSettings> {
         self.call(move |_| {
             moriq_library::settings::import_preferences(value).map_err(|e| e.to_string())
         })
         .await
     }
+    /// 在文件线程读取用户设置，避免界面直接进行文件访问。
     pub async fn settings(&self) -> Result<UserSettings> {
         self.call(|_| moriq_library::settings::load().map_err(|e| e.to_string()))
             .await
     }
+    /// 将已打开资源库登记到最近列表。
     pub async fn remember(&self, name: String, path: PathBuf) -> Result<UserSettings> {
         self.call(move |_| moriq_library::settings::remember(name, path).map_err(|e| e.to_string()))
             .await
     }
+    /// 保存可复用分类模板，不修改当前资源库已有分类。
     pub async fn save_category_template(&self, profile: AiProfile) -> Result<AiProfile> {
         self.call(move |_| {
             moriq_library::settings::category_template(profile).map_err(|e| e.to_string())
         })
         .await
     }
+    /// 检查指定目录并生成可供确认的资源库移除计划。
     pub async fn library_removal_plan(&self, path: PathBuf) -> Result<LibraryRemovalPlan> {
         self.call(move |_| {
             if !moriq_library::settings::load()
@@ -121,6 +134,7 @@ impl Service {
         })
         .await
     }
+    /// 校验目标身份后关闭当前库，并停止其在途工作。
     pub async fn close_library(&self, id: LibraryId) -> Result<()> {
         let cancel = self.job_cancel.clone();
         let cache = self.media_cache.clone();
@@ -133,6 +147,7 @@ impl Service {
         })
         .await
     }
+    /// 从最近列表移除或按已确认计划删除资源库，保护仍打开的库与外部原片。
     pub async fn remove_library(
         &self,
         path: PathBuf,
@@ -191,6 +206,7 @@ impl Service {
                 }
             })
     }
+    /// 更新当前资源库资料并同步最近列表中的展示信息。
     pub async fn update_profile(
         &self,
         id: LibraryId,

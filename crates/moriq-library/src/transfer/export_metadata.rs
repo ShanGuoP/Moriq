@@ -1,4 +1,5 @@
 use super::*;
+/// 从来源读取 EXIF，移除或规范化与输出尺寸、方向相关的字段。
 pub(crate) fn normalized_exif(path: &Path, width: u32, height: u32) -> Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     File::open(path)?
@@ -52,6 +53,7 @@ pub(crate) fn normalized_exif(path: &Path, width: u32, height: u32) -> Result<Op
     }
     Ok(Some(bytes))
 }
+/// 将准备好的 EXIF 交给图像编码器；无可用元数据时直接返回。
 pub(crate) fn attach<E: image::ImageEncoder>(encoder: &mut E, exif: Option<&[u8]>) -> Result<()> {
     let profile = moxcms::ColorProfile::new_srgb()
         .encode()
@@ -66,6 +68,7 @@ pub(crate) fn attach<E: image::ImageEncoder>(encoder: &mut E, exif: Option<&[u8]
     }
     Ok(())
 }
+/// 清理导出目录名称中的无效字符，保留可读的名称部分。
 fn component(value: &str) -> String {
     let value: String = value
         .chars()
@@ -86,6 +89,7 @@ fn component(value: &str) -> String {
         value.into()
     }
 }
+/// 按导出目录规则和素材信息构造输出子目录。
 pub(crate) fn directory(
     template: &str,
     root: &Path,

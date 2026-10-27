@@ -13,6 +13,7 @@ pub(super) struct InterfaceState {
 }
 
 impl App {
+    /// 更新减少动态效果偏好，立即结束不再需要的动画并持久化。
     pub(super) fn set_reduced_motion(&mut self, enabled: bool) -> Task<Message> {
         self.preferences.reduced_motion = enabled;
         self.gallery_feedback.clear();
@@ -25,6 +26,7 @@ impl App {
         )
     }
 
+    /// 切换显示语言并保存界面偏好。
     pub(super) fn set_language(&mut self, language: Language) -> Task<Message> {
         self.preferences.language = language;
         self.interface.initialized = true;
@@ -32,12 +34,14 @@ impl App {
         self.save_interface()
     }
 
+    /// 切换外观主题，刷新依赖外观的图片与控件状态。
     pub(super) fn set_appearance(&mut self, appearance: Appearance) -> Task<Message> {
         self.preferences.appearance = appearance;
         self.interface.initialized = true;
         self.save_interface()
     }
 
+    /// 处理界面设置保存回执，保留用户较新的选择。
     pub(super) fn finish_interface_save(
         &mut self,
         language: Language,
@@ -75,6 +79,7 @@ impl App {
         Task::none()
     }
 
+    /// 更新诊断日志偏好并提交保存。
     pub(super) fn set_diagnostic_logging(&mut self, enabled: bool) -> Task<Message> {
         self.preferences.diagnostic_logging = enabled;
         let service = self.service.clone();
@@ -84,6 +89,7 @@ impl App {
         )
     }
 
+    /// 把读取到的用户设置应用到界面与服务策略。
     pub(super) fn apply_settings(&mut self, mut settings: UserSettings) {
         // Other preference receipts can arrive after an interface edit.
         if self.interface.initialized {
@@ -96,6 +102,7 @@ impl App {
         self.preferences = settings;
     }
 
+    /// 异步保存当前界面偏好，避免界面线程直接写文件。
     pub(super) fn save_interface(&mut self) -> Task<Message> {
         if self.interface.saving.is_some() {
             return Task::none();
@@ -113,6 +120,7 @@ impl App {
         )
     }
 
+    /// 构建导入并发与内存预算设置区域。
     fn import_settings(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let workers = localized_choice(
@@ -197,6 +205,7 @@ impl App {
             .into()
     }
 
+    /// 构建设置主表单与相关工具入口。
     pub(super) fn settings_form(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         let library_path = self
@@ -361,6 +370,7 @@ impl App {
     }
 }
 
+/// 包装一项设置的标题、说明与编辑控件。
 fn preference_card<'a>(
     kind: Icon,
     title: &str,

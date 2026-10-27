@@ -3,6 +3,7 @@ use moriq_domain::{ImageRegion, Query};
 use moriq_library::Library;
 use std::{fs, path::PathBuf, time::Instant};
 
+/// 在指定的独立资源库测量预览和原图分块读取耗时，输出 JSON 报告。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let root = PathBuf::from(args.next().ok_or("pass isolated library path")?);

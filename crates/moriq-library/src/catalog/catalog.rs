@@ -2,6 +2,8 @@ use super::*;
 impl Library {
     /// Resolve an anchor against the same ordering and filters used by the gallery.
     /// Only seven metadata rows are materialized, including across gallery pages.
+    ///
+    /// 按当前筛选和排序返回锚点附近的少量素材，支持跨分页切换查看。
     pub fn neighborhood(
         &mut self,
         query: &Query,
@@ -46,6 +48,7 @@ impl Library {
             page,
         }))
     }
+    /// 解析两个选择锚点之间的素材范围，沿用当前查询顺序。
     pub fn selection_range(
         &mut self,
         query: &Query,
@@ -83,6 +86,7 @@ impl Library {
             .map(|r| Ok(AssetId(parse_id(&r?)?)))
             .collect()
     }
+    /// 校验父项目并创建子项目，保留项目树关系。
     pub fn create_child_project(
         &mut self,
         name: &str,
@@ -104,6 +108,7 @@ impl Library {
         self.snapshot = None;
         Ok(id)
     }
+    /// 调整项目的父级关系，拒绝把项目移入自身或后代形成循环。
     pub fn move_project(&mut self, id: ProjectId, parent: Option<ProjectId>) -> Result<()> {
         if let Some(parent) = parent {
             let cycle:bool=self.db.query_row("WITH RECURSIVE descendants(id) AS(SELECT ?1 UNION ALL SELECT p.id FROM projects p JOIN descendants \
@@ -127,6 +132,8 @@ parent.to_string()],
         Ok(())
     }
     /// Only this project's edges change; vocabulary storage may deduplicate strings.
+    ///
+    /// 重命名或合并标签，更新关联而不丢失已有素材成员。
     pub fn rename_tag(&mut self, source: &str, target: &str) -> Result<()> {
         let target = target.trim();
         if target.is_empty() || target.len() > 128 {
@@ -160,6 +167,7 @@ parent.to_string()],
         self.snapshot = None;
         Ok(())
     }
+    /// 删除标签及对应关联，使搜索结果与标签列表保持一致。
     pub fn delete_tag(&mut self, name: &str) -> Result<()> {
         let scope = self.workspace_key();
         let tx = self.db.transaction()?;
@@ -178,6 +186,7 @@ parent.to_string()],
         self.snapshot = None;
         Ok(())
     }
+    /// 读取外部引用版本的预期校验和，供重定位前验证内容。
     pub fn reference_hash(&self, asset: AssetId, version: AssetVersionId) -> Result<String> {
         self.db.query_row("SELECT v.sha256 FROM asset_versions v JOIN file_locations f ON f.version_id=v.id WHERE v.id=?1 AND \
                 v.asset_id=?2",
@@ -185,6 +194,7 @@ params![version.to_string(),
 asset.to_string()],
 |r|r.get(0)).map_err(Error::from)
     }
+    /// 提交外部引用的新路径，并校验目标文件与登记内容一致。
     pub fn relocate_reference(
         &mut self,
         asset: AssetId,
@@ -204,6 +214,7 @@ asset.to_string()],
         Ok(())
     }
 }
+/// 验证外部引用文件的身份与内容，拒绝已被替换或修改的原片。
 pub fn validate_reference(path: &Path, expected: &str) -> Result<PathBuf> {
     let path = path.canonicalize()?;
     if fs::metadata(&path)?.len() > MAX_BYTES || organize::hash_file(&path)? != expected {
@@ -219,6 +230,7 @@ pub fn validate_reference(path: &Path, expected: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    /// 验证相邻浏览跨页沿用查询排序，重新打开后仍一致。
     fn neighborhood_crosses_pages_obeys_query_sort_and_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("sample.png");
@@ -307,6 +319,7 @@ mod tests {
         assert!(lib.neighborhood(&q, anchor, 2).is_err());
     }
     #[test]
+    /// 验证嵌套项目包含后代、防止循环且范围选择连续。
     fn nested_projects_include_children_prevent_cycles_and_keep_dense_selection() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("原片.png");
@@ -357,6 +370,7 @@ mod tests {
         assert!(library.asset_path(asset.id).unwrap().is_file());
     }
     #[test]
+    /// 验证搜索索引跟随名称、标签及说明变化，并遵守日期边界。
     fn indexed_search_tracks_rename_merge_removal_notes_and_date_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("中文摄影原片.png");
@@ -501,6 +515,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证转换导出保留原片，外部引用可经校验重定位。
     fn converted_export_preserves_original_and_reference_can_be_relocated() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("原片.png");

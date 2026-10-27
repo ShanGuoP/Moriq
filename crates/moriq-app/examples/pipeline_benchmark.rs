@@ -1,6 +1,7 @@
 //! Service pipeline benchmark against explicitly supplied, generated fixtures.
 use moriq_app::{ImportControl, Service};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
+/// 用显式提供的素材目录测量完整导入管线，并核对导入报告与数据库数量。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let input = PathBuf::from(args.next().ok_or("input directory")?);

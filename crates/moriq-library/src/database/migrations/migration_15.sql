@@ -1,3 +1,4 @@
+-- 扩展任务类型并建立 AI 结果、向量、分类及人物人脸数据。
 ALTER TABLE background_job_items RENAME TO background_job_items_old;
 ALTER TABLE background_jobs RENAME TO background_jobs_old;
 CREATE TABLE background_jobs(id TEXT PRIMARY KEY,kind TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN('queued','running','paused','cancelled','completed')),priority INTEGER NOT NULL DEFAULT 0,checkpoint INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,failed INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '',inflight INTEGER NOT NULL DEFAULT 0,generation INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL);

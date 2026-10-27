@@ -1,4 +1,5 @@
 use std::{env, path::PathBuf};
+/// 构建当前平台的媒体工作程序，登记原生源码与运行组件的重建依赖。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let codec_runtime =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/codecs/runtime");

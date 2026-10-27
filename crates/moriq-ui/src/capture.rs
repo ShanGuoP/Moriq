@@ -1,8 +1,76 @@
 //! Development-only native capture scenarios. Never compiled into the shipping app.
 use super::*;
 impl App {
+    /// 记录搜索交互的诊断快照，供验收核对展示与请求状态。
+    pub(super) fn capture_search_snapshot(
+        &self,
+        screenshot: iced::window::Screenshot,
+    ) -> Task<Message> {
+        let Some(path) = self
+            .launch
+            .capture
+            .as_ref()
+            .map(|path| path.with_extension("pending.png"))
+        else {
+            return Task::none();
+        };
+        let state = format!(
+            "tiles={} selected={:?} draft={} replacing={} loading={}\n",
+            self.tiles.len(),
+            self.viewer.selected.as_ref().map(|asset| asset.id),
+            self.manager.notes_dirty,
+            self.responsiveness.replacing(),
+            self.loading
+        );
+        let service = self.service.clone();
+        Task::perform(
+            async move {
+                service
+                    .save_capture_evidence(path.with_extension("txt"), state)
+                    .await?;
+                service
+                    .save_capture(
+                        path,
+                        screenshot.size.width,
+                        screenshot.size.height,
+                        screenshot.rgba.to_vec(),
+                    )
+                    .await
+            },
+            |result| Message::PlatformDone("交互验证截图已保存", result),
+        )
+    }
+    /// 推进显式开启的截图验收步骤，满足条件后保存证据。
     pub(super) fn capture_tick(&mut self) -> Task<Message> {
         self.capture_ticks = self.capture_ticks.saturating_add(1);
+        if self.launch.panel.as_deref() == Some("interaction-continuity") {
+            match self.capture_ticks {
+                3 => {
+                    self.manager.notes = "交互验证草稿".into();
+                    self.manager.notes_dirty = true;
+                    // Hold this request to inspect a slow search without timing-dependent screenshots.
+                    drop(self.update(Message::Search("no-matching-item".into())));
+                    return iced::window::oldest()
+                        .and_then(iced::window::screenshot)
+                        .map(Message::InteractionSnapshot);
+                }
+                6 => return self.update(Message::CancelSearch),
+                8 => {
+                    let query = self
+                        .viewer
+                        .selected
+                        .as_ref()
+                        .map(|asset| asset.name.clone())
+                        .unwrap_or_default();
+                    return self.update(Message::Search(query));
+                }
+                11 if self.loading || self.responsiveness.replacing() => {
+                    self.capture_ticks = 10;
+                    return Task::none();
+                }
+                _ => {}
+            }
+        }
         if self.capture_ticks == 2
             && matches!(
                 self.launch.panel.as_deref(),

@@ -1,6 +1,7 @@
 use super::*;
 
 impl Library {
+    /// 按当前项目范围、筛选和排序读取一页素材；必要时建立并复用查询快照。
     pub fn page(&mut self, query: &Query, offset: usize, limit: usize) -> Result<Page> {
         let scoped = self.workspace_query(query)?;
         let query = &scoped;
@@ -169,6 +170,7 @@ rusqlite::params_from_iter(values))?;
         })
     }
 
+    /// 执行已构造的素材查询并装配版本、收藏和标签等列表字段。
     pub(super) fn read_assets(
         &self,
         sql: &str,
@@ -214,6 +216,8 @@ rusqlite::params_from_iter(values))?;
     }
 
     /// Read tags for the bounded page together, rather than expanding AI views per tile.
+    ///
+    /// 批量读取当前页的有效标签，避免逐素材重复展开 AI 数据视图。
     fn load_page_tags(&self, assets: &mut [Asset]) -> Result<()> {
         let ids: Vec<_> = assets.iter().map(|asset| asset.id.to_string()).collect();
         let ids = serde_json::to_string(&ids).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -241,6 +245,7 @@ rusqlite::params_from_iter(values))?;
         Ok(())
     }
 
+    /// 按当前查询顺序返回素材尺寸，供界面计算布局而不解码原图。
     pub fn layout_sizes(&mut self, query: &Query) -> Result<Vec<(u32, u32)>> {
         let query = self.workspace_query(query)?;
         self.page(&query, 0, 0)?;

@@ -18,6 +18,7 @@ struct Recent {
     platform: String,
     path: Vec<u8>,
 }
+/// 定位当前用户的应用设置文件，统一配置读取与写入位置。
 fn location() -> Result<PathBuf> {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
@@ -32,9 +33,11 @@ fn location() -> Result<PathBuf> {
         .ok_or_else(|| Error::Invalid("无法定位用户设置目录".into()))?
         .join("MORIQ"))
 }
+/// 从默认设置位置读取用户配置，沿用缺省值与已有兼容处理。
 pub fn load() -> Result<UserSettings> {
     load_from(&location()?)
 }
+/// 保存 Synco 连接偏好，同时保留其他用户设置。
 pub fn synco_preferences(value: SyncoPreferences) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -42,6 +45,7 @@ pub fn synco_preferences(value: SyncoPreferences) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+/// 更新模型加载和下载来源偏好，不覆盖无关设置。
 pub fn ai_preferences(value: AiPreferences) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -49,6 +53,7 @@ pub fn ai_preferences(value: AiPreferences) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+/// 登记或更新最近使用的资源库记录。
 pub fn remember(name: String, path: PathBuf) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -57,6 +62,7 @@ pub fn remember(name: String, path: PathBuf) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+/// 保存可复用的 AI 分类模板，供新资源库或项目使用。
 pub fn category_template(mut profile: AiProfile) -> Result<AiProfile> {
     profile.validate().map_err(|e| Error::Invalid(e.into()))?;
     profile.revision = 0;
@@ -66,15 +72,18 @@ pub fn category_template(mut profile: AiProfile) -> Result<AiProfile> {
     save_to(&folder, &prefs)?;
     Ok(profile)
 }
+/// 从默认配置中的最近列表移除指定资源库，不删除其文件。
 pub fn forget(path: &Path) -> Result<UserSettings> {
     forget_from(&location()?, path)
 }
+/// 从指定配置位置移除单条资源库记录，供独立配置和测试使用。
 fn forget_from(folder: &Path, path: &Path) -> Result<UserSettings> {
     let mut prefs = load_from(folder)?;
     prefs.recent.retain(|(_, candidate)| candidate != path);
     save_to(folder, &prefs)?;
     Ok(prefs)
 }
+/// 持久化减少动态效果的偏好，并保留其余配置。
 pub fn reduced_motion(enabled: bool) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -82,6 +91,7 @@ pub fn reduced_motion(enabled: bool) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+/// 保存主题、语言等界面偏好。
 pub fn interface(language: Language, appearance: Appearance) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -90,6 +100,7 @@ pub fn interface(language: Language, appearance: Appearance) -> Result<UserSetti
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+/// 更新诊断日志开关，供后续启动和诊断流程读取。
 pub fn diagnostic_logging(enabled: bool) -> Result<UserSettings> {
     let folder = location()?;
     let mut prefs = load_from(&folder)?;
@@ -97,6 +108,7 @@ pub fn diagnostic_logging(enabled: bool) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+/// 保存导入并发和内存偏好，供应用层计算实际执行预算。
 pub fn import_preferences(value: ImportPreferences) -> Result<UserSettings> {
     let value = value
         .validated()
@@ -107,6 +119,7 @@ pub fn import_preferences(value: ImportPreferences) -> Result<UserSettings> {
     save_to(&folder, &prefs)?;
     Ok(prefs)
 }
+/// 读取指定配置文件；损坏配置按既有恢复规则处理。
 fn load_from(folder: &Path) -> Result<UserSettings> {
     let path = folder.join("settings.toml");
     if !path.exists() {
@@ -140,6 +153,7 @@ fn load_from(folder: &Path) -> Result<UserSettings> {
             .ok_or_else(|| Error::Invalid("导入设置范围无效".into()))?,
     })
 }
+/// 将设置写入指定位置，使用临时文件发布以避免半份配置。
 fn save_to(folder: &Path, prefs: &UserSettings) -> Result<()> {
     fs::create_dir_all(folder)?;
     let recent = prefs
@@ -176,6 +190,8 @@ fn save_to(folder: &Path, prefs: &UserSettings) -> Result<()> {
 
 /// Read a library card without opening, migrating or taking ownership of that library.
 /// Broken/offline libraries remain in the registry and use an empty cover.
+///
+/// 为资源库卡片解析可用封面来源。
 pub fn card_cover(root: &Path) -> Result<Option<Pixels>> {
     let custom = safe_path(root, "metadata/cover.png")?;
     let path = if custom.is_file() {
@@ -213,6 +229,8 @@ pub fn card_cover(root: &Path) -> Result<Option<Pixels>> {
 }
 
 /// Read-only card metadata; never opens a library for migration or writes.
+///
+/// 读取资源库卡片所需的摘要，避免为展示卡片打开完整业务会话。
 pub fn card_summary(root: &Path) -> Result<(u64, u64)> {
     let db = Connection::open_with_flags(
         safe_path(root, "catalog.db")?,
@@ -226,6 +244,7 @@ pub fn card_summary(root: &Path) -> Result<(u64, u64)> {
 mod tests {
     use super::*;
     #[test]
+    /// 验证界面设置兼容旧文件并保留其他偏好。
     fn interface_settings_migrate_old_files_and_preserve_other_preferences() {
         let folder = tempfile::tempdir().unwrap();
         fs::write(folder.path().join("settings.toml"),
@@ -253,6 +272,7 @@ mod tests {
         assert_eq!(final_prefs.appearance, Appearance::Dark);
     }
     #[test]
+    /// 验证最近列表保留较多资源库且允许同名不同路径。
     fn registry_retains_more_than_twelve_libraries_and_same_names() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = UserSettings {
@@ -271,6 +291,7 @@ mod tests {
         assert_eq!(load_from(dir.path()).unwrap().recent, prefs.recent);
     }
     #[test]
+    /// 验证模型来源默认镜像，保存往返不丢失历史。
     fn model_source_defaults_to_mirror_and_roundtrips_without_losing_history() {
         let folder = tempfile::tempdir().unwrap();
         fs::write(
@@ -291,6 +312,7 @@ mod tests {
         assert_eq!(loaded.recent, prefs.recent);
     }
     #[test]
+    /// 验证资源库打开期间卡片仍能读取实际封面。
     fn library_cards_read_real_covers_while_library_is_open() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("photo.png");
@@ -310,6 +332,7 @@ mod tests {
         assert!(!dir.path().join("missing/catalog.db").exists());
     }
     #[test]
+    /// 验证最近路径往返一致，损坏设置按规则保留以便恢复。
     fn recent_paths_roundtrip_and_corrupt_settings_are_preserved() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = UserSettings {
@@ -342,6 +365,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证忘记资源库仅移除目标记录，保留文件和其他偏好。
     fn forgetting_only_removes_the_selected_registry_entry_and_preserves_files_and_preferences() {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.moriq");
@@ -360,6 +384,7 @@ mod tests {
         assert_eq!(fs::read(a.join("keep")).unwrap(), b"original");
     }
     #[test]
+    /// 验证分类模板保存与合并保留本地已有分类关联。
     fn category_template_roundtrips_and_can_merge_without_removing_local_associations() {
         let dir = tempfile::tempdir().unwrap();
         let mut profile = AiProfile::default();

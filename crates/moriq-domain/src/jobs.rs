@@ -9,6 +9,7 @@ pub enum ModelId {
     Qwen35_4b,
 }
 impl ModelId {
+    /// 返回当前枚举的稳定协议值，供数据库和任务消息使用。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ChineseClip => "chinese-clip",
@@ -20,6 +21,7 @@ impl ModelId {
 }
 impl FromStr for ModelId {
     type Err = &'static str;
+    /// 从持久化协议值解析枚举，拒绝未知值以避免错误调度。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "chinese-clip" => Ok(Self::ChineseClip),
@@ -31,6 +33,7 @@ impl FromStr for ModelId {
     }
 }
 impl fmt::Display for ModelId {
+    /// 按类型约定输出协议值或可读错误说明。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -49,6 +52,7 @@ pub enum JobKind {
     QwenFaces,
 }
 impl JobKind {
+    /// 返回当前枚举的稳定协议值，供数据库和任务消息使用。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Metadata => "metadata",
@@ -65,6 +69,7 @@ impl JobKind {
             Self::QwenFaces => "analysis:qwen35-4b/faces",
         }
     }
+    /// 返回该任务使用的模型身份；非模型任务按类型约定返回空值。
     pub const fn model(self) -> Option<ModelId> {
         match self {
             Self::Analysis(model) => Some(model),
@@ -74,6 +79,7 @@ impl JobKind {
             _ => None,
         }
     }
+    /// 返回该任务种类的共享内存准入预算。
     pub const fn memory_mib(self) -> u32 {
         match self {
             Self::Analysis(ModelId::Qwen35_4b) => 3072,
@@ -86,6 +92,7 @@ impl JobKind {
 }
 impl FromStr for JobKind {
     type Err = &'static str;
+    /// 从持久化协议值解析枚举，拒绝未知值以避免错误调度。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "metadata" => Ok(Self::Metadata),
@@ -105,6 +112,7 @@ impl FromStr for JobKind {
     }
 }
 impl fmt::Display for JobKind {
+    /// 按类型约定输出协议值或可读错误说明。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -119,6 +127,7 @@ pub enum JobState {
     Cancelled,
 }
 impl JobState {
+    /// 返回当前枚举的稳定协议值，供数据库和任务消息使用。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
@@ -128,15 +137,18 @@ impl JobState {
             Self::Cancelled => "cancelled",
         }
     }
+    /// 判断任务是否处于需要调度或展示活动状态的阶段。
     pub const fn is_active(self) -> bool {
         matches!(self, Self::Queued | Self::Running | Self::Paused)
     }
+    /// 判断任务是否已经完成或终止。
     pub const fn is_finished(self) -> bool {
         matches!(self, Self::Completed | Self::Cancelled)
     }
 }
 impl FromStr for JobState {
     type Err = &'static str;
+    /// 从持久化协议值解析枚举，拒绝未知值以避免错误调度。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "queued" => Ok(Self::Queued),
@@ -149,6 +161,7 @@ impl FromStr for JobState {
     }
 }
 impl fmt::Display for JobState {
+    /// 按类型约定输出协议值或可读错误说明。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -164,6 +177,7 @@ pub enum TaskError {
     Unavailable,
 }
 impl fmt::Display for TaskError {
+    /// 按类型约定输出协议值或可读错误说明。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cancelled => f.write_str("任务已停止"),
@@ -180,6 +194,7 @@ pub type TaskResult<T> = Result<T, TaskError>;
 mod tests {
     use super::*;
     #[test]
+    /// 验证任务和模型协议往返解析一致，未知值不会被静默接受。
     fn persisted_protocol_roundtrips_and_unknown_values_are_rejected() {
         for kind in [
             JobKind::Metadata,

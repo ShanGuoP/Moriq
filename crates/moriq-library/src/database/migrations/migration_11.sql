@@ -1,3 +1,4 @@
+-- 保存版本所属的人工地点，并在变更时更新活动和内容状态。
 CREATE TABLE version_locations(version_id TEXT PRIMARY KEY REFERENCES asset_versions(id) ON DELETE CASCADE,latitude REAL NOT NULL CHECK(latitude BETWEEN -90 AND 90),longitude REAL NOT NULL CHECK(longitude BETWEEN -180 AND 180),label TEXT NOT NULL CHECK(length(label)<=256));
 CREATE INDEX version_locations_coordinates ON version_locations(latitude,longitude);
 CREATE TRIGGER location_insert AFTER INSERT ON version_locations BEGIN UPDATE library_state SET updated_at=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE id=1; INSERT INTO activity(at,kind,detail,asset_id) VALUES(CAST(unixepoch('subsec')*1000 AS INTEGER),'location','补充地点',(SELECT asset_id FROM asset_versions WHERE id=new.version_id)); END;

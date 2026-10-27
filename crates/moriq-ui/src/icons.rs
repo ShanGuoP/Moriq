@@ -54,6 +54,7 @@ pub enum Icon {
     Globe,
     Play,
 }
+/// 从内置矢量资源构建指定名称与尺寸的图标。
 pub fn icon<'a>(kind: Icon, size: f32, color: Color) -> Element<'a, Message> {
     if matches!(kind, Icon::Logo) {
         return svg(svg::Handle::from_memory(

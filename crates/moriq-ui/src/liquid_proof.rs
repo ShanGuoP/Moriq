@@ -2,6 +2,7 @@
 use super::*;
 
 impl App {
+    /// 按诊断步骤触发真实选中操作，供形变验收使用。
     pub(super) fn liquid_proof_step(&mut self, step: u8) -> Task<Message> {
         if step == 0 {
             return Task::batch([
@@ -31,6 +32,7 @@ impl App {
             .map(move |screenshot| Message::LiquidFrame(frame, screenshot))
     }
 
+    /// 按采样时刻记录选中形变帧证据。
     pub(super) fn liquid_proof_frame(
         &mut self,
         step: u8,

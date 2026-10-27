@@ -1,5 +1,6 @@
 use super::*;
 
+/// 拒绝不允许的网络引用路径，避免自动访问外部网络位置。
 pub(super) fn reject_network_reference(path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
@@ -22,6 +23,7 @@ pub(super) fn reject_network_reference(path: &Path) -> Result<()> {
 }
 
 impl Library {
+    /// 清理指定导入操作的上下文与恢复登记。
     pub(super) fn forget_import(&mut self, operation: &str) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM import_context WHERE operation_id IN(SELECT id FROM operation_journal WHERE id=?1 AND phase='committed')", [operation])?;
@@ -32,6 +34,7 @@ impl Library {
         tx.commit()?;
         Ok(())
     }
+    /// 清理已完成导入留下的受管暂存内容，保留仍需恢复的操作。
     pub(super) fn clean_import_staging(&mut self) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM import_context WHERE operation_id IN(SELECT id FROM operation_journal WHERE phase='committed')", [])?;
@@ -67,6 +70,7 @@ impl Library {
         }
         Ok(())
     }
+    /// 为项目汇总有效素材封面，避免空项目使用其他项目的图片。
     pub fn project_covers(&self) -> Result<Vec<(ProjectId, Option<AssetVersionId>)>> {
         let mut statement = self.db.prepare_cached(
             "SELECT p.id,(
@@ -90,6 +94,7 @@ impl Library {
         })
         .collect()
     }
+    /// 依据操作日志恢复中断导入，仅使用已登记的受管暂存文件。
     pub fn recover_imports(&mut self) -> Result<ImportReport> {
         let records=self.db.prepare("SELECT j.id,j.path,c.platform,c.source,c.project_id,c.referenced,c.relative_path FROM \
                 operation_journal j JOIN import_context c ON c.operation_id=j.id WHERE j.phase='interrupted' LIMIT \
@@ -182,6 +187,7 @@ _>>()?;
         self.snapshot = None;
         Ok(report)
     }
+    /// 校验说明文本长度并保存到资源库偏好。
     pub fn description(&mut self, value: &str) -> Result<()> {
         if value.len() > 8192 {
             return Err(Error::Invalid("资源库描述不能超过 8 KiB".into()));
@@ -189,6 +195,7 @@ _>>()?;
         self.db.execute("INSERT INTO library_preferences VALUES('description',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[value])?;
         Ok(())
     }
+    /// 有界解码资源库自定义封面，缺少图片时返回空值。
     pub fn cover(&self) -> Result<Option<Pixels>> {
         let path = safe_path(&self.root, "metadata/cover.png")?;
         if !path.exists() {
@@ -202,6 +209,7 @@ _>>()?;
         reader.limits(limits);
         Ok(Some(pixels(reader.decode()?)))
     }
+    /// 校验并解码指定封面图片，生成资源库持有的独立封面文件。
     pub fn set_cover(&self, path: &Path) -> Result<()> {
         if fs::metadata(path)?.len() > MAX_BYTES {
             return Err(Error::Invalid("封面图片超过 256 MiB".into()));
@@ -221,10 +229,12 @@ _>>()?;
         self.touch_metadata()?;
         Ok(())
     }
+    /// 登记外部原片引用；保留外部文件位置而不把它视为受管副本。
     pub fn import_referenced(&mut self, source: &Path, project: Option<ProjectId>) -> Result<bool> {
         self.snapshot = None;
         self.import_inner(source, project, false, true, None)
     }
+    /// 汇总项目、标签、分类、任务等管理视图，并复用适用的读取缓存。
     pub fn organizer(&self) -> Result<Organizer> {
         let scope = self.workspace_key();
         let changes = self.db.total_changes();
@@ -242,6 +252,7 @@ _>>()?;
         // Each projection owns its error. A broken panel must not suppress the
         // remaining projections or become a prerequisite for background execution.
         let mut errors = Vec::new();
+        /// 隔离管理视图某一部分的读取错误，记录诊断后返回该部分缺省值。
         fn section<T: Default>(
             errors: &mut Vec<(OrganizerSection, String)>,
             section: OrganizerSection,
@@ -390,6 +401,7 @@ native::raw_sql()),
         }
         Ok(result)
     }
+    /// 读取当前项目可见的智能集合及其筛选条件。
     pub fn smart_collections(&self) -> Result<Vec<Collection>> {
         let mut collections = Vec::new();
         let sql = if self.workspace.is_some() {
@@ -415,9 +427,11 @@ native::raw_sql()),
         }
         Ok(collections)
     }
+    /// 组合数据库字段和媒体读取结果，返回素材详情。
     pub fn details(&self, id: AssetId) -> Result<AssetDetails> {
         Ok(self.details_plan(id)?.read())
     }
+    /// 只读取素材详情中的数据库字段，避免重复进行媒体解码。
     pub(super) fn details_metadata(&self, id: AssetId) -> Result<AssetDetails> {
         let notes = self.db.query_row(
             "SELECT notes FROM assets WHERE id=?1",
@@ -446,6 +460,7 @@ native::raw_sql()),
             ..Default::default()
         })
     }
+    /// 保存素材说明等编辑字段并刷新相关元数据状态。
     pub fn edit(&mut self, ids: &[AssetId], edit: &Edit) -> Result<()> {
         if ids.is_empty() || ids.len() > 10000 {
             return Err(Error::Invalid("请选择 1～10000 张素材分批操作".into()));
@@ -570,6 +585,7 @@ native::raw_sql()),
         self.snapshot = None;
         Ok(())
     }
+    /// 校验项目名称后修改显示名称，保留其身份及成员关联。
     pub fn rename_project(&mut self, id: ProjectId, name: &str) -> Result<()> {
         import::validate_component(name.trim())?;
         if name.trim().is_empty() || name.len() > 120 {
@@ -584,6 +600,7 @@ native::raw_sql()),
         }
         Ok(())
     }
+    /// 删除项目结构及相应关联，按既有规则处理子项目和素材归属。
     pub fn delete_project(&mut self, id: ProjectId) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute(
@@ -595,6 +612,7 @@ native::raw_sql()),
         self.snapshot = None;
         Ok(())
     }
+    /// 校验并保存智能集合名称和查询条件。
     pub fn save_collection(&mut self, name: &str, query: &Query) -> Result<()> {
         if let Some(rule) = &query.rule {
             rule.validate().map_err(|e| Error::Invalid(e.into()))?;
@@ -612,6 +630,7 @@ native::raw_sql()),
         }
         Ok(())
     }
+    /// 删除指定智能集合，保留实际素材及其其他关联。
     pub fn delete_collection(&mut self, id: &str) -> Result<()> {
         if let Some(project) = self.workspace {
             self.db.execute(
@@ -624,6 +643,7 @@ native::raw_sql()),
         }
         Ok(())
     }
+    /// 解析素材当前展示版本的可用文件路径。
     pub fn asset_path(&self, id: AssetId) -> Result<PathBuf> {
         let version: String = self.db.query_row(
             "SELECT display_version_id FROM assets WHERE id=?1",
@@ -632,6 +652,7 @@ native::raw_sql()),
         )?;
         self.version_path(&version, true)
     }
+    /// 解析指定版本的受管或外部路径，并按参数控制外部访问。
     pub(super) fn version_path(&self, version: &str, verify_reference: bool) -> Result<PathBuf> {
         let reference: Option<(String, Vec<u8>)> = self
             .db
@@ -669,15 +690,20 @@ native::raw_sql()),
         safe_path(&self.root, &relative)
     }
     /// Publish a whole new directory only after every selected original was copied and synced.
+    ///
+    /// 为所选素材准备导出项目，再按给定选项写出结果。
     pub fn export(&self, ids: &[AssetId], parent: &Path) -> Result<PathBuf> {
         export::run(self.export_plan(ids)?, parent, ExportOptions::default())
     }
     /// Synchronous tools share the same frozen snapshot protocol as the app.
+    ///
+    /// 生成资源库备份，沿用独立快照与发布校验流程。
     pub fn backup(&self, parent: &Path) -> Result<PathBuf> {
         self.backup_plan(parent, false)?
             .copy(&backup::Control::default())?
             .publish()
     }
+    /// 复制资源库并分配新的库身份，使副本可独立打开和管理。
     pub fn clone_library(&self, parent: &Path) -> Result<PathBuf> {
         self.backup_plan(parent, true)?
             .copy(&backup::Control::default())?
@@ -685,6 +711,8 @@ native::raw_sql()),
     }
     /// Synchronous adapter for tools and library tests. All checking and cache
     /// repair uses the same engine as the application's cancellable worker.
+    ///
+    /// 同步执行检查或修复，复用维护计划及版本校验逻辑。
     pub fn maintenance(&mut self, repair: bool) -> Result<MaintenanceReport> {
         let plan = self.maintenance_plan();
         let mut report = MaintenanceReport::default();
@@ -707,6 +735,7 @@ native::raw_sql()),
         Ok(report)
     }
 }
+/// 从缩略图像素估算主色，并映射为固定的颜色筛选值。
 pub(super) fn dominant_color(image: &image::DynamicImage) -> &'static str {
     let mut counts = [0u32; 11];
     for pixel in image.thumbnail(32, 32).to_rgb8().pixels() {
@@ -760,6 +789,7 @@ pub(super) fn dominant_color(image: &image::DynamicImage) -> &'static str {
         "黑", "白", "灰", "红", "橙", "黄", "绿", "青", "蓝", "紫", "粉",
     ][index]
 }
+/// 按当前平台编码本机路径，保留不能用普通 UTF-8 表示的路径数据。
 pub(super) fn encode_path(path: &Path) -> Result<(&'static str, Vec<u8>)> {
     #[cfg(windows)]
     {
@@ -778,6 +808,7 @@ pub(super) fn encode_path(path: &Path) -> Result<(&'static str, Vec<u8>)> {
         Ok(("unix", path.as_os_str().as_bytes().to_vec()))
     }
 }
+/// 按登记的平台标识还原本机路径，拒绝不兼容的编码。
 pub(super) fn decode_path(platform: &str, bytes: &[u8]) -> Result<PathBuf> {
     #[cfg(windows)]
     {
@@ -806,6 +837,7 @@ pub(super) fn decode_path(platform: &str, bytes: &[u8]) -> Result<PathBuf> {
         Ok(std::ffi::OsString::from_vec(bytes.to_vec()).into())
     }
 }
+/// 分块计算文件 SHA-256 校验和，并在读取期间响应取消。
 pub(super) fn hash_file(path: &Path) -> Result<String> {
     let mut input = File::open(path)?;
     if input.metadata()?.len() > 64 * 1024 * 1024 * 1024 {
@@ -823,6 +855,7 @@ pub(super) fn hash_file(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
+/// 以新建方式复制受管文件并同步写入，拒绝覆盖已存在的目标。
 pub(super) fn copy_owned(source: &Path, destination: &Path) -> Result<()> {
     let mut input = File::open(source)?;
     let mut output = OpenOptions::new()
@@ -838,6 +871,7 @@ pub(super) fn copy_owned(source: &Path, destination: &Path) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    /// 验证分类卡片查询真实分类及未分类素材。
     fn ai_category_cards_filter_real_classification_and_unclassified_assets() {
         let (_dir, mut lib, assets) = fixture();
         lib.set_category(&[assets[0].id], "风景").unwrap();
@@ -873,6 +907,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证中断导入使用受管副本恢复，并保留项目和名称。
     fn interrupted_import_recovers_from_owned_copy_with_project_and_name() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("需要恢复.png");
@@ -912,6 +947,7 @@ mod tests {
         );
         assert_eq!(library.recover_imports().unwrap().imported, 0);
     }
+    /// 准备当前用例的独立素材和测试资源，由临时目录句柄负责清理。
     fn fixture() -> (tempfile::TempDir, Library, Vec<Asset>) {
         let dir = tempfile::tempdir().unwrap();
         let mut library = Library::create(dir.path(), "日常库").unwrap();
@@ -926,6 +962,7 @@ mod tests {
         (dir, library, assets)
     }
     #[test]
+    /// 验证回收站恢复后分页、标签、项目和原片内容保持一致。
     fn trash_restoration_keeps_dense_pages_tags_projects_and_original_bytes() {
         let (dir, mut lib, assets) = fixture();
         let first = assets[1].id;
@@ -976,6 +1013,7 @@ mod tests {
         assert!(dir.path().join("测试-0.png").exists());
     }
     #[test]
+    /// 验证筛选、集合说明及失败批量编辑遵守事务边界。
     fn filters_collection_notes_and_failed_batch_are_transactional() {
         let (_dir, mut lib, assets) = fixture();
         let id = assets[2].id;
@@ -1044,6 +1082,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证嵌套规则参数化、持久化，并受深度与数量预算限制。
     fn nested_rules_are_parameterized_persisted_and_bounded() {
         let (_dir, mut lib, assets) = fixture();
         let first = assets[0].id;
@@ -1100,6 +1139,7 @@ mod tests {
         assert!(deep.validate().is_err());
     }
     #[test]
+    /// 验证快照备份、导出和缓存修复保留持久化数据。
     fn snapshot_backup_export_and_cache_repair_keep_durable_data() {
         let (dir, mut lib, assets) = fixture();
         let id = assets[0].id;
@@ -1147,6 +1187,7 @@ mod tests {
         );
     }
     #[test]
+    /// 验证外部引用文件被修改后不会冒充已登记版本。
     fn reference_file_changes_never_replace_registered_version() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("外部.png");
@@ -1173,6 +1214,7 @@ mod tests {
         assert_eq!(lib.info().unwrap().count, 1);
     }
     #[test]
+    /// 验证版本 1 资源库升级保留身份并生成迁移前备份。
     fn version_one_migration_preserves_identity_and_keeps_backup() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("旧库.moriq");
@@ -1207,6 +1249,7 @@ mod tests {
         assert_eq!(Library::open(&root).unwrap().id(), id);
     }
     #[test]
+    /// 验证 EXIF 从真实 JPEG 读取且不改动来源。
     fn exif_is_read_from_actual_jpeg_without_changing_source() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("相机.jpg");

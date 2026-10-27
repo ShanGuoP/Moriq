@@ -3,6 +3,7 @@ use super::*;
 #[cfg(test)]
 #[test]
 #[allow(clippy::unwrap_used)]
+/// 验证适应窗口不启动原图解码，重复缩放不重启同一会话。
 fn fit_view_does_not_decode_original_and_repeated_zoom_does_not_restart_it() {
     let mut app = crate::tests::app();
     let mut asset = crate::tests::selected_asset();
@@ -95,9 +96,11 @@ pub(super) struct Regions {
     tile_tasks: HashMap<ImageRegion, iced::task::Handle>,
 }
 impl Regions {
+    /// 判断原图会话或图块请求是否仍在进行。
     pub fn is_loading(&self) -> bool {
         self.loading || !self.pending.is_empty()
     }
+    /// 取消原图读取、释放图块和会话，并推进请求世代。
     pub fn reset(&mut self) {
         self.cancelled.store(true, Ordering::Release);
         if let Some(handle) = self.session_task.take() {
@@ -111,6 +114,7 @@ impl Regions {
             ..Default::default()
         };
     }
+    /// 返回当前可供查看器绘制的图块句柄。
     pub fn images(&self) -> Vec<(ImageRegion, image::Handle)> {
         self.visible
             .iter()
@@ -139,6 +143,7 @@ pub enum RegionMessage {
     ),
 }
 impl App {
+    /// 为当前素材版本启动原图会话读取。
     pub(super) fn begin_regions(&mut self) -> Task<Message> {
         let (Some(library), Some(asset)) = (&self.library, &self.viewer.selected) else {
             return Task::none();
@@ -178,6 +183,7 @@ impl App {
         self.viewer.regions.session_task = Some(handle);
         task
     }
+    /// 处理会话与图块回执，拒绝旧素材、旧版本和旧请求结果。
     pub(super) fn region_message(&mut self, event: RegionMessage) -> Task<Message> {
         match event {
             RegionMessage::Actual => {
@@ -280,6 +286,7 @@ impl App {
         }
         self.schedule_regions()
     }
+    /// 根据目标视口安排有界图块读取，复用已有块并取消过期请求。
     fn schedule_regions(&mut self) -> Task<Message> {
         let (Some(session), Some(viewport), Some(owner), Some(version)) = (
             self.viewer.regions.session.clone(),

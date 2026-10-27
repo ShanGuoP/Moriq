@@ -2,6 +2,7 @@
 use super::*;
 
 impl Service {
+    /// 为失败的 Synco 任务创建重试并协调重新发送。
     pub async fn retry_synco(&self, id: LibraryId, task: String) -> Result<()> {
         self.call(move |active| {
             check(active, id)?
@@ -11,6 +12,7 @@ impl Service {
         })
         .await
     }
+    /// 冻结素材任务后连接 Synco 发送请求，保存发送失败供后续重试。
     pub async fn prepare_synco(
         &self,
         id: LibraryId,
@@ -24,6 +26,7 @@ impl Service {
         })
         .await
     }
+    /// 轮询待处理任务，校验并登记返回版本，再发送幂等确认。
     pub async fn synco_poll(&self, id: LibraryId) -> Result<usize> {
         self.call(move |active| {
             check(active, id)?
