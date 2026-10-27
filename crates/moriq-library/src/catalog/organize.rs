@@ -1193,7 +1193,8 @@ mod tests {
         .unwrap();
         {
             let db = Connection::open(root.join("catalog.db")).unwrap();
-            db.execute_batch(include_str!("schema.sql")).unwrap();
+            db.execute_batch(include_str!("../database/schema.sql"))
+                .unwrap();
             db.execute("INSERT INTO library_identity VALUES(?1)", [id.to_string()])
                 .unwrap();
         }

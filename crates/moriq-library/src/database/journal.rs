@@ -147,14 +147,14 @@ mod tests {
         )
         .unwrap();
         for sql in [
-            include_str!("migration_2.sql"),
-            include_str!("migration_3.sql"),
-            include_str!("migration_4.sql"),
-            include_str!("migration_5.sql"),
-            include_str!("migration_6.sql"),
-            include_str!("migration_7.sql"),
-            include_str!("migration_8.sql"),
-            include_str!("migration_9.sql"),
+            include_str!("migrations/migration_2.sql"),
+            include_str!("migrations/migration_3.sql"),
+            include_str!("migrations/migration_4.sql"),
+            include_str!("migrations/migration_5.sql"),
+            include_str!("migrations/migration_6.sql"),
+            include_str!("migrations/migration_7.sql"),
+            include_str!("migrations/migration_8.sql"),
+            include_str!("migrations/migration_9.sql"),
         ] {
             db.execute_batch(sql).unwrap();
         }

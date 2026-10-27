@@ -26,7 +26,7 @@ fn real_schema_24_shared_assets_upgrade_before_workspace_tables_exist() {
     let root = lib.root.clone();
     drop(lib);
     let db = Connection::open(root.join("catalog.db")).unwrap();
-    let sql = include_str!("migration_24.sql");
+    let sql = include_str!("../database/migrations/migration_24.sql");
     db.execute_batch(&sql[sql.find("DROP VIEW").unwrap()..])
         .unwrap();
     db.execute_batch("DROP VIEW workspace_vocabulary; DROP TABLE project_ai_profiles; DROP TABLE workspace_people; DROP TABLE workspace_folders; DROP TABLE workspace_jobs; DROP TABLE workspace_collections; DROP TABLE project_copies; PRAGMA user_version=24;").unwrap();
@@ -405,7 +405,7 @@ fn schema_25_upgrade_splits_shared_people_folders_and_collections_with_atomic_ro
     let root = lib.root.clone();
     drop(lib);
     let db = Connection::open(root.join("catalog.db")).unwrap();
-    let sql = include_str!("migration_24.sql");
+    let sql = include_str!("../database/migrations/migration_24.sql");
     db.execute_batch(&sql[sql.find("DROP VIEW").unwrap()..])
         .unwrap();
     db.execute_batch("DROP VIEW workspace_vocabulary; DROP TABLE project_ai_profiles; DROP TABLE workspace_people; DROP TABLE workspace_folders; DROP TABLE workspace_jobs; DROP TABLE workspace_collections; PRAGMA user_version=25; CREATE TRIGGER fail_people BEFORE INSERT ON people BEGIN SELECT RAISE(ABORT,'injected workspace migration failure'); END;").unwrap();

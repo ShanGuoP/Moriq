@@ -14,67 +14,148 @@ use std::{
 use uuid::Uuid;
 
 const SCHEMA: u32 = 26;
-mod ai_content;
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod ai_content_tests;
-pub mod ai_profile;
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod ai_profile_tests;
-pub mod analysis;
-pub mod backup;
-mod batch;
-pub mod cache;
-mod cancel;
-mod catalog;
-mod color;
-pub mod export;
-mod export_metadata;
-mod folders;
-pub mod import;
-pub mod ingest;
-pub mod jobs;
-mod journal;
+// Library
+#[path = "library/core.rs"]
+mod library_core;
+#[path = "library/library_cover.rs"]
 pub mod library_cover;
+#[path = "library/library_removal.rs"]
 pub mod library_removal;
+#[path = "library/lifecycle.rs"]
 pub mod lifecycle;
-mod location;
-pub mod maintenance;
-pub mod media;
-pub mod metadata;
-pub mod native;
-pub mod orphans;
-pub mod portraits;
-#[cfg(target_os = "macos")]
-mod raw_portable;
-mod read_pool;
-pub mod region;
-pub mod similarity;
-pub mod storage;
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod storage_regression_tests;
-mod vector;
-pub mod video;
-mod workspace;
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod workspace_tests;
-pub use catalog::validate_reference;
-mod organize;
-pub mod overview;
-mod project_deletion;
-mod project_isolation;
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod project_isolation_tests;
-mod purge;
-pub mod qwen_faces;
-mod resize;
-mod rules;
+#[path = "library/settings.rs"]
 pub mod settings;
+
+// Catalog
+#[path = "catalog/batch.rs"]
+mod batch;
+#[path = "catalog/catalog.rs"]
+mod catalog;
+#[path = "catalog/edits.rs"]
+mod catalog_edits;
+#[path = "catalog/query.rs"]
+mod catalog_query;
+#[path = "catalog/folders.rs"]
+mod folders;
+#[path = "catalog/location.rs"]
+mod location;
+#[path = "catalog/organize.rs"]
+mod organize;
+#[path = "catalog/overview.rs"]
+pub mod overview;
+#[path = "catalog/project_deletion.rs"]
+mod project_deletion;
+#[path = "catalog/project_isolation.rs"]
+mod project_isolation;
+#[path = "catalog/rules.rs"]
+mod rules;
+#[path = "catalog/workspace.rs"]
+mod workspace;
+
+// Media
+#[path = "media/cache.rs"]
+pub mod cache;
+#[path = "media/color.rs"]
+mod color;
+#[path = "media/media.rs"]
+pub mod media;
+#[path = "media/access.rs"]
+mod media_access;
+#[path = "media/metadata.rs"]
+pub mod metadata;
+#[path = "media/native.rs"]
+pub mod native;
+#[cfg(target_os = "macos")]
+#[path = "media/raw_portable.rs"]
+mod raw_portable;
+#[path = "media/region.rs"]
+pub mod region;
+#[path = "media/resize.rs"]
+mod resize;
+#[path = "media/vector.rs"]
+mod vector;
+#[path = "media/video.rs"]
+pub mod video;
+
+// AI
+#[path = "ai/ai_content.rs"]
+mod ai_content;
+#[path = "ai/ai_profile.rs"]
+pub mod ai_profile;
+#[path = "ai/analysis.rs"]
+pub mod analysis;
+#[path = "ai/portraits.rs"]
+pub mod portraits;
+#[path = "ai/qwen_faces.rs"]
+pub mod qwen_faces;
+#[path = "ai/similarity.rs"]
+pub mod similarity;
+
+// Transfer
+#[path = "transfer/export.rs"]
+pub mod export;
+#[path = "transfer/export_metadata.rs"]
+mod export_metadata;
+#[path = "transfer/import.rs"]
+pub mod import;
+#[path = "transfer/commit.rs"]
+mod import_commit;
+#[path = "transfer/ingest.rs"]
+pub mod ingest;
+#[path = "transfer/synco.rs"]
 mod synco;
+
+// Tasks
+#[path = "tasks/cancel.rs"]
+mod cancel;
+#[path = "tasks/jobs.rs"]
+pub mod jobs;
+
+// Maintenance
+#[path = "maintenance/backup.rs"]
+pub mod backup;
+#[path = "maintenance/maintenance.rs"]
+pub mod maintenance;
+#[path = "maintenance/orphans.rs"]
+pub mod orphans;
+#[path = "maintenance/purge.rs"]
+mod purge;
+#[path = "maintenance/storage.rs"]
+pub mod storage;
+
+// Database
+#[path = "database/journal.rs"]
+mod journal;
+#[path = "database/read_pool.rs"]
+mod read_pool;
+
+// Tests
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tests/ai_content_tests.rs"]
+mod ai_content_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tests/ai_profile_tests.rs"]
+mod ai_profile_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tests/project_isolation_tests.rs"]
+mod project_isolation_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tests/storage_regression_tests.rs"]
+mod storage_regression_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tests/library.rs"]
+mod tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tests/workspace_tests.rs"]
+mod workspace_tests;
+
+pub use catalog::validate_reference;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const DIRECTORIES: &[&str] = &[
     "assets",
@@ -181,1047 +262,6 @@ pub fn safe_path(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(current)
 }
 
-impl Library {
-    pub fn rename(&mut self, name: &str) -> Result<()> {
-        let name = name.trim().trim_end_matches(".moriq").trim();
-        import::validate_component(name)?;
-        if name.is_empty()
-            || name.len() > 120
-            || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
-        {
-            return Err(Error::Invalid("请输入有效的资源库名称".into()));
-        }
-        self.db.execute("INSERT INTO library_preferences(key,value) VALUES('display_name',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [name])?;
-        Ok(())
-    }
-
-    pub fn rename_asset(&mut self, id: AssetId, name: &str) -> Result<()> {
-        if name.trim().is_empty() || name.len() > 512 {
-            return Err(Error::Invalid("素材名称不能为空且最多 512 字节".into()));
-        }
-        self.snapshot = None;
-        if self.db.execute(
-            "UPDATE assets SET name=?1,edited_at=?3 WHERE id=?2",
-            params![name.trim(), id.to_string(), now_ms()?],
-        )? != 1
-        {
-            return Err(Error::Invalid("找不到需要重命名的素材".into()));
-        }
-        Ok(())
-    }
-    pub fn create(parent: &Path, name: &str) -> Result<Self> {
-        let name = name.trim().trim_end_matches(".moriq").trim();
-        import::validate_component(name)?;
-        if name.len() > 120 {
-            return Err(Error::Invalid(
-                "请输入有效库名，避免斜线和系统保留字符".into(),
-            ));
-        }
-        let destination = parent.join(format!("{name}.moriq"));
-        if destination.exists() {
-            return Err(Error::Invalid(
-                "同名资源库已存在，请改名或打开现有库".into(),
-            ));
-        }
-        let staging = tempfile::Builder::new()
-            .prefix(".moriq-create-")
-            .tempdir_in(parent)?;
-        require_hardlinks(staging.path())?;
-        for dir in DIRECTORIES {
-            fs::create_dir_all(staging.path().join(dir))?;
-        }
-        let manifest = Manifest {
-            format: "moriq".into(),
-            library_id: LibraryId::default(),
-            name: name.into(),
-            schema_version: SCHEMA,
-            min_reader_version: SCHEMA,
-            created_at_utc: now_ms()?,
-        };
-        let serialized =
-            toml::to_string_pretty(&manifest).map_err(|e| Error::Invalid(e.to_string()))?;
-        let mut file = File::create(staging.path().join("library.toml"))?;
-        file.write_all(serialized.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        {
-            let db = Connection::open(staging.path().join("catalog.db"))?;
-            db.execute_batch(include_str!("schema.sql"))?;
-            db.execute(
-                "INSERT INTO library_identity(id) VALUES(?1)",
-                [manifest.library_id.to_string()],
-            )?;
-        }
-        fs::rename(staging.path(), &destination)?;
-        Self::open_inner(&destination, true)
-    }
-
-    pub fn open(root: &Path) -> Result<Self> {
-        Self::open_inner(root, false)
-    }
-    fn open_inner(root: &Path, fresh: bool) -> Result<Self> {
-        let root = root.canonicalize()?;
-        let manifest_file = safe_path(&root, "library.toml")?;
-        if fs::metadata(&manifest_file)?.len() > 64 * 1024 {
-            return Err(Error::Invalid("资源库清单过大，无法安全读取".into()));
-        }
-        let mut manifest: Manifest = toml::from_str(&fs::read_to_string(manifest_file)?)
-            .map_err(|_| Error::Invalid("资源库清单损坏，请从备份恢复".into()))?;
-        import::validate_component(&manifest.name)?;
-        if manifest.format != "moriq"
-            || !(1..=SCHEMA).contains(&manifest.schema_version)
-            || manifest.min_reader_version > SCHEMA
-        {
-            return Err(Error::Invalid(
-                "资源库格式不兼容，请使用对应版本的 Moriq Space".into(),
-            ));
-        }
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(safe_path(&root, "library.lock")?)?;
-        lock.try_lock_exclusive().map_err(|_| Error::Locked)?;
-        if safe_path(&root, "metadata/library-deletion.pending")?.exists() {
-            return Err(Error::Invalid(
-                "此资源库正在删除或删除曾中断，请从资源库管理中检查并重试删除".into(),
-            ));
-        }
-        require_hardlinks(&root)?;
-        let db_path = safe_path(&root, "catalog.db")?;
-        safe_path(&root, "catalog.db-wal")?;
-        safe_path(&root, "catalog.db-shm")?;
-        let mut db =
-            Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        db.busy_timeout(std::time::Duration::from_millis(500))?;
-        db.execute_batch("PRAGMA foreign_keys=ON;")?;
-        let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        let identity: String = db.query_row("SELECT id FROM library_identity", [], |r| r.get(0))?;
-        if !(1..=SCHEMA).contains(&version) || identity != manifest.library_id.to_string() {
-            return Err(Error::Invalid(
-                "资源库清单与数据库身份不一致，已停止打开".into(),
-            ));
-        }
-        let migration_backup = if version < SCHEMA && !fresh {
-            // Retain a consistent pre-migration database before changing the schema.
-            let backup = safe_path(&root, "backups")?;
-            fs::create_dir_all(&backup)?;
-            let backup = backup.join(format!("schema-{version}-{}.db", Uuid::new_v4()));
-            db.backup(rusqlite::MAIN_DB, &backup, None)?;
-            tracing::info!(path = %backup.display(), "pre-migration database snapshot saved");
-            Some(backup)
-        } else {
-            None
-        };
-        let migrations = (|| -> Result<()> {
-            if version == 1 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_2.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 2 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_3.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 3 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_4.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 4 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_5.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 5 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_6.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 6 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_7.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 7 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_8.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 8 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_9.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 9 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_10.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 10 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_11.sql"))?;
-                tx.commit()?;
-            }
-            // Older readers ignore unknown Query fields and would broaden saved rules.
-            if version <= 11 {
-                db.execute_batch("PRAGMA user_version=12;")?;
-            }
-            if version <= 12 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_13.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 13 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_14.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 14 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_15.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 15 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_16.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 16 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_17.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 17 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_18.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 18 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_19.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 19 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_20.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 20 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_21.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 21 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_22.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 22 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_23.sql"))?;
-                tx.commit()?;
-            }
-            if version <= 23 {
-                let tx = db.transaction()?;
-                tx.execute_batch(include_str!("migration_24.sql"))?;
-                for category in AiProfile::default().categories {
-                    tx.execute(
-                        "UPDATE ai_vocabulary SET definition=?2 WHERE id=?1",
-                        params![category.id, category.definition],
-                    )?;
-                }
-                tx.commit()?;
-            }
-            if version <= 24 {
-                project_isolation::migrate(&mut db, &root)?;
-            }
-            if version <= 25 {
-                workspace::migrate(&mut db)?;
-            }
-            Ok(())
-        })();
-        migrations.map_err(|error| {
-            Error::Invalid(match &migration_backup {
-                Some(path) => format!(
-                    "数据库升级未完成：{error}。升级前备份保留在 {}",
-                    path.display()
-                ),
-                None => error.to_string(),
-            })
-        })?;
-        db.execute("UPDATE background_jobs SET inflight=0,state=CASE WHEN state='running' THEN 'queued' ELSE state END WHERE inflight=1 OR state='running'",[])?;
-        db.execute("UPDATE background_jobs SET state='paused',error='库中含外部引用，后台读取已暂停；请核对来源后在任务中继续' WHERE state='queued' \
-                AND kind<>'batch' AND EXISTS(SELECT 1 FROM file_locations)",
-[])?;
-
-        if manifest.schema_version < SCHEMA {
-            manifest.schema_version = SCHEMA;
-            manifest.min_reader_version = SCHEMA;
-            let bytes =
-                toml::to_string_pretty(&manifest).map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut temporary = tempfile::NamedTempFile::new_in(&root)?;
-            temporary.write_all(bytes.as_bytes())?;
-            temporary.as_file().sync_all()?;
-            temporary
-                .persist(safe_path(&root, "library.toml")?)
-                .map_err(|e| Error::Io(e.error))?;
-        }
-        db.pragma_update(None, "journal_mode", "WAL")?;
-        db.pragma_update(None, "synchronous", "FULL")?;
-        // Interrupted operations are retained for diagnosis. Never infer success or delete originals.
-        let interrupted = db.execute(
-            "UPDATE operation_journal SET phase='interrupted' WHERE phase='prepared'",
-            [],
-        )?;
-        if interrupted > 0 {
-            tracing::warn!(interrupted, "import recovery records retained");
-        }
-        let lock = std::sync::Arc::new(lock);
-        let readers = read_pool::ReadPool::new(root.clone(), lock.clone());
-        let mut library = Self {
-            workspace: None,
-            organizer_cache: Default::default(),
-            root,
-            manifest,
-            db,
-            _lock: lock,
-            readers,
-            snapshot: None,
-            last_import: Default::default(),
-        };
-        if let Some(path) = migration_backup {
-            library.notice(&Notice {
-                title: "升级前数据库已备份".into(),
-                detail: format!("数据库升级前的完整快照：{}", path.display()),
-                level: 0,
-                asset: None,
-                retry: String::new(),
-            })?;
-        }
-        if let Err(error) = library.recover_purges() {
-            library.notice(&Notice {
-                title: "删除恢复需要检查".into(),
-                detail: format!(
-                    "{error}。恢复记录及现存文件均保留；请检查空间维护或从备份恢复后再永久删除。"
-                ),
-                level: 2,
-                asset: None,
-                retry: "maintenance".into(),
-            })?;
-        }
-        library.recover_orphans()?;
-        library.clean_import_staging()?;
-        Ok(library)
-    }
-
-    pub fn import_metrics(&self) -> &ImportMetrics {
-        &self.last_import
-    }
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-    pub fn id(&self) -> LibraryId {
-        self.manifest.library_id
-    }
-
-    pub fn info(&self) -> Result<LibraryInfo> {
-        let (count, favorites): (u64, u64) = self.db.query_row(
-            "SELECT count(*),COALESCE(sum(favorite),0) FROM assets WHERE deleted_at IS NULL",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let bytes = self.db.query_row(
-            "SELECT COALESCE(sum(bytes),0) FROM asset_versions",
-            [],
-            |r| r.get(0),
-        )?;
-        let mut stmt = self.db.prepare("WITH RECURSIVE tree(root,id) AS(SELECT id,id FROM projects UNION ALL SELECT tree.root,p.id FROM \
-                projects p JOIN tree ON p.parent_id=tree.id) SELECT p.id,p.name,count(DISTINCT \
-                pa.asset_id),p.parent_id,p.visited_at FROM projects p LEFT JOIN tree ON tree.root=p.id LEFT JOIN \
-                project_assets pa ON pa.project_id=tree.id AND EXISTS(SELECT 1 FROM assets a WHERE a.id=pa.asset_id \
-                AND a.deleted_at IS NULL) GROUP BY p.id ORDER BY p.name")?;
-
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, u64>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, u64>(4)?,
-            ))
-        })?;
-        let mut projects = Vec::new();
-        for row in rows {
-            let (id, name, count, parent, visited_at) = row?;
-            projects.push(Project {
-                id: ProjectId(parse_id(&id)?),
-                parent: parent.map(|v| parse_id(&v).map(ProjectId)).transpose()?,
-                name,
-                count,
-                visited_at,
-            });
-        }
-        Ok(LibraryInfo {
-            id: self.id(),
-            name: self
-                .db
-                .query_row(
-                    "SELECT value FROM library_preferences WHERE key='display_name'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or_else(|| self.manifest.name.clone()),
-            count,
-            favorites,
-            bytes,
-            created_at: self.manifest.created_at_utc,
-            updated_at: self
-                .db
-                .query_row("SELECT updated_at FROM library_state WHERE id=1", [], |r| {
-                    r.get::<_, u64>(0)
-                })?
-                .max(self.manifest.created_at_utc),
-            projects,
-        })
-    }
-
-    pub fn page(&mut self, query: &Query, offset: usize, limit: usize) -> Result<Page> {
-        let scoped = self.workspace_query(query)?;
-        let query = &scoped;
-        let project = query.project.map(|id| id.to_string());
-        // instr makes %, _ and quotes literal. All user input stays parameterized.
-        const WHERE_HEAD: &str = "WHERE (?1='' OR instr(lower(a.name),lower(?1))>0 OR instr(lower(a.notes),lower(?1))>0 OR \
-                EXISTS(SELECT 1 FROM ai_search_source ar WHERE ar.version_id=v.id AND instr(lower(ar.body),lower(?1))>0) OR \
-                EXISTS(SELECT 1 FROM effective_asset_tags t WHERE t.asset_id=a.id AND instr(lower(t.name),lower(?1))>0))";
-
-        const WHERE_TAIL: &str = "
-          AND (?2=0 OR a.favorite=1) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM project_assets pa WHERE pa.asset_id=a.id AND pa.project_id IN(WITH RECURSIVE descendants(id) AS(SELECT ?3 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT id FROM descendants)))
-          AND (a.deleted_at IS NOT NULL)=?4 AND (?5='' OR v.format=?5) AND a.rating>=?6
-          AND v.bytes>=?7 AND (?8=0 OR v.bytes<=?8) AND a.imported_at>=?9 AND v.width>=?10
-          AND (?18=0 OR a.imported_at<?18)
-          AND (?11=0 OR (?11=1 AND v.width>v.height) OR (?11=2 AND v.height>v.width) OR (?11=3 AND v.width=v.height))
-          AND (?12=0 OR NOT EXISTS(SELECT 1 FROM effective_asset_tags WHERE asset_id=a.id))
-          AND (?13=0 OR NOT EXISTS(SELECT 1 FROM project_assets WHERE asset_id=a.id))
-          AND (?14='' OR EXISTS(SELECT 1 FROM effective_asset_tags t WHERE t.asset_id=a.id AND t.name=?14)) AND (?15='' OR v.dominant_color=?15) AND a.edited_at>=?16 AND (?17=0 OR (?17=1 AND NOT EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)) OR (?17=2 AND EXISTS(SELECT 1 FROM file_locations f WHERE f.version_id=v.id)))";
-
-        let indexed_text = if query.text.chars().count() >= 3 {
-            Some(format!("\"{}\"", query.text.replace('"', "\"\"")))
-        } else {
-            None
-        };
-        let search_text = indexed_text.as_deref().unwrap_or(&query.text);
-        let where_head = if indexed_text.is_some() {
-            "WHERE (a.id IN(SELECT asset_id FROM search_fts WHERE search_fts MATCH ?1) OR a.display_version_id IN(SELECT version_id FROM ai_text_fts WHERE ai_text_fts MATCH ?1))"
-        } else {
-            WHERE_HEAD
-        };
-        let media_condition = format!(
-            "{where_head}{WHERE_TAIL} AND (?19=0 OR (?19=1 AND v.format IN({})) OR (?19=2 AND v.format IN({}))) \
-                AND (?20='' OR EXISTS(SELECT 1 FROM asset_ai_categories ac WHERE ac.asset_id=a.id AND \
-                ac.category=?20) OR (?20='未分类' AND NOT EXISTS(SELECT 1 FROM asset_ai_categories ac WHERE \
-                ac.asset_id=a.id))) AND (?21='' OR EXISTS(SELECT 1 FROM detected_faces df WHERE df.version_id=v.id \
-                AND df.person_id=?21)) AND (?23=0 OR a.id IN(SELECT value FROM json_each(?22))) AND (?24='' OR \
-                EXISTS(SELECT 1 FROM virtual_folder_assets fa WHERE fa.folder_id=?24 AND fa.asset_id=a.id)) AND (?25='' OR EXISTS(SELECT 1 FROM ai_effective_content e WHERE e.version_id=v.id AND e.medium=?25)) AND NOT EXISTS(SELECT 1 FROM json_each(?26) q WHERE NOT EXISTS(SELECT 1 FROM ai_effective_content e,json_each(e.themes) t WHERE e.version_id=v.id AND t.value=q.value)) AND (?27='' OR EXISTS(SELECT 1 FROM asset_classification lc WHERE lc.asset_id=a.id AND lc.category=?27 AND (lc.manual=1 OR NOT EXISTS(SELECT 1 FROM ai_effective_content e WHERE e.version_id=v.id AND e.medium<>''))))",
-            native::raw_sql(),
-            video::sql_formats()
-        );
-        let media_condition = if query.project_exact {
-            media_condition.replace("pa.project_id IN(WITH RECURSIVE descendants(id) AS(SELECT ?3 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT id FROM descendants)", "pa.project_id=?3")
-        } else {
-            media_condition
-        };
-        let mut condition = media_condition.as_str();
-        let mut values: Vec<rusqlite::types::Value> = params![
-            search_text,
-            query.favorites_only,
-            project,
-            query.trash,
-            query.format,
-            query.min_rating,
-            query.min_bytes,
-            query.max_bytes,
-            query.since,
-            query.min_width,
-            query.orientation,
-            query.untagged,
-            query.unassigned,
-            query.tag,
-            query.color,
-            query.edited_since,
-            query.storage,
-            query.before,
-            match query.media_kind {
-                MediaKind::All => 0,
-                MediaKind::Raw => 1,
-                MediaKind::Video => 2,
-            },
-            query.category,
-            query.person.as_deref().unwrap_or(""),
-            serde_json::to_string(&query.semantic_ids)
-                .map_err(|e| Error::Invalid(e.to_string()))?,
-            query.semantic_active,
-            query.folder.as_deref().unwrap_or(""),
-            query.medium,
-            serde_json::to_string(&query.themes).map_err(|e| Error::Invalid(e.to_string()))?,
-            query.legacy_category
-        ]
-        .iter()
-        .map(|p| {
-            p.to_sql().and_then(|v| match v {
-                rusqlite::types::ToSqlOutput::Borrowed(value) => value
-                    .try_into()
-                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error))),
-                rusqlite::types::ToSqlOutput::Owned(value) => Ok(value),
-                _ => Err(rusqlite::Error::InvalidParameterName(
-                    "unsupported rule parameter".into(),
-                )),
-            })
-        })
-        .collect::<std::result::Result<_, _>>()?;
-        let metadata_condition;
-        if !query.metadata.is_empty() {
-            metadata_condition = format!(
-                "{condition} AND ({})",
-                metadata::compile(&query.metadata, &mut values)?
-            );
-            condition = &metadata_condition;
-        }
-        let rule_condition;
-        if let Some(rule) = &query.rule {
-            rule_condition = format!("{condition} AND ({})", rules::compile(rule, &mut values)?);
-            condition = &rule_condition;
-        }
-        let order_by = match query.sort {
-            SortOrder::Newest => "a.imported_at DESC,a.id DESC",
-            SortOrder::Oldest => "a.imported_at,a.id",
-            SortOrder::Name => "a.name COLLATE NOCASE,a.id",
-            SortOrder::Largest => "v.bytes DESC,a.id",
-            SortOrder::Rating => "a.rating DESC,a.id",
-        };
-        let order_by = if query.semantic_active {
-            "(SELECT key FROM json_each(?22) WHERE value=a.id),a.id"
-        } else {
-            order_by
-        };
-        let unfiltered = *query == Query::default();
-        let total: u64 = if unfiltered {
-            self.db
-                .query_row("SELECT count(*) FROM asset_order", [], |r| r.get(0))?
-        } else if let Some((cached, count)) = &self.snapshot
-            && cached == query
-        {
-            *count
-        } else {
-            self.snapshot = None;
-            self.db.execute_batch("CREATE TEMP TABLE IF NOT EXISTS query_snapshot(position INTEGER PRIMARY KEY,asset_id TEXT NOT \
-                NULL); CREATE UNIQUE INDEX IF NOT EXISTS query_snapshot_asset ON query_snapshot(asset_id); DELETE \
-                FROM query_snapshot;")?;
-
-            self.db.execute(&format!("INSERT INTO query_snapshot SELECT row_number() OVER(ORDER BY {order_by})-1,a.id FROM assets a LEFT \
-                JOIN asset_order o ON o.asset_id=a.id JOIN asset_versions v ON v.id=a.display_version_id {condition}"),
-rusqlite::params_from_iter(values))?;
-
-            let count = self
-                .db
-                .query_row("SELECT count(*) FROM query_snapshot", [], |r| r.get(0))?;
-            self.snapshot = Some((query.clone(), count));
-            count
-        };
-        let end = (offset as u64)
-            .saturating_add(limit.min(128) as u64)
-            .min(total);
-        let (source, start, end, order) = if unfiltered {
-            (
-                "asset_order",
-                total.saturating_sub(end),
-                total.saturating_sub(offset as u64),
-                "DESC",
-            )
-        } else {
-            ("query_snapshot", offset as u64, end, "ASC")
-        };
-        let sql = format!(
-            "SELECT a.id,v.id,a.name,v.format,v.width,v.height,v.bytes,a.favorite,a.rating,a.imported_at FROM \
-                {source} o JOIN assets a ON a.id=o.asset_id JOIN asset_versions v ON v.id=a.display_version_id \
-                WHERE o.position>=?1 AND o.position<?2 ORDER BY o.position {order}"
-        );
-        let assets = self.read_assets(&sql, params![start, end])?;
-        Ok(Page {
-            total,
-            offset,
-            assets,
-        })
-    }
-
-    fn read_assets(&self, sql: &str, parameters: impl rusqlite::Params) -> Result<Vec<Asset>> {
-        let mut stmt = self.db.prepare_cached(sql)?;
-        let rows = stmt.query_map(parameters, |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, u32>(4)?,
-                r.get::<_, u32>(5)?,
-                r.get::<_, u64>(6)?,
-                r.get::<_, bool>(7)?,
-                r.get::<_, u8>(8)?,
-                r.get::<_, u64>(9)?,
-            ))
-        })?;
-        let mut assets = Vec::new();
-        for row in rows {
-            let (id, version, name, format, width, height, bytes, favorite, rating, imported_at) =
-                row?;
-            assets.push(Asset {
-                id: AssetId(parse_id(&id)?),
-                version_id: AssetVersionId(parse_id(&version)?),
-                name,
-                format,
-                width,
-                height,
-                bytes,
-                favorite,
-                rating,
-                tags: Vec::new(),
-                imported_at,
-            });
-        }
-        if !assets.is_empty() {
-            self.load_page_tags(&mut assets)?;
-        }
-        Ok(assets)
-    }
-
-    /// Read tags for the bounded page together, rather than expanding AI views per tile.
-    fn load_page_tags(&self, assets: &mut [Asset]) -> Result<()> {
-        let ids: Vec<_> = assets.iter().map(|asset| asset.id.to_string()).collect();
-        let ids = serde_json::to_string(&ids).map_err(|e| Error::Invalid(e.to_string()))?;
-        let mut statement = self.db.prepare_cached(
-            "WITH selected AS MATERIALIZED (
-                SELECT id,display_version_id FROM assets WHERE id IN (SELECT value FROM json_each(?1))
-             )
-             SELECT s.id,t.name FROM selected s JOIN asset_tags a ON a.asset_id=s.id
-                JOIN tags t ON t.id=a.tag_id
-             UNION SELECT s.id,t.name FROM selected s JOIN ai_visible_tags t
-                ON t.version_id=s.display_version_id
-             ORDER BY 1,2",
-        )?;
-        let rows = statement.query_map([ids], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let mut tags = std::collections::HashMap::<AssetId, Vec<String>>::new();
-        for row in rows {
-            let (id, tag) = row?;
-            tags.entry(AssetId(parse_id(&id)?)).or_default().push(tag);
-        }
-        for asset in assets {
-            asset.tags = tags.remove(&asset.id).unwrap_or_default();
-        }
-        Ok(())
-    }
-
-    pub fn import(&mut self, source: &Path, project: Option<ProjectId>) -> Result<bool> {
-        self.snapshot = None;
-        self.import_inner(source, project, false, false, None)
-    }
-    pub fn layout_sizes(&mut self, query: &Query) -> Result<Vec<(u32, u32)>> {
-        let query = self.workspace_query(query)?;
-        self.page(&query, 0, 0)?;
-        let (table, order) = if query == Query::default() {
-            ("asset_order", "DESC")
-        } else {
-            ("query_snapshot", "ASC")
-        };
-        let mut statement=self.db.prepare(&format!("SELECT v.width,v.height FROM {table} o JOIN assets a ON a.id=o.asset_id JOIN asset_versions v ON \
-                v.id=a.display_version_id ORDER BY o.position {order}"))?;
-
-        statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Error::from)
-    }
-    fn import_inner(
-        &mut self,
-        source: &Path,
-        project: Option<ProjectId>,
-        interrupt_after_install: bool,
-        referenced: bool,
-        relative_source: Option<&Path>,
-    ) -> Result<bool> {
-        self.last_import = ImportMetrics::default();
-        let stage_started = std::time::Instant::now();
-        let input = File::open(source)?;
-        let length = input.metadata()?.len();
-        let limit = native::file_limit(source);
-        if length == 0 || length > limit {
-            return Err(Error::Invalid("媒体超出文件大小预算或为空文件".into()));
-        }
-        let asset = AssetId::default();
-        let version = AssetVersionId::default();
-        let operation = Uuid::new_v4().to_string();
-        let staged_relative = format!("staging/{operation}.part");
-        self.db.execute(
-            "INSERT INTO operation_journal VALUES(?1,?2,'prepared')",
-            params![operation, staged_relative],
-        )?;
-        let (platform, native_source) = organize::encode_path(&source.canonicalize()?)?;
-        self.db.execute(
-            "INSERT INTO import_context(operation_id,platform,source,project_id,referenced,relative_path) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![
-                operation,
-                platform,
-                native_source,
-                project.map(|p| p.to_string()),
-                referenced,
-                relative_source.map(|p|p.to_str().ok_or_else(||Error::Invalid("源目录无法无损表示".into()))).transpose()?
-            ],
-        )?;
-        let staged = safe_path(&self.root, &staged_relative)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged)?;
-        let copied = std::io::copy(&mut input.take(limit + 1), &mut output)?;
-        output.sync_all()?;
-        drop(output);
-        if copied > limit || copied != length {
-            return Err(Error::Invalid("读取期间媒体超出文件大小预算".into()));
-        }
-        ingest::staged_receipt(&self.root, &operation, copied)?;
-        self.last_import.copy_ms = stage_started.elapsed().as_secs_f64() * 1000.0;
-        let result = self.install(
-            &staged,
-            asset,
-            version,
-            &operation,
-            source,
-            project,
-            interrupt_after_install,
-            referenced,
-            relative_source,
-        );
-        match result {
-            Ok(imported) => {
-                let _ = fs::remove_file(safe_path(
-                    &self.root,
-                    &format!("staging/{operation}.ready"),
-                )?);
-                if let Err(error) = fs::remove_file(&staged) {
-                    tracing::warn!(%error,operation,"committed import staging cleanup deferred");
-                }
-                // Duplicate skips also finish their journal; they never install another version.
-                if !imported {
-                    self.db.execute(
-                        "UPDATE operation_journal SET phase='committed' WHERE id=?1",
-                        [&operation],
-                    )?;
-                }
-                self.forget_import(&operation)?;
-                Ok(imported)
-            }
-            Err(error) => {
-                // Keep the owned staging copy and journal. Recovery never deletes user sources.
-                self.db.execute(
-                    "UPDATE operation_journal SET phase='interrupted' WHERE id=?1",
-                    [&operation],
-                )?;
-                tracing::warn!(operation, "import interrupted; staging retained");
-                Err(error)
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn install(
-        &mut self,
-        staged: &Path,
-        asset: AssetId,
-        version: AssetVersionId,
-        operation: &str,
-        source: &Path,
-        project: Option<ProjectId>,
-        interrupt: bool,
-        referenced: bool,
-        relative_source: Option<&Path>,
-    ) -> Result<bool> {
-        let prepared = ingest::prepare(staged, operation, source)?;
-        let result = self.install_prepared(
-            staged,
-            asset,
-            version,
-            operation,
-            source,
-            project,
-            interrupt,
-            referenced,
-            relative_source,
-            prepared,
-        );
-        if matches!(result, Ok(false)) {
-            let _ = fs::remove_file(staged.with_file_name(format!("{operation}.thumb")));
-        }
-        result
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn install_prepared(
-        &mut self,
-        staged: &Path,
-        asset: AssetId,
-        version: AssetVersionId,
-        operation: &str,
-        source: &Path,
-        project: Option<ProjectId>,
-        interrupt: bool,
-        referenced: bool,
-        relative_source: Option<&Path>,
-        prepared: ingest::Prepared,
-    ) -> Result<bool> {
-        let ingest::Prepared {
-            hash,
-            width,
-            height,
-            extension,
-            dominant_color,
-            metrics,
-            reference_verified,
-            video,
-            signature,
-            metadata,
-        } = prepared;
-        let copy_ms = self.last_import.copy_ms;
-        self.last_import = metrics;
-        self.last_import.copy_ms = copy_ms;
-        let duplicate: Option<String> = self
-            .db
-            .query_row(
-                "SELECT v.asset_id FROM asset_versions v JOIN assets a ON a.id=v.asset_id WHERE v.sha256=?1 AND v.bytes=?2 AND \
-                 ((?3 IS NULL AND NOT EXISTS(SELECT 1 FROM project_assets p WHERE p.asset_id=a.id)) OR \
-                  (?3 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM project_assets p WHERE p.asset_id=a.id AND p.project_id<>?3))) \
-                 ORDER BY a.deleted_at IS NOT NULL LIMIT 1",
-                params![hash, fs::metadata(staged)?.len(), project.map(|p| p.to_string())],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(existing) = duplicate {
-            let asset = AssetId(parse_id(&existing)?);
-            if self.asset_trash_state(asset)? == Some(true) {
-                self.edit(&[asset], &Edit::Trash(false))?;
-            }
-            if !referenced && let Some(project) = project {
-                let existing_version: String = self.db.query_row(
-                    "SELECT id FROM asset_versions WHERE sha256=?1 AND bytes=?2 AND asset_id=?3 LIMIT 1",
-                    params![hash, fs::metadata(staged)?.len(), existing],
-                    |r| r.get(0),
-                )?;
-                self.duplicate_project_file(
-                    source,
-                    staged,
-                    project,
-                    relative_source,
-                    AssetVersionId(parse_id(&existing_version)?),
-                )?;
-            }
-            if let Some(project) = project {
-                self.db.execute(
-                    "INSERT OR IGNORE INTO project_assets VALUES(?1,?2)",
-                    params![project.to_string(), existing],
-                )?;
-            }
-            return Ok(false);
-        }
-        let relative = if referenced {
-            format!("assets/referenced/{version}.{extension}")
-        } else {
-            self.managed_location(source, project, relative_source, None)?
-        };
-        let destination = safe_path(&self.root, &relative)?;
-        let thumb_relative = format!("thumbnails/256/{version}.png");
-        let thumb_path = safe_path(&self.root, &thumb_relative)?;
-        let thumb_stage = safe_path(&self.root, &format!("staging/{operation}.thumb"))?;
-        let commit_started = std::time::Instant::now();
-        self.db.execute(
-            "UPDATE operation_journal SET path=?2 WHERE id=?1",
-            params![operation, relative],
-        )?;
-        // Hard-link installation is create-only and on the same volume as staging.
-        if !referenced {
-            fs::hard_link(staged, &destination)?;
-        }
-        fs::hard_link(&thumb_stage, &thumb_path)?;
-        if interrupt {
-            return Err(Error::Invalid("injected interruption".into()));
-        }
-        let name = source
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "未命名图片".into());
-        let transaction = self.db.transaction()?;
-        transaction.execute(
-            "INSERT INTO assets(id,display_version_id,name,imported_at) VALUES(?1,?2,?3,?4)",
-            params![asset.to_string(), version.to_string(), name, now_ms()?],
-        )?;
-        transaction.execute(
-            "INSERT INTO asset_versions(id,asset_id,origin,path,sha256,format,width,height,bytes) \
-                VALUES(?1,?2,'original',?3,?4,?5,?6,?7,?8)",
-            params![
-                version.to_string(),
-                asset.to_string(),
-                relative,
-                hash,
-                extension,
-                width,
-                height,
-                fs::metadata(staged)?.len()
-            ],
-        )?;
-
-        if let Some(metadata) = video {
-            transaction.execute(
-                "INSERT INTO video_metadata(version_id,json) VALUES(?1,?2)",
-                params![
-                    version.to_string(),
-                    serde_json::to_string(&metadata).map_err(|e| Error::Invalid(e.to_string()))?
-                ],
-            )?;
-        }
-        if let Some(signature) = signature {
-            similarity::store(&transaction, &version.to_string(), &signature)?;
-        }
-        metadata::store(&transaction, &version.to_string(), &metadata)?;
-        transaction.execute(
-            "UPDATE asset_versions SET dominant_color=?1 WHERE id=?2",
-            params![dominant_color, version.to_string()],
-        )?;
-        if referenced {
-            if !reference_verified && organize::hash_file(source)? != hash {
-                return Err(Error::Invalid("引用源在导入期间发生变化，请重试".into()));
-            }
-            let (platform, path) = organize::encode_path(&source.canonicalize()?)?;
-            transaction.execute(
-                "INSERT INTO file_locations VALUES(?1,?2,?3)",
-                params![version.to_string(), platform, path],
-            )?;
-        }
-        if let Some(project) = project {
-            transaction.execute(
-                "INSERT INTO project_assets VALUES(?1,?2)",
-                params![project.to_string(), asset.to_string()],
-            )?;
-        }
-        transaction.execute(
-            "UPDATE operation_journal SET phase='committed' WHERE id=?1",
-            [operation],
-        )?;
-        transaction.commit()?;
-        self.last_import.commit_ms = commit_started.elapsed().as_secs_f64() * 1000.0;
-        if let Err(error) = fs::remove_file(thumb_stage) {
-            tracing::warn!(%error,operation,"committed thumbnail staging cleanup deferred");
-        }
-        Ok(true)
-    }
-
-    pub fn thumbnail(&self, version: AssetVersionId) -> Result<Option<Pixels>> {
-        let path = safe_path(&self.root, &format!("thumbnails/256/{version}.png"))?;
-        if !path.exists() {
-            return Ok(None);
-        }
-        let mut reader = ImageReader::open(path)?.with_guessed_format()?;
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(256);
-        limits.max_image_height = Some(256);
-        limits.max_alloc = Some(1024 * 1024);
-        reader.limits(limits);
-        Ok(Some(pixels(reader.decode()?)))
-    }
-    pub fn preview(&self, id: AssetId) -> Result<Pixels> {
-        self.media_source(id)?.preview().map(|p| p.image)
-    }
-    pub fn set_favorite(&mut self, id: AssetId, favorite: bool) -> Result<()> {
-        self.snapshot = None;
-        self.db.execute(
-            "UPDATE assets SET favorite=?1,edited_at=?3 WHERE id=?2",
-            params![favorite, id.to_string(), now_ms()?],
-        )?;
-        Ok(())
-    }
-    pub fn set_rating(&mut self, id: AssetId, rating: u8) -> Result<()> {
-        self.snapshot = None;
-        if rating > 5 {
-            return Err(Error::Invalid("评分只能是 0 至 5".into()));
-        }
-        self.db.execute(
-            "UPDATE assets SET rating=?1,edited_at=?3 WHERE id=?2",
-            params![rating, id.to_string(), now_ms()?],
-        )?;
-        Ok(())
-    }
-    pub fn set_tags(&mut self, id: AssetId, tags: &[String]) -> Result<()> {
-        self.snapshot = None;
-        if tags.len() > 64 || tags.iter().any(|s| s.len() > 128) {
-            return Err(Error::Invalid("最多 64 个标签，每个最多 128 字节".into()));
-        }
-        let tx = self.db.transaction()?;
-        let version: String = tx.query_row(
-            "SELECT display_version_id FROM assets WHERE id=?1",
-            [id.to_string()],
-            |r| r.get(0),
-        )?;
-        let automatic = tx
-            .prepare("SELECT name FROM ai_visible_tags WHERE version_id=?1")?
-            .query_map([&version], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let manual = tx
-            .prepare(
-                "SELECT t.name FROM tags t JOIN asset_tags x ON x.tag_id=t.id WHERE x.asset_id=?1",
-            )?
-            .query_map([id.to_string()], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        for tag in &automatic {
-            if !tags.iter().any(|s| s.trim() == tag) {
-                ai_content::reject_tag(&tx, &version, tag)?;
-            }
-        }
-        tx.execute("DELETE FROM asset_tags WHERE asset_id=?1", [id.to_string()])?;
-        for tag in tags.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            if automatic.iter().any(|s| s == tag) && !manual.iter().any(|s| s == tag) {
-                continue;
-            }
-            tx.execute("INSERT OR IGNORE INTO tags(name) VALUES(?1)", [tag])?;
-            tx.execute(
-                "INSERT OR IGNORE INTO asset_tags SELECT ?1,id FROM tags WHERE name=?2",
-                params![id.to_string(), tag],
-            )?;
-        }
-        tx.execute(
-            "UPDATE assets SET edited_at=?1 WHERE id=?2",
-            params![now_ms()?, id.to_string()],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-    pub fn create_project(&self, name: &str) -> Result<ProjectId> {
-        import::validate_component(name.trim())?;
-        if name.trim().is_empty() || name.len() > 120 {
-            return Err(Error::Invalid("项目名不能为空且最多 120 字节".into()));
-        }
-        let id = ProjectId::default();
-        let profile = self.ai_profile_for("")?;
-        let tx = self.db.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO projects(id,name) VALUES(?1,?2)",
-            params![id.to_string(), name.trim()],
-        )?;
-        workspace::insert_profile(&tx, id, &profile)?;
-        tx.commit()?;
-        Ok(id)
-    }
-}
-
 /// Explicit diagnostics output; never used for library content.
 #[cfg(feature = "capture")]
 pub fn save_capture(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
@@ -1262,236 +302,4 @@ fn decode_limits() -> image::Limits {
     limits.max_image_height = None;
     limits.max_alloc = Some(384 * 1024 * 1024);
     limits
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    fn fixture() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let image = dir.path().join("原片.png");
-        image::RgbImage::from_pixel(32, 24, image::Rgb([30, 90, 150]))
-            .save(&image)
-            .unwrap();
-        (dir, image)
-    }
-    #[test]
-    fn create_import_edit_reopen_and_move_are_durable() {
-        let (dir, source) = fixture();
-        let original = fs::read(&source).unwrap();
-        let mut lib = Library::create(dir.path(), "摄影库").unwrap();
-        assert!(Library::open(lib.root()).is_err());
-        let id = lib.id();
-        let project = lib.create_project("旅行").unwrap();
-        assert!(lib.import(&source, Some(project)).unwrap());
-        assert!(!lib.import(&source, Some(project)).unwrap());
-        let page = lib.page(&Query::default(), 0, 40).unwrap();
-        let asset = page.assets[0].id;
-        lib.set_favorite(asset, true).unwrap();
-        lib.set_rating(asset, 5).unwrap();
-        lib.set_tags(asset, &["雪山".into(), "旅行".into()])
-            .unwrap();
-        lib.rename("新摄影库").unwrap();
-        lib.rename_asset(asset, "旅途.png").unwrap();
-        assert_eq!(lib.layout_sizes(&Query::default()).unwrap(), vec![(32, 24)]);
-        let old = lib.root().to_path_buf();
-        drop(lib);
-        let moved = dir.path().join("迁移.moriq");
-        fs::rename(old, &moved).unwrap();
-        let mut lib = Library::open(&moved).unwrap();
-        assert_eq!(lib.id(), id);
-        assert_eq!(lib.info().unwrap().name, "新摄影库");
-        assert_eq!(lib.info().unwrap().projects[0].count, 1);
-        let page = lib
-            .page(
-                &Query {
-                    text: "雪山".into(),
-                    favorites_only: true,
-                    project: Some(project),
-                    ..Default::default()
-                },
-                0,
-                40,
-            )
-            .unwrap();
-        assert_eq!(page.total, 1);
-        assert_eq!(page.assets[0].name, "旅途.png");
-        assert_eq!(page.assets[0].rating, 5);
-        assert_eq!(lib.preview(asset).unwrap().width, 32);
-        assert_eq!(fs::read(source).unwrap(), original);
-    }
-    #[test]
-    fn interruption_never_registers_a_half_import_or_touches_source() {
-        let (dir, source) = fixture();
-        let original = fs::read(&source).unwrap();
-        let mut lib = Library::create(dir.path(), "恢复").unwrap();
-        assert!(lib.import_inner(&source, None, true, false, None).is_err());
-        let root = lib.root().to_path_buf();
-        drop(lib);
-        let mut lib = Library::open(&root).unwrap();
-        assert_eq!(lib.info().unwrap().count, 0);
-        let phases: u64 = lib
-            .db
-            .query_row(
-                "SELECT count(*) FROM operation_journal WHERE phase='interrupted'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(phases, 1);
-        assert!(lib.import(&source, None).unwrap());
-        assert_eq!(lib.info().unwrap().count, 1);
-        assert_eq!(fs::read(source).unwrap(), original);
-    }
-    #[test]
-    fn rejects_traversal_bad_media_and_manifest_mismatch() {
-        let (dir, source) = fixture();
-        let mut lib = Library::create(dir.path(), "安全").unwrap();
-        for path in [
-            "../outside",
-            "assets/../../x",
-            "C:/outside",
-            "assets\\x",
-            "/outside",
-        ] {
-            assert!(safe_path(lib.root(), path).is_err());
-        }
-        let invalid = dir.path().join("假的.jpg");
-        fs::write(&invalid, b"not an image").unwrap();
-        assert!(lib.import(&invalid, None).is_err());
-        assert_eq!(lib.info().unwrap().count, 0);
-        assert_eq!(
-            lib.page(
-                &Query {
-                    text: "%' OR 1=1 --".into(),
-                    ..Query::default()
-                },
-                0,
-                100
-            )
-            .unwrap()
-            .total,
-            0
-        );
-        assert!(lib.import(&source, None).unwrap());
-        let root = lib.root().to_path_buf();
-        drop(lib);
-        let path = root.join("library.toml");
-        let mut manifest: Manifest = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        manifest.library_id = LibraryId::default();
-        fs::write(path, toml::to_string(&manifest).unwrap()).unwrap();
-        assert!(Library::open(&root).is_err());
-    }
-
-    #[test]
-    fn filtered_snapshot_is_invalidated_by_edits_and_imports() {
-        let (dir, source) = fixture();
-        let mut lib = Library::create(dir.path(), "查询").unwrap();
-        lib.import(&source, None).unwrap();
-        let id = lib.page(&Query::default(), 0, 1).unwrap().assets[0].id;
-        let favorites = Query {
-            favorites_only: true,
-            ..Query::default()
-        };
-        assert_eq!(lib.page(&favorites, 0, 40).unwrap().total, 0);
-        lib.set_favorite(id, true).unwrap();
-        assert_eq!(lib.page(&favorites, 0, 40).unwrap().total, 1);
-        lib.set_favorite(id, false).unwrap();
-        assert_eq!(lib.page(&favorites, 0, 40).unwrap().total, 0);
-        assert!(
-            lib.page(&Query::default(), 100000, 40)
-                .unwrap()
-                .assets
-                .is_empty()
-        );
-        let query = Query {
-            text: "新标签".into(),
-            ..Query::default()
-        };
-        assert_eq!(lib.page(&query, 0, 40).unwrap().total, 0);
-        lib.set_tags(id, &["新标签".into()]).unwrap();
-        assert_eq!(lib.page(&query, 0, 40).unwrap().total, 1);
-    }
-
-    #[test]
-    fn foreign_key_contract_prevents_wrong_cover_version() {
-        let (dir, source) = fixture();
-        let mut lib = Library::create(dir.path(), "外键").unwrap();
-        lib.import(&source, None).unwrap();
-        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets[0].id;
-        assert!(
-            lib.db
-                .execute(
-                    "UPDATE assets SET display_version_id=?1 WHERE id=?2",
-                    params![AssetVersionId::default().to_string(), asset.to_string()]
-                )
-                .is_err()
-        );
-        assert_eq!(lib.info().unwrap().count, 1);
-    }
-
-    #[test]
-    #[ignore = "synthetic metadata benchmark; no media or frame-time acceptance"]
-    fn synthetic_metadata_benchmark() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut lib = Library::create(dir.path(), "benchmark").unwrap();
-        for (previous, total) in [(0, 100_000), (100_000, 500_000)] {
-            let started = std::time::Instant::now();
-            let tx = lib.db.transaction().unwrap();
-            tx.execute_batch(&format!("WITH RECURSIVE n(i) AS(SELECT {} UNION ALL SELECT i+1 FROM n WHERE i<{}) INSERT INTO \
-                assets(id,display_version_id,name,imported_at) SELECT \
-                printf('00000000-0000-4000-8000-%012x',i),printf('10000000-0000-4000-8000-%012x',i),printf('样本_%06d.png',i),i FROM n; INSERT INTO asset_versions(id,asset_id,origin,path,sha256,format,width,height,bytes) SELECT display_version_id,id,'original','assets/00/'||display_version_id||'.png','{}','png',1,1,3 FROM assets WHERE imported_at>{};",
-previous+1,
-total,
-"a".repeat(64),
-previous)).unwrap();
-
-            tx.commit().unwrap();
-            lib.snapshot = None;
-            println!(
-                "synthetic_rows={total} seed_ms={:.2}",
-                started.elapsed().as_secs_f64() * 1000.0
-            );
-            let mut samples = Vec::new();
-            for i in 0..60 {
-                let offset = if i % 3 == 0 { 0 } else { total - (i * 17 + 40) };
-                let started = std::time::Instant::now();
-                let page = lib.page(&Query::default(), offset, 40).unwrap();
-                assert_eq!(page.total, total as u64);
-                assert_eq!(page.assets.len(), 40);
-                samples.push(started.elapsed().as_secs_f64() * 1000.0);
-            }
-            samples.sort_by(f64::total_cmp);
-            println!(
-                "random_page_p50_ms={:.3} random_page_p95_ms={:.3}",
-                samples[30], samples[57]
-            );
-            let query = Query {
-                text: "样本_".into(),
-                ..Query::default()
-            };
-            let started = std::time::Instant::now();
-            assert_eq!(lib.page(&query, 0, 40).unwrap().total, total as u64);
-            println!(
-                "text_snapshot_build_ms={:.3}",
-                started.elapsed().as_secs_f64() * 1000.0
-            );
-            let started = std::time::Instant::now();
-            assert_eq!(lib.page(&query, total - 40, 40).unwrap().assets.len(), 40);
-            println!(
-                "text_snapshot_deep_page_ms={:.3}",
-                started.elapsed().as_secs_f64() * 1000.0
-            );
-            let root = lib.root().to_path_buf();
-            drop(lib);
-            let started = std::time::Instant::now();
-            lib = Library::open(&root).unwrap();
-            assert_eq!(lib.page(&Query::default(), 0, 40).unwrap().assets.len(), 40);
-            println!(
-                "reopen_and_first_projection_ms={:.3}",
-                started.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-    }
 }

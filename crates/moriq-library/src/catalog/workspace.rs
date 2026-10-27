@@ -309,7 +309,7 @@ pub(crate) fn map_classification(
 
 pub(super) fn migrate(db: &mut Connection) -> Result<()> {
     let tx = db.transaction()?;
-    tx.execute_batch(include_str!("migration_26.sql"))?;
+    tx.execute_batch(include_str!("../database/migrations/migration_26.sql"))?;
     let projects = tx
         .prepare("SELECT id FROM projects")?
         .query_map([], |r| r.get::<_, String>(0))?
