@@ -2084,6 +2084,7 @@ dependencies = [
  "image",
  "kamadak-exif",
  "moriq-domain",
+ "moriq-retrieval",
  "moriq-runtime",
  "moxcms",
  "resvg",
@@ -2101,6 +2102,16 @@ dependencies = [
 [[package]]
 name = "moriq-render"
 version = "1.1.0"
+
+[[package]]
+name = "moriq-retrieval"
+version = "1.1.0"
+dependencies = [
+ "moriq-domain",
+ "rusqlite",
+ "thiserror 2.0.21",
+ "uuid",
+]
 
 [[package]]
 name = "moriq-runtime"

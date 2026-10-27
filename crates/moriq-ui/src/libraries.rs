@@ -22,7 +22,7 @@ pub enum LibraryMessage {
     Name(String),
     Forget,
     Delete,
-    Closed(u64, bool, Result<(), String>),
+    Closed(u64, bool, Result<Option<LibraryId>, String>),
     Finished(u64, Result<UserSettings, String>),
 }
 /// 把资源库管理操作转换为应用消息。
@@ -86,62 +86,44 @@ impl App {
                 let Some(path) = self.libraries.path.clone() else {
                     return Task::none();
                 };
-                if !permanent
-                    && self.library.as_ref().is_some_and(|l| l.root == path)
-                    && (self.manager.notes_dirty
+                let allow_close = permanent
+                    || !(self.manager.notes_dirty
                         || self.ai.description_dirty
-                        || self.ai.classification_dirty)
-                {
-                    self.libraries.error=Some(tr!(self.preferences.language,"当前素材有未保存修改，请先保存后再移除资源库。"=>"Save the current asset edits before removing this library.").into());
-                    return Task::none();
-                }
+                        || self.ai.classification_dirty);
                 self.libraries.busy = true;
                 self.switching = true;
                 self.libraries.error = None;
                 let request = self.libraries.request;
                 let service = self.service.clone();
-                let active = self
-                    .library
-                    .as_ref()
-                    .filter(|l| {
-                        l.root == path
-                            || l.root
-                                .canonicalize()
-                                .is_ok_and(|root| path.canonicalize().is_ok_and(|p| p == root))
-                    })
-                    .map(|l| l.info.id);
                 self.stop_viewer();
                 return Task::perform(
-                    async move {
-                        if let Some(id) = active {
-                            service.close_library(id).await
-                        } else {
-                            Ok(())
-                        }
-                    },
+                    async move { service.close_library_at(path, allow_close).await },
                     move |r| msg(Closed(request, permanent, r)),
                 );
             }
             Closed(request, permanent, result)
                 if request == self.libraries.request && self.libraries.busy =>
             {
-                if let Err(e) = result {
-                    self.switching = false;
-                    self.libraries.busy = false;
-                    self.libraries.error = Some(e);
-                    return Task::none();
-                }
+                let closed = match result {
+                    Ok(closed) => closed,
+                    Err(error) => {
+                        self.switching = false;
+                        self.libraries.busy = false;
+                        self.libraries.error = Some(error);
+                        return Task::none();
+                    }
+                };
                 let Some(path) = self.libraries.path.clone() else {
                     return Task::none();
                 };
-                if self.library.as_ref().is_some_and(|l| {
-                    l.root == path
-                        || l.root
-                            .canonicalize()
-                            .is_ok_and(|root| path.canonicalize().is_ok_and(|p| p == root))
-                }) {
+                if self
+                    .library
+                    .as_ref()
+                    .is_some_and(|library| Some(library.info.id) == closed)
+                {
                     self.stop_people_portraits();
                     self.lifecycle.cancel_copy();
+                    self.lifecycle.release_recovery();
                     self.library = None;
                     self.viewer = Default::default();
                     let panel = self.manager.panel;
@@ -175,7 +157,8 @@ impl App {
                 self.libraries.busy = false;
                 match result {
                     Ok(settings) => {
-                        self.apply_settings(settings);
+                        self.preference_saves.request_snapshot();
+                        self.preferences.recent = settings.recent;
                         if let Some(path) = self.libraries.path.take() {
                             self.library_covers.remove(&path);
                             self.library_summaries.remove(&path);

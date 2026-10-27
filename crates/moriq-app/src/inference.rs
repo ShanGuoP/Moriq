@@ -239,7 +239,7 @@ impl Service {
                 3072,
                 move |active| {
                     check(active, id)?
-                        .media_source(asset)
+                        .retrieval_source(asset)
                         .map_err(|e| e.to_string())
                 },
                 move |source| {

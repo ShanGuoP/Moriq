@@ -7,6 +7,7 @@ license.workspace = true
 bytes.workspace = true
 moriq-domain.workspace = true
 moriq-runtime.workspace = true
+moriq-retrieval.workspace = true
 rusqlite = { workspace = true, features = ["backup"] }
 image.workspace = true
 serde.workspace = true

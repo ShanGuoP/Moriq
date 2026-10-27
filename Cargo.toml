@@ -15,6 +15,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 moriq-runtime = { path = "crates/moriq-runtime" }
+moriq-retrieval = { path = "crates/moriq-retrieval" }
 bytes = "1"
 moriq-domain = { path = "crates/moriq-domain" }
 moriq-render = { path = "crates/moriq-render" }

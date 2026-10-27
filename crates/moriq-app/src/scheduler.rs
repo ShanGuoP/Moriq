@@ -9,10 +9,13 @@ impl Cancellation {
     /// 为指定库与任务登记取消标志，清除已释放令牌的记录。
     pub fn register(&self, owner: LibraryId, job: String) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
+        self.register_flag(owner, job, flag.clone());
+        flag
+    }
+    pub fn register_flag(&self, owner: LibraryId, job: String, flag: Arc<AtomicBool>) {
         let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
         tasks.retain(|(_, _, flag)| flag.strong_count() > 0);
         tasks.push((owner, job, Arc::downgrade(&flag)));
-        flag
     }
     /// 向指定任务或全部在途任务发送取消，保留仍被工作线程持有的令牌。
     pub fn stop(&self, target: Option<(LibraryId, &str)>) {

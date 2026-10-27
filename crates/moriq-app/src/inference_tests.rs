@@ -3,6 +3,93 @@ use inference::InferenceRunner;
 use moriq_library::analysis::InferenceResult;
 use std::time::{Duration, Instant};
 
+#[test]
+fn application_retrieval_services_share_the_frozen_project_scope() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.png");
+        let near_source = dir.path().join("near.png");
+        image::RgbImage::from_pixel(8, 6, image::Rgb([30, 60, 90]))
+            .save(&source)
+            .unwrap();
+        image::RgbImage::from_pixel(8, 6, image::Rgb([31, 60, 90]))
+            .save(&near_source)
+            .unwrap();
+        let mut library = Library::create(dir.path(), "scoped retrieval").unwrap();
+        let a = library.create_project("a").unwrap();
+        let b = library.create_project("b").unwrap();
+        library.import(&source, Some(a)).unwrap();
+        library.import(&near_source, Some(a)).unwrap();
+        library.import(&source, Some(b)).unwrap();
+        library.set_workspace(Some(a));
+        let assets = library.page(&Query::default(), 0, 10).unwrap().assets;
+        let first = assets
+            .iter()
+            .find(|asset| asset.name == "source.png")
+            .unwrap()
+            .clone();
+        let near = assets
+            .iter()
+            .find(|asset| asset.name == "near.png")
+            .unwrap()
+            .clone();
+        library.set_workspace(Some(b));
+        let other = library
+            .page(&Query::default(), 0, 10)
+            .unwrap()
+            .assets
+            .remove(0);
+        let owner = library.id();
+        let root = library.root().to_path_buf();
+        drop(library);
+        let db = rusqlite::Connection::open(root.join("catalog.db")).unwrap();
+        let vector: Vec<u8> = [1.0f32, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        for asset in [&first, &near, &other] {
+            db.execute(
+                "INSERT INTO ai_embeddings VALUES(?1,'chinese-clip','test-revision',?2)",
+                rusqlite::params![asset.version_id.to_string(), vector],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let runner = FakeRunner::new(0, true);
+        let service = Service::start_with_inference(runner.clone()).unwrap();
+        service.open(root).await.unwrap();
+        let scoped = service.for_project(Some(a));
+        let semantic = scoped.semantic_search(owner, "image".into()).await.unwrap();
+        assert_eq!(semantic.len(), 2);
+        assert!(!semantic.contains(&other.id));
+        assert_eq!(
+            scoped.search_by_image(owner, first.id).await.unwrap(),
+            vec![near.id]
+        );
+        assert_eq!(
+            scoped
+                .recommendations(owner, first.id, first.version_id)
+                .await
+                .unwrap()[0]
+                .0,
+            near.id
+        );
+        assert_eq!(
+            scoped.similar_assets(owner, first.id).await.unwrap()[0].id,
+            near.id
+        );
+        assert!(scoped.similar_assets(owner, other.id).await.is_err());
+        runner.entered.store(false, Ordering::Release);
+        assert!(scoped.search_by_image(owner, other.id).await.is_err());
+        assert!(!runner.entered.load(Ordering::Acquire));
+        assert_eq!(
+            service.similar_assets(owner, first.id).await.unwrap().len(),
+            2
+        );
+        service.close().await.unwrap();
+    });
+}
+
 struct FakeRunner {
     entered: AtomicBool,
     release: AtomicBool,

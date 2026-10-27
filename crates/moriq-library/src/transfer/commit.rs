@@ -148,6 +148,7 @@ impl Library {
         prepared: ingest::Prepared,
     ) -> Result<bool> {
         let ingest::Prepared {
+            thumbnail_stage: thumb_stage,
             hash,
             width,
             height,
@@ -208,7 +209,6 @@ impl Library {
         let destination = safe_path(&self.root, &relative)?;
         let thumb_relative = format!("thumbnails/256/{version}.png");
         let thumb_path = safe_path(&self.root, &thumb_relative)?;
-        let thumb_stage = safe_path(&self.root, &format!("staging/{operation}.thumb"))?;
         let commit_started = std::time::Instant::now();
         self.db.execute(
             "UPDATE operation_journal SET path=?2 WHERE id=?1",

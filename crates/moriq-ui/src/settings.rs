@@ -19,11 +19,7 @@ impl App {
         self.gallery_feedback.clear();
         self.surface_motion = None;
         self.transition = None;
-        let service = self.service.clone();
-        Task::perform(
-            async move { service.reduced_motion(enabled).await },
-            Message::SettingsLoaded,
-        )
+        self.queue_preference(preferences::Change::ReducedMotion(enabled))
     }
 
     /// 切换显示语言并保存界面偏好。
@@ -82,24 +78,87 @@ impl App {
     /// 更新诊断日志偏好并提交保存。
     pub(super) fn set_diagnostic_logging(&mut self, enabled: bool) -> Task<Message> {
         self.preferences.diagnostic_logging = enabled;
-        let service = self.service.clone();
-        Task::perform(
-            async move { service.diagnostic_logging(enabled).await },
-            Message::SettingsLoaded,
-        )
+        self.queue_preference(preferences::Change::DiagnosticLogging(enabled))
     }
 
     /// 把读取到的用户设置应用到界面与服务策略。
-    pub(super) fn apply_settings(&mut self, mut settings: UserSettings) {
-        // Other preference receipts can arrive after an interface edit.
-        if self.interface.initialized {
-            settings.language = self.preferences.language;
-            settings.appearance = self.preferences.appearance;
-        } else {
+    pub(super) fn apply_settings(&mut self, settings: UserSettings) {
+        if !self.interface.initialized {
             self.interface.saved = (settings.language, settings.appearance);
+            self.preferences.language = settings.language;
+            self.preferences.appearance = settings.appearance;
             self.interface.initialized = true;
         }
-        self.preferences = settings;
+        self.preference_saves
+            .hydrate(&mut self.preferences, settings);
+        self.on_demand_models = self.preferences.ai.on_demand;
+        self.retain_indexes = self.preferences.ai.retain_indexes;
+    }
+
+    pub(super) fn queue_preference(&mut self, change: preferences::Change) -> Task<Message> {
+        self.preference_saves.enqueue(change);
+        self.save_next_preference()
+    }
+
+    pub(super) fn save_next_preference(&mut self) -> Task<Message> {
+        let Some((request, change)) = self.preference_saves.begin_next() else {
+            return Task::none();
+        };
+        let service = self.service.clone();
+        let snapshot = self.preferences.clone();
+        Task::perform(
+            async move {
+                match change {
+                    preferences::Change::ReducedMotion(value) => {
+                        service.reduced_motion(value).await
+                    }
+                    preferences::Change::DiagnosticLogging(value) => {
+                        service.diagnostic_logging(value).await
+                    }
+                    preferences::Change::Ai(value) => service.ai_preferences(value).await,
+                    preferences::Change::AiRuntime(value) => {
+                        service.ai_policy(value).await.map(|()| snapshot)
+                    }
+                    preferences::Change::Synco(value) => service.synco_preferences(value).await,
+                    preferences::Change::Import(value) => service.import_preferences(value).await,
+                }
+            },
+            move |result| Message::PreferenceSaved(request, result),
+        )
+    }
+
+    pub(super) fn finish_preference_save(
+        &mut self,
+        request: u64,
+        result: Result<UserSettings, String>,
+    ) -> Task<Message> {
+        let import_saved = result.is_ok()
+            && matches!(
+                self.preference_saves.pending_change(request),
+                Some(preferences::Change::Import(_))
+            );
+        if !self
+            .preference_saves
+            .finish(request, &result, &mut self.preferences)
+        {
+            return Task::none();
+        }
+        self.on_demand_models = self.preferences.ai.on_demand;
+        self.retain_indexes = self.preferences.ai.retain_indexes;
+        if import_saved {
+            self.status = tr!(self.preferences.language, "导入设置已保存，下次导入生效" => "Import settings saved. Changes apply to the next import.").into();
+        }
+        if let Err(error) = result {
+            self.error = Some(error);
+        }
+        if self.preference_saves.pending() {
+            return self.save_next_preference();
+        }
+        if self.preference_saves.close_after_save {
+            self.preference_saves.close_after_save = false;
+            return self.update_inner(Message::WindowClose);
+        }
+        Task::none()
     }
 
     /// 异步保存当前界面偏好，避免界面线程直接写文件。
@@ -128,10 +187,10 @@ impl App {
             std::iter::once("自动".to_string())
                 .chain((1..=32).map(|n| n.to_string()))
                 .collect(),
-            Some(if self.preferences.import.workers == 0 {
+            Some(if self.preference_saves.import_draft.workers == 0 {
                 "自动".into()
             } else {
-                self.preferences.import.workers.to_string()
+                self.preference_saves.import_draft.workers.to_string()
             }),
             |value| Message::ImportPreference(0, value),
         )
@@ -142,7 +201,7 @@ impl App {
                 .into_iter()
                 .map(|value| value.to_string())
                 .collect(),
-            Some(self.preferences.import.memory_mib.to_string()),
+            Some(self.preference_saves.import_draft.memory_mib.to_string()),
             |value| Message::ImportPreference(1, value),
         )
         .width(110);

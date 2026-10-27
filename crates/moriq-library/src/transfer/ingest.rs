@@ -20,6 +20,7 @@ pub struct Ticket {
     _lease: Arc<File>,
 }
 pub struct Prepared {
+    pub(super) thumbnail_stage: PathBuf,
     pub(super) hash: String,
     pub(super) width: u32,
     pub(super) height: u32,
@@ -80,43 +81,9 @@ impl Ticket {
     ///
     /// 估算此导入票据解码所需的内存预算，供应用层调度准入。
     pub fn memory_mib(&self) -> Result<u32> {
-        let staged = self.staged()?;
-        let mut reader = ImageReader::open(&staged)?.with_guessed_format()?;
-        reader.limits(decode_limits());
-        if native::raw_extension(&self.source).is_some()
-            && !matches!(
-                reader.format(),
-                Some(
-                    ImageFormat::Jpeg
-                        | ImageFormat::Png
-                        | ImageFormat::WebP
-                        | ImageFormat::Gif
-                        | ImageFormat::Bmp
-                )
-            )
-        {
-            return native::raw_memory_mib(&staged);
-        }
-        if crate::video::extension(&self.source).is_some() {
-            return Ok(1024);
-        }
-        let decoder = match reader.into_decoder() {
-            Ok(decoder) => decoder,
-            Err(_) => return Ok(1024),
-        };
-        let (width, height) = decoder.dimensions();
-        validate_dimensions(width, height)?;
-        if u64::from(width) * u64::from(height) * u64::from(decoder.color_type().bytes_per_pixel())
-            > 384 * 1024 * 1024
-        {
-            return Ok(1024);
-        }
-        let decoded = u64::from(width)
-            * u64::from(height)
-            * u64::from(decoder.color_type().bytes_per_pixel());
-        let bytes = decoded.saturating_mul(2) + fs::metadata(staged)?.len() * 2 + 32 * 1024 * 1024;
-        Ok(bytes.div_ceil(1024 * 1024) as u32)
+        memory_for(&self.staged()?, &self.source)
     }
+
     /// 解码暂存媒体并生成缩略图、校验和及元数据，支持从写入端外执行。
     pub fn prepare(&self, cancel: &AtomicBool) -> Result<Prepared> {
         cancelled(cancel)?;
@@ -130,6 +97,42 @@ impl Ticket {
         cancelled(cancel)?;
         Ok(prepared)
     }
+}
+pub(super) fn memory_for(staged: &Path, source: &Path) -> Result<u32> {
+    let mut reader = ImageReader::open(staged)?.with_guessed_format()?;
+    reader.limits(decode_limits());
+    if native::raw_extension(source).is_some()
+        && !matches!(
+            reader.format(),
+            Some(
+                ImageFormat::Jpeg
+                    | ImageFormat::Png
+                    | ImageFormat::WebP
+                    | ImageFormat::Gif
+                    | ImageFormat::Bmp
+            )
+        )
+    {
+        return native::raw_memory_mib(staged);
+    }
+    if crate::video::extension(source).is_some() {
+        return Ok(1024);
+    }
+    let decoder = match reader.into_decoder() {
+        Ok(decoder) => decoder,
+        Err(_) => return Ok(1024),
+    };
+    let (width, height) = decoder.dimensions();
+    validate_dimensions(width, height)?;
+    if u64::from(width) * u64::from(height) * u64::from(decoder.color_type().bytes_per_pixel())
+        > 384 * 1024 * 1024
+    {
+        return Ok(1024);
+    }
+    let decoded =
+        u64::from(width) * u64::from(height) * u64::from(decoder.color_type().bytes_per_pixel());
+    let bytes = decoded.saturating_mul(2) + fs::metadata(staged)?.len() * 2 + 32 * 1024 * 1024;
+    Ok(bytes.div_ceil(1024 * 1024) as u32)
 }
 /// 检查显式取消标志，将取消统一转换为导入错误。
 fn cancelled(cancel: &AtomicBool) -> Result<()> {
@@ -214,7 +217,7 @@ pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<P
     thumbnail.save_with_format(&thumb_stage, ImageFormat::Png)?;
     OpenOptions::new()
         .write(true)
-        .open(thumb_stage)?
+        .open(&thumb_stage)?
         .sync_all()?;
     let metadata = if video.is_none() {
         crate::metadata::read(File::open(staged)?)?
@@ -222,6 +225,7 @@ pub(super) fn prepare(staged: &Path, operation: &str, source: &Path) -> Result<P
         serde_json::json!({})
     };
     Ok(Prepared {
+        thumbnail_stage: thumb_stage,
         hash,
         width,
         height,

@@ -102,7 +102,6 @@ pub enum ManageMessage {
     SyncoExecutable,
     SyncoExecutablePicked(Option<PathBuf>),
     SyncoAutoStart(bool),
-    SyncoPreferencesSaved(Result<UserSettings, String>),
     SyncoRetry(String),
     Similar,
     SimilarLoaded(LibraryId, AssetId, Result<Vec<SimilarAsset>, String>),
@@ -199,6 +198,7 @@ pub enum ManageMessage {
     PickedDestination(LibraryId, bool, Option<PathBuf>),
     Published(LibraryId, bool, Result<PathBuf, String>),
     Recover,
+    CancelRecovery,
     Recovered(LibraryId, Result<ImportReport, String>),
     Check(bool),
     CancelCheck,
@@ -368,24 +368,14 @@ impl App {
             }
             SyncoExecutablePicked(Some(path)) => {
                 self.preferences.synco.executable = Some(path);
-                let value = self.preferences.synco.clone();
-                let service = self.service.clone();
-                return Task::perform(async move { service.synco_preferences(value).await }, |r| {
-                    Message::Manage(SyncoPreferencesSaved(r))
-                });
+                return self
+                    .queue_preference(preferences::Change::Synco(self.preferences.synco.clone()));
             }
             SyncoAutoStart(value) => {
                 self.preferences.synco.auto_start = value;
-                let value = self.preferences.synco.clone();
-                let service = self.service.clone();
-                return Task::perform(async move { service.synco_preferences(value).await }, |r| {
-                    Message::Manage(SyncoPreferencesSaved(r))
-                });
+                return self
+                    .queue_preference(preferences::Change::Synco(self.preferences.synco.clone()));
             }
-            SyncoPreferencesSaved(result) => match result {
-                Ok(prefs) => self.apply_settings(prefs),
-                Err(e) => self.error = Some(e),
-            },
             SyncoRetry(task) if !self.manager.synco.running => {
                 if let Some(library) = &self.library {
                     let id = library.info.id;
@@ -926,16 +916,24 @@ impl App {
                     let id = l.info.id;
                     let service = self.service.clone();
                     self.manager.busy = true;
-                    return Task::perform(async move { service.recover(id).await }, move |r| {
-                        Message::Manage(Recovered(id, r))
-                    });
+                    let control = ImportControl::with_preferences(self.preferences.import);
+                    self.lifecycle.recovery = Some(control.clone());
+                    return Task::perform(
+                        async move { service.recover_controlled(id, control).await },
+                        move |r| Message::Manage(Recovered(id, r)),
+                    );
                 }
             }
+            CancelRecovery => self.lifecycle.cancel_recovery(),
             Recovered(id, result) if self.library.as_ref().is_some_and(|l| l.info.id == id) => {
+                self.lifecycle.recovery = None;
                 self.manager.report_panel = Some(Panel::Maintenance);
                 self.manager.busy = false;
                 match result {
                     Ok(r) => {
+                        if r.cancelled {
+                            self.status = tr!(language, "恢复已停止，未完成项目可稍后重试" => "Recovery stopped. Unfinished items can be resumed later.").into();
+                        }
                         self.manager.report = trf!(language, "已恢复 {}，跳过重复 {}，失败 {}。\n{}" => "Restored {}, skipped {} duplicates, failed {}.\n{}",
                             r.imported,
                             r.duplicates,

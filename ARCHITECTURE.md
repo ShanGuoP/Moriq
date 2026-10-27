@@ -10,6 +10,9 @@ supports Simplified Chinese and English, with persisted appearance preferences. 
 - `moriq-domain`: serializable types and input validation, with no I/O or UI.
 - `moriq-render`: geometry and bounded viewport calculations, with no I/O.
 - `moriq-runtime`: shared pinned-runtime integrity verification.
+- `moriq-retrieval`: scoped similarity/semantic catalog reads, with no dependency
+  on Library, application state, media decoders or model runtimes. Every query
+  requires an explicit library, unassigned, or project scope before ranking.
 - `moriq-ai`: local model downloads and inference, using the shared verifier.
 - `moriq-synco`: same-user loopback transport; no catalog ownership.
 - `moriq-library`: blocking persistence, media plans, immutable source versions,
@@ -35,6 +38,14 @@ deleted and never used to authorize deleting additional media.
 Referenced import stores the external original's identity and checksum. It does
 not authorize moving or deleting that original. Missing thumbnail caches rebuild
 on a media worker, with decoder admission to the shared memory budget.
+
+Interrupted imports use the same recovery engine in tools and the application.
+The writer freezes journal identities; admitted workers freeze private links,
+probe memory and prepare media; the writer commits only an unchanged journal in
+the same library. Cancellation, dropped callers and switching libraries stop
+pending recovery. Private recovery links live under backups/ and are excluded
+from backup content. Forced termination can leave temporary recovery directories;
+automatic crash scavenging has not been validated.
 
 Backups freeze the database and immutable file links before copying media bytes
 on a separate worker. The final directory is published only after verification
@@ -100,6 +111,20 @@ It is diagnostic tooling, not a format/capacity acceptance test. Public releases
 still require the signature, source inventory and clean exact tag in SECURITY.md.
 
 ## State and execution boundaries
+
+Preference reads carry request generations. Saves are serialized and coalesced
+per domain, and receipts only update that domain. Initial model-policy application
+uses the same queue as edits; closing waits for acknowledged saves. Import options
+have an independent unsaved draft. Registry receipts update the recent-library
+list without replacing unrelated preferences. Path aliases are resolved by Service,
+and the UI acts on the returned identity instead of reading the filesystem.
+
+Batch editing is the first feature under moriq-ui/src/features/: it owns its draft,
+project/library context and request generation, and returns typed effects to its
+shell adapter. Its update logic and view do not receive App or Service. Root enum
+composition remains explicit; other UI features still have their existing adapters.
+This is an incremental feature boundary, not a dynamic plugin system or a claim
+that all storage and presentation modules are already independent.
 
 ViewerState owns fit previews, original-resolution regions, video resources and
 receipt generations. Focus, close and clear have distinct policies; every exit

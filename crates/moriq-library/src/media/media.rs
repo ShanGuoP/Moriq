@@ -80,6 +80,11 @@ pub struct Details {
     source: std::result::Result<Source, String>,
 }
 impl Library {
+    /// Retrieval inputs use the same explicit scope as their candidates before decoding.
+    pub fn retrieval_source(&self, asset: AssetId) -> Result<Source> {
+        moriq_retrieval::Catalog::new(&self.db, self.query_scope()).require_asset(asset)?;
+        self.media_source(asset)
+    }
     /// 为素材当前展示版本建立媒体读取来源。
     pub fn media_source(&self, asset: AssetId) -> Result<Source> {
         let version: String = self.db.query_row(

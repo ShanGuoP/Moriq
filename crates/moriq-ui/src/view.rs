@@ -74,6 +74,9 @@ impl App {
                 import.peak.load(Ordering::Relaxed),
                 import.waiting_memory.load(Ordering::Relaxed)
             )
+        } else if let Some(control) = &self.lifecycle.recovery {
+            trf!(language, "恢复导入 · {} / {} 项" => "Recovering imports · {} / {} items",
+                control.finished.load(Ordering::Acquire), control.discovered.load(Ordering::Acquire))
         } else if let Some(control) = &self.lifecycle.copy {
             if control.total.load(Ordering::Acquire) == 0 {
                 tr!(language, "正在准备备份…" => "Preparing backup…").into()
@@ -103,6 +106,15 @@ impl App {
             crate::i18n::status(language, &self.status).to_owned()
         };
         let mut footer = row![muted(status), Space::new().width(Length::Fill)];
+        if self.lifecycle.recovery.is_some() {
+            footer = footer.push(
+                action(
+                    tr!(language, "停止恢复" => "Stop recovery"),
+                    Message::Manage(ManageMessage::CancelRecovery),
+                )
+                .padding([4, 10]),
+            );
+        }
         if self.lifecycle.copy.is_some() {
             footer = footer.push(
                 action(

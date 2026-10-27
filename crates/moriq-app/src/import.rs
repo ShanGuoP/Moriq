@@ -54,12 +54,113 @@ impl Service {
     }
     /// 执行资源库恢复入口，并返回更新后的状态。
     pub async fn recover(&self, id: LibraryId) -> Result<ImportReport> {
-        self.call(move |active| {
-            check(active, id)?
-                .recover_imports()
-                .map_err(|e| e.to_string())
-        })
-        .await
+        self.recover_controlled(id, ImportControl::default()).await
+    }
+
+    pub async fn recover_controlled(
+        &self,
+        id: LibraryId,
+        control: ImportControl,
+    ) -> Result<ImportReport> {
+        let mut stop = RecoveryDrop(Some(control.cancel.clone()));
+        self.job_cancel
+            .register_flag(id, "recovery".into(), control.cancel.clone());
+        let plans = self
+            .call(move |active| {
+                check(active, id)?
+                    .recovery_plans()
+                    .map_err(|e| e.to_string())
+            })
+            .await?;
+        control.discovered.store(plans.len(), Ordering::Release);
+        let mut report = ImportReport::default();
+        for plan in plans {
+            if control.cancel.load(Ordering::Acquire) {
+                break;
+            }
+            let label = plan.label();
+            let result = async {
+                let slot = self
+                    .recovery_admit(self.import_slots.clone(), 1, &control.cancel)
+                    .await?;
+                let probe_memory = self
+                    .recovery_admit(self.import_memory.clone(), 256, &control.cancel)
+                    .await?;
+                let cancel = control.cancel.clone();
+                let (work, weight) = tokio::task::spawn_blocking(move || {
+                    let _probe = probe_memory;
+                    let work = plan.freeze(cancel).map_err(|e| e.to_string())?;
+                    let weight = work.memory_mib().map_err(|e| e.to_string())?;
+                    Ok::<_, String>((work, weight))
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                if weight > control.memory_mib.clamp(256, 4096) {
+                    return Err(format!("恢复媒体预计需要 {weight} MiB，请提高导入内存预算"));
+                }
+                control
+                    .largest_mib
+                    .fetch_max(weight as usize, Ordering::Relaxed);
+                control.waiting_memory.fetch_add(1, Ordering::Relaxed);
+                let waiting = ImportActivity(control.waiting_memory.clone());
+                let memory = self
+                    .recovery_admit(self.import_memory.clone(), weight, &control.cancel)
+                    .await?;
+                drop(waiting);
+                let cancel = control.cancel.clone();
+                let prepared = tokio::task::spawn_blocking(move || {
+                    let _admission = (slot, memory);
+                    work.prepare(cancel).map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                let cancel = control.cancel.clone();
+                self.call(move |active| {
+                    if cancel.load(Ordering::Acquire) {
+                        return Err("恢复已停止".into());
+                    }
+                    check(active, id)?
+                        .finish_recovery(prepared)
+                        .map_err(|e| e.to_string())
+                })
+                .await
+            }
+            .await;
+            if control.cancel.load(Ordering::Acquire) {
+                break;
+            }
+            match result {
+                Ok(true) => report.imported += 1,
+                Ok(false) => report.duplicates += 1,
+                Err(error) => {
+                    report.failed += 1;
+                    report.failures.push(format!("{label}：{error}"));
+                }
+            }
+            control.finished.fetch_add(1, Ordering::Release);
+        }
+        report.cancelled = control.cancel.load(Ordering::Acquire);
+        stop.0 = None;
+        Ok(report)
+    }
+
+    async fn recovery_admit(
+        &self,
+        semaphore: Arc<Semaphore>,
+        count: u32,
+        cancel: &AtomicBool,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        let mut waiting = Box::pin(semaphore.acquire_many_owned(count));
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err("恢复已停止".into());
+            }
+            if let Ok(result) =
+                tokio::time::timeout(std::time::Duration::from_millis(25), &mut waiting).await
+            {
+                return result.map_err(|e| e.to_string());
+            }
+        }
     }
     /// 校验目标文件内容后提交外部原片的新位置。
     pub async fn relocate_reference(
@@ -364,5 +465,14 @@ impl Service {
                 .await;
         }
         result
+    }
+}
+
+struct RecoveryDrop(Option<Arc<AtomicBool>>);
+impl Drop for RecoveryDrop {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.0 {
+            cancel.store(true, Ordering::Release);
+        }
     }
 }

@@ -14,6 +14,8 @@ use std::{
 use uuid::Uuid;
 
 const SCHEMA: u32 = 26;
+mod retrieval;
+pub use moriq_retrieval::QueryScope;
 // Library
 #[path = "library/core.rs"]
 mod library_core;
@@ -102,6 +104,8 @@ pub mod import;
 mod import_commit;
 #[path = "transfer/ingest.rs"]
 pub mod ingest;
+#[path = "transfer/recovery.rs"]
+pub mod recovery;
 #[path = "transfer/synco.rs"]
 mod synco;
 
@@ -190,6 +194,14 @@ pub enum Error {
     Locked,
 }
 pub type Result<T> = std::result::Result<T, Error>;
+impl From<moriq_retrieval::Error> for Error {
+    fn from(error: moriq_retrieval::Error) -> Self {
+        match error {
+            moriq_retrieval::Error::Db(error) => Self::Db(error),
+            moriq_retrieval::Error::Invalid(message) => Self::Invalid(message),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Manifest {

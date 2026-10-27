@@ -1,75 +1,7 @@
 //! Version-bound AI results; human labels and face assignments survive reanalysis.
 use super::*;
 pub const PREPROCESSING: &str = "srgb-1024-v1";
-pub struct SemanticPlan {
-    db: read_pool::ReadLease,
-    _lease: std::sync::Arc<File>,
-    revision: String,
-}
-impl SemanticPlan {
-    /// 根据指定展示版本的语义向量返回少量相近素材，排除素材自身。
-    pub fn recommendations(
-        &self,
-        asset: AssetId,
-        version: AssetVersionId,
-    ) -> Result<Vec<(AssetId, String)>> {
-        let bytes:Option<Vec<u8>>=self.db.connection()?.query_row("SELECT e.vector FROM ai_embeddings e JOIN assets a ON a.display_version_id=e.version_id WHERE \
-                a.id=?1 AND e.version_id=?2 AND e.model_id='chinese-clip' AND e.revision=?3",
-params![asset.to_string(),
-version.to_string(),
-self.revision],
-|r|r.get(0)).optional()?;
-
-        let Some(bytes) = bytes else {
-            return Ok(Vec::new());
-        };
-        let ids = self.search(&decode_vector(&bytes)?, Some(asset))?;
-        let mut items = Vec::new();
-        for id in ids.into_iter().take(8) {
-            let name: Option<String> = self
-                .db
-                .connection()?
-                .query_row(
-                    "SELECT name FROM assets WHERE id=?1 AND deleted_at IS NULL",
-                    [id.to_string()],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(name) = name {
-                items.push((id, name));
-            }
-        }
-        Ok(items)
-    }
-    /// 按同模型修订的向量相似度筛选素材，维护有界候选集合。
-    pub fn search(&self, query: &[f32], exclude: Option<AssetId>) -> Result<Vec<AssetId>> {
-        let mut stmt=self.db.connection()?.prepare("SELECT a.id,e.vector FROM ai_embeddings e JOIN assets a ON a.display_version_id=e.version_id WHERE \
-                a.deleted_at IS NULL AND e.model_id='chinese-clip' AND e.revision=?1")?;
-
-        let mut rows = stmt.query([&self.revision])?;
-        let mut top: Vec<(AssetId, f32)> = Vec::new();
-        while let Some(row) = rows.next()? {
-            let id = AssetId(parse_id(&row.get::<_, String>(0)?)?);
-            if exclude == Some(id) {
-                continue;
-            }
-            let bytes: Vec<u8> = row.get(1)?;
-            let vector = decode_vector(&bytes)?;
-            if vector.len() != query.len() {
-                continue;
-            }
-            let score = query.iter().zip(vector).map(|(a, b)| a * b).sum::<f32>();
-            top.push((id, score));
-            if top.len() > 400 {
-                top.sort_by(|a, b| b.1.total_cmp(&a.1));
-                top.truncate(200);
-            }
-        }
-        top.sort_by(|a, b| b.1.total_cmp(&a.1));
-        top.truncate(200);
-        Ok(top.into_iter().map(|(id, _)| id).collect())
-    }
-}
+pub use crate::retrieval::SemanticPlan;
 /// 将浮点向量编码为小端字节，统一数据库中的向量存储格式。
 fn vector_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -102,20 +34,9 @@ pub fn query_vector(value: &serde_json::Value) -> Result<Vec<f32>> {
 }
 /// 从小端字节还原浮点向量，拒绝非法长度和非有限数值。
 pub fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>> {
-    if bytes.is_empty() || !bytes.len().is_multiple_of(4) || bytes.len() > 16384 {
-        return Err(Error::Invalid("已存向量数据无效".into()));
-    }
-    let values = bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|b| f32::from_le_bytes(*b))
-        .collect::<Vec<_>>();
-    if values.iter().any(|v| !v.is_finite()) {
-        return Err(Error::Invalid("已存向量包含非有限值".into()));
-    }
-    Ok(values)
+    Ok(moriq_retrieval::decode_vector(bytes)?)
 }
+
 pub struct PreparedImage(tempfile::NamedTempFile);
 impl PreparedImage {
     /// 借用推理用临时图片路径，文件寿命由准备结果持有者管理。
@@ -571,12 +492,11 @@ person])?;
 impl Library {
     /// 冻结语义检索所需的读取租约与模型修订。
     pub fn semantic_plan(&self, revision: String) -> Result<SemanticPlan> {
-        let db = self.readers.checkout()?;
-        Ok(SemanticPlan {
-            db,
-            _lease: self._lock.clone(),
+        Ok(SemanticPlan::new(
+            self.readers.checkout()?,
+            self.query_scope(),
             revision,
-        })
+        ))
     }
     /// 保存素材的人工分类，保留人工优先于自动分析的语义。
     pub fn set_category(&mut self, ids: &[AssetId], category: &str) -> Result<()> {

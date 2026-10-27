@@ -3,14 +3,14 @@ use crate::icons::{Icon, icon};
 use crate::theme::*;
 use iced::widget::{Space, button, column, container, image, row, scrollable, svg, text};
 use iced::{Alignment, Border, Color, ContentFit, Font, Length, font};
-type Choice<'a, T> = iced::widget::PickList<'a, T, Vec<T>, T, Message>;
+type Choice<'a, T, M = Message> = iced::widget::PickList<'a, T, Vec<T>, T, M>;
 
 /// 构建统一样式的选择控件，并把选中值映射为消息。
-pub fn choice<'a, T: ToString + PartialEq + Clone + 'a>(
+pub fn choice<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
     values: Vec<T>,
     selected: Option<T>,
-    changed: impl Fn(T) -> Message + 'a,
-) -> Choice<'a, T> {
+    changed: impl Fn(T) -> M + 'a,
+) -> Choice<'a, T, M> {
     iced::widget::pick_list(values, selected, changed)
         .text_size(13)
         .padding([8, 10])
@@ -57,7 +57,7 @@ pub fn muted<'a>(value: impl Into<String>) -> iced::widget::Text<'a> {
     text(value.into()).size(12).style(text_color(MUTED))
 }
 /// 构建带统一外观和反馈的常规操作按钮。
-pub fn action<'a>(label: &str, message: Message) -> iced::widget::Button<'a, Message> {
+pub fn action<'a, M: Clone + 'a>(label: &str, message: M) -> iced::widget::Button<'a, M> {
     button(text(label.to_owned()).size(13))
         .padding([8, 12])
         .style(secondary)
@@ -320,12 +320,12 @@ impl<T> std::fmt::Display for LocalizedOption<T> {
     }
 }
 /// 按当前语言构建选择项显示值，保留内部稳定身份。
-pub fn localized_choice<'a, T: ToString + PartialEq + Clone + 'a>(
+pub fn localized_choice<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
     language: Language,
     values: Vec<T>,
     selected: Option<T>,
-    changed: impl Fn(T) -> Message + 'a,
-) -> Choice<'a, LocalizedOption<T>> {
+    changed: impl Fn(T) -> M + 'a,
+) -> Choice<'a, LocalizedOption<T>, M> {
     choice_labels(
         values,
         selected,
@@ -334,12 +334,12 @@ pub fn localized_choice<'a, T: ToString + PartialEq + Clone + 'a>(
     )
 }
 /// 为一组固定选择值生成本地化标签。
-pub fn choice_labels<'a, T: PartialEq + Clone + 'a>(
+pub fn choice_labels<'a, T: PartialEq + Clone + 'a, M: Clone + 'a>(
     values: Vec<T>,
     selected: Option<T>,
     label: impl Fn(&T) -> String,
-    changed: impl Fn(T) -> Message + 'a,
-) -> Choice<'a, LocalizedOption<T>> {
+    changed: impl Fn(T) -> M + 'a,
+) -> Choice<'a, LocalizedOption<T>, M> {
     let localize = |value: T| LocalizedOption {
         label: label(&value),
         value,

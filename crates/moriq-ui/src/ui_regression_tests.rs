@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn recovery_cancel_retains_busy_until_completion_and_old_receipts_cannot_clear_new_work() {
+    let mut app = crate::tests::app();
+    let owner = app.library.as_ref().unwrap().info.id;
+    drop(app.manage_message(ManageMessage::Recover));
+    let control = app.lifecycle.recovery.clone().unwrap();
+    assert!(app.manager.busy);
+    drop(app.manage_message(ManageMessage::CancelRecovery));
+    assert!(control.cancel.load(Ordering::Acquire));
+    assert!(app.manager.busy);
+    drop(app.manage_message(ManageMessage::Recovered(
+        owner,
+        Ok(ImportReport {
+            cancelled: true,
+            ..Default::default()
+        }),
+    )));
+    assert!(!app.manager.busy);
+    assert!(app.lifecycle.recovery.is_none());
+    let new_owner = LibraryId::default();
+    app.library.as_mut().unwrap().info.id = new_owner;
+    drop(app.manage_message(ManageMessage::Recover));
+    drop(app.manage_message(ManageMessage::Recovered(owner, Ok(ImportReport::default()))));
+    assert!(app.manager.busy);
+    assert!(app.lifecycle.recovery.is_some());
+    drop(app.manage_message(ManageMessage::Recovered(new_owner, Err("failed".into()))));
+    assert!(!app.manager.busy);
+    assert!(app.error.is_some());
+}
+
+#[test]
 /// 验证 Ctrl 点击与右键保留批量选择，普通点击退出追加选择。
 fn ctrl_click_and_context_menu_preserve_the_batch_and_plain_click_exits_additive_selection() {
     let mut app = crate::tests::app();
@@ -733,14 +763,14 @@ fn library_removal_requires_explicit_second_confirmation_and_rejects_stale_recei
     drop(app.library_message(L::Name("待删除库".into())));
     drop(app.library_message(L::Delete));
     assert!(app.libraries.busy);
-    drop(app.library_message(L::Closed(request + 1, true, Ok(()))));
+    drop(app.library_message(L::Closed(request + 1, true, Ok(Some(original.info.id)))));
     assert!(app.library.is_some());
     drop(app.library_message(L::Closed(request, true, Err("locked".into()))));
     assert!(app.library.is_some());
     assert!(!app.switching);
     drop(app.library_message(L::Forget));
     assert!(app.libraries.busy);
-    drop(app.library_message(L::Closed(request, false, Ok(()))));
+    drop(app.library_message(L::Closed(request, false, Ok(Some(original.info.id)))));
     assert!(app.library.is_none());
     let prefs = UserSettings::default();
     drop(app.library_message(L::Finished(request, Ok(prefs))));

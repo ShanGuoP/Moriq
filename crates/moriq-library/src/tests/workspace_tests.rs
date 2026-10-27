@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn retrieval_plans_freeze_the_project_and_never_accept_other_project_inputs() {
+    let (dir, mut lib, a, b, first, second) = fixture();
+    let source = dir.path().join("near.png");
+    image::RgbImage::from_pixel(8, 6, image::Rgb([21, 80, 140]))
+        .save(&source)
+        .unwrap();
+    lib.import(&source, Some(a)).unwrap();
+    lib.set_workspace(Some(a));
+    let near = lib
+        .page(&Query::default(), 0, 10)
+        .unwrap()
+        .assets
+        .into_iter()
+        .find(|asset| asset.id != first.id)
+        .unwrap();
+    let vector: Vec<u8> = [1.0f32, 0.0]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    for asset in [&first, &second, &near] {
+        lib.db
+            .execute(
+                "INSERT INTO ai_embeddings VALUES(?1,'chinese-clip','scoped-revision',?2)",
+                params![asset.version_id.to_string(), vector],
+            )
+            .unwrap();
+    }
+    let similarity = lib.similarity_plan().unwrap();
+    let semantic = lib.semantic_plan("scoped-revision".into()).unwrap();
+    lib.set_workspace(Some(b));
+    assert_eq!(
+        similarity
+            .search(first.id)
+            .unwrap()
+            .iter()
+            .map(|a| a.id)
+            .collect::<Vec<_>>(),
+        vec![near.id]
+    );
+    assert!(similarity.search(second.id).is_err());
+    assert_eq!(
+        semantic.search(&[1.0, 0.0], Some(first.id)).unwrap(),
+        vec![near.id]
+    );
+    assert_eq!(
+        semantic
+            .recommendations(first.id, first.version_id)
+            .unwrap()[0]
+            .0,
+        near.id
+    );
+    assert!(
+        semantic
+            .recommendations(second.id, second.version_id)
+            .is_err()
+    );
+    assert!(lib.similar_assets(second.id).unwrap().is_empty());
+}
+
+#[test]
 /// 验证真实版本 24 数据在项目范围表尚未建立时也能正确升级。
 fn real_schema_24_shared_assets_upgrade_before_workspace_tables_exist() {
     let (_dir, mut lib, a, b, first, second) = fixture();

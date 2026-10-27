@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn settings_receipts_preserve_new_policy_motion_and_import_draft_and_close_waits_for_ack() {
+    let mut app = crate::tests::app();
+    app.apply_settings(UserSettings::default());
+    drop(app.update(Message::ReducedMotion(true)));
+    drop(app.update(Message::ToggleModelPolicy));
+    drop(app.update(Message::ImportPreference(0, "7".into())));
+    drop(app.update(Message::SettingsLoaded(1, Ok(UserSettings::default()))));
+    assert!(app.preferences.reduced_motion);
+    assert!(!app.preferences.ai.on_demand);
+    assert_eq!(app.preference_saves.import_draft.workers, 7);
+    assert_eq!(app.preferences.import.workers, 0);
+    drop(app.update(Message::WindowClose));
+    assert!(app.preference_saves.close_after_save);
+    assert!(app.library.is_some());
+    drop(app.update(Message::PreferenceSaved(
+        1,
+        Ok(UserSettings {
+            reduced_motion: true,
+            ..Default::default()
+        }),
+    )));
+    assert!(!app.preferences.ai.on_demand);
+    assert!(app.preference_saves.pending());
+    drop(app.update(Message::PreferenceSaved(1, Ok(UserSettings::default()))));
+    assert!(!app.preferences.ai.on_demand);
+    assert!(app.preference_saves.pending());
+    drop(app.update(Message::PreferenceSaved(
+        2,
+        Err("could not save AI policy".into()),
+    )));
+    assert!(!app.preference_saves.close_after_save);
+    assert!(app.library.is_some());
+    assert!(app.error.is_some());
+    assert!(app.preferences.ai.on_demand);
+    assert!(app.preferences.reduced_motion);
+    assert_eq!(app.preference_saves.import_draft.workers, 7);
+    drop(app.update(Message::SaveImportPreferences));
+    let mut saved = UserSettings::default();
+    saved.import.workers = 7;
+    drop(app.update(Message::PreferenceSaved(3, Ok(saved))));
+    assert_eq!(app.preferences.import.workers, 7);
+    assert!(!app.preference_saves.import_dirty);
+    assert!(app.preferences.reduced_motion);
+    assert!(app.status.contains("导入设置已保存"));
+}
+
+#[test]
 /// 验证项目导航保留独立筛选，拒绝先前项目投影。
 fn project_navigation_preserves_workspace_filters_and_rejects_previous_projection() {
     let mut app = crate::tests::app();
@@ -106,15 +153,11 @@ fn unrelated_settings_receipts_preserve_interface_changes() {
         diagnostic_logging: true,
         ..Default::default()
     };
-    drop(app.update(Message::SettingsLoaded(Ok(prefs.clone()))));
+    drop(app.update(Message::SettingsLoaded(1, Ok(prefs.clone()))));
     assert_eq!(app.preferences.language, Language::English);
     assert_eq!(app.preferences.appearance, Appearance::Dark);
     assert!(app.preferences.diagnostic_logging);
-    drop(
-        app.update(Message::Manage(ManageMessage::SyncoPreferencesSaved(Ok(
-            prefs,
-        )))),
-    );
+    drop(app.update(Message::Manage(ManageMessage::SyncoAutoStart(false))));
     assert_eq!(app.preferences.language, Language::English);
     assert_eq!(app.preferences.appearance, Appearance::Dark);
 }

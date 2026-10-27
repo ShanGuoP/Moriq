@@ -18,6 +18,9 @@ mod jobs;
 mod launch;
 mod maintenance;
 mod media;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod recovery_tests;
 mod scan;
 mod scheduler;
 mod settings;

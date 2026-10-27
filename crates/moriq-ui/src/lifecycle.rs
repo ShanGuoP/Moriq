@@ -4,6 +4,7 @@ use iced::widget::{column, row, text_input};
 #[derive(Default)]
 pub(super) struct LifecycleState {
     pub copy: Option<moriq_app::BackupControl>,
+    pub recovery: Option<ImportControl>,
     orphans: Option<std::sync::Arc<moriq_app::OrphanPlan>>,
     orphan_owner: Option<LibraryId>,
     purge_confirm: bool,
@@ -12,6 +13,16 @@ pub(super) struct LifecycleState {
     new_root: String,
 }
 impl LifecycleState {
+    pub fn release_recovery(&mut self) {
+        self.cancel_recovery();
+        self.recovery = None;
+    }
+    pub fn cancel_recovery(&mut self) {
+        if let Some(control) = &self.recovery {
+            control.cancel.store(true, Ordering::Release);
+        }
+    }
+
     /// 向备份或克隆工作发出取消，等待实际完成回执后再释放忙碌状态。
     pub fn cancel_copy(&mut self) {
         if let Some(control) = self.copy.take() {

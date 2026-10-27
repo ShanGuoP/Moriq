@@ -114,7 +114,8 @@ impl App {
             self.ai.categories.busy = false;
             match result {
                 Ok(profile) => {
-                    self.preferences.category_template = Some(profile);
+                    self.preference_saves
+                        .set_category_template(&mut self.preferences, profile);
                     self.ai.categories.notice=Some(tr!(language,"模板已保存。新建项目可套用；当前项目的修改仍需保存并同步。"=>"Template saved for new projects. Save and sync to apply edits to this project.").into());
                 }
                 Err(e) => self.ai.categories.error = Some(e),

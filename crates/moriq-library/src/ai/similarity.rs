@@ -73,75 +73,18 @@ s.aspect])?;
 
     Ok(())
 }
-pub struct SimilarityPlan {
-    connection: read_pool::ReadLease,
-}
+pub use crate::retrieval::SimilarityPlan;
 impl Library {
     /// 取得相似性搜索使用的独立读取租约，避免持有写入端连接。
     pub fn similarity_plan(&self) -> Result<SimilarityPlan> {
-        Ok(SimilarityPlan {
-            connection: self.readers.checkout()?,
-        })
+        Ok(SimilarityPlan::new(
+            self.readers.checkout()?,
+            self.query_scope(),
+        ))
     }
     /// 为指定素材准备并执行相似性查询。
     pub fn similar_assets(&self, asset: AssetId) -> Result<Vec<SimilarAsset>> {
         self.similarity_plan()?.search(asset)
-    }
-}
-impl SimilarityPlan {
-    /// 比较指纹与颜色等特征，返回符合条件的相似素材。
-    pub fn search(&self, asset: AssetId) -> Result<Vec<SimilarAsset>> {
-        let db = self.connection.connection()?;
-        let reference:Option<(i64,
-u8,
-u8,
-u8,
-f64)>=db.query_row("SELECT f.hash,f.red,f.green,f.blue,f.aspect FROM image_fingerprints f JOIN assets a ON \
-                a.display_version_id=f.version_id WHERE a.id=?1 AND a.deleted_at IS NULL",
-[asset.to_string()],
-|r|Ok((r.get(0)?,
-r.get(1)?,
-r.get(2)?,
-r.get(3)?,
-r.get(4)?))).optional()?;
-
-        let Some((hash, r, g, b, aspect)) = reference else {
-            return Err(Error::Invalid(
-                "所选图片还没有近似索引，请先在后台任务中建立索引".into(),
-            ));
-        };
-        let mut stmt=db.prepare("SELECT a.id,a.name,f.hash,f.red,f.green,f.blue FROM image_fingerprints f JOIN assets a ON \
-                a.display_version_id=f.version_id WHERE a.deleted_at IS NULL AND a.id<>?1 AND f.algorithm=1 AND \
-                f.aspect BETWEEN ?2 AND ?3")?;
-
-        let mut rows = stmt.query(params![asset.to_string(), aspect * 0.95, aspect * 1.05])?;
-        let mut matches = Vec::new();
-        while let Some(row) = rows.next()? {
-            let value: i64 = row.get(2)?;
-            let distance = ((hash as u64) ^ (value as u64)).count_ones();
-            let color: [u8; 3] = [row.get(3)?, row.get(4)?, row.get(5)?];
-            if distance <= 8
-                && color
-                    .into_iter()
-                    .zip([r, g, b])
-                    .map(|(a, b)| u32::from(a.abs_diff(b)))
-                    .sum::<u32>()
-                    <= 100
-            {
-                matches.push(SimilarAsset {
-                    id: AssetId(parse_id(&row.get::<_, String>(0)?)?),
-                    name: row.get(1)?,
-                    distance,
-                });
-                if matches.len() > 200 {
-                    matches.sort_by_key(|a| a.distance);
-                    matches.truncate(100);
-                }
-            }
-        }
-        matches.sort_by(|a, b| a.distance.cmp(&b.distance).then(a.name.cmp(&b.name)));
-        matches.truncate(100);
-        Ok(matches)
     }
 }
 

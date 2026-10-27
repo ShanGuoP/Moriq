@@ -6,6 +6,7 @@ mod batch;
 mod categories;
 mod export;
 mod favorites;
+mod features;
 mod filters;
 mod folders;
 use export::ExportChange;
@@ -37,6 +38,7 @@ use drop_import::DropMessage;
 #[allow(clippy::unwrap_used)]
 mod interface_tests;
 mod popups;
+mod preferences;
 mod project_form;
 mod settings;
 mod surfaces;
@@ -120,7 +122,7 @@ pub(crate) enum Message {
     PersistNavigation,
     NavigationLoaded(LibraryId, u64, Result<Option<SavedNavigation>, String>),
     NavigationSaved(LibraryId, Result<(), String>),
-    AiPolicySaved(AiPreferences, Result<UserSettings, String>),
+    PreferenceSaved(u64, Result<UserSettings, String>),
     Lifecycle(LifecycleMessage),
     Batch(BatchMessage),
     Metadata(MetadataMessage),
@@ -141,7 +143,7 @@ pub(crate) enum Message {
     Journal(JournalMessage),
     Manage(ManageMessage),
     Modifiers(iced::keyboard::Modifiers),
-    SettingsLoaded(Result<UserSettings, String>),
+    SettingsLoaded(u64, Result<UserSettings, String>),
     LibraryCardsLoaded(u64, Result<Vec<moriq_app::LibraryCard>, String>),
     OpenRecent(PathBuf),
     Libraries(libraries::LibraryMessage),
@@ -173,7 +175,6 @@ pub(crate) enum Message {
     PickedImages(Option<Vec<PathBuf>>),
     ImportPreference(u8, String),
     SaveImportPreferences,
-    ImportPreferencesSaved(ImportPreferences, Result<UserSettings, String>),
     Imported(ImportReport),
     CancelImport,
     Tick,
@@ -326,6 +327,7 @@ pub(crate) struct App {
     manager: manage::Manager,
     preferences: UserSettings,
     interface: settings::InterfaceState,
+    preference_saves: preferences::State,
     libraries: libraries::State,
     library_covers: HashMap<PathBuf, image::Handle>,
     library_summaries: HashMap<PathBuf, (u64, u64)>,
@@ -436,9 +438,11 @@ impl App {
     /// 初始化应用状态、服务及启动任务，不在界面线程执行媒体读取。
     fn new(service: Service, launch: LaunchOptions) -> (Self, Task<Message>) {
         let settings_service = service.clone();
+        let mut preference_saves = preferences::State::default();
+        let request = preference_saves.request_snapshot();
         let settings = Task::perform(
             async move { settings_service.settings().await },
-            Message::SettingsLoaded,
+            move |result| Message::SettingsLoaded(request, result),
         );
         let open = launch
             .library
@@ -468,6 +472,7 @@ impl App {
                 manager: Default::default(),
                 preferences: Default::default(),
                 interface: Default::default(),
+                preference_saves,
                 libraries: Default::default(),
                 library_covers: HashMap::new(),
                 library_summaries: HashMap::new(),
@@ -1042,24 +1047,28 @@ impl App {
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Manage(event) => return self.manage_message(event),
             Message::Libraries(event) => return self.library_message(event),
-            Message::SettingsLoaded(result) => match result {
-                Ok(prefs) => {
-                    self.on_demand_models = prefs.ai.on_demand;
-                    self.retain_indexes = prefs.ai.retain_indexes;
-                    let value = prefs.ai;
-                    let service = self.service.clone();
-                    self.apply_settings(prefs);
-
-                    return Task::batch([
-                        Task::perform(async move { service.ai_policy(value).await }, |r| match r {
-                            Ok(()) => Message::Noop,
-                            Err(e) => Message::Notice(e),
-                        }),
-                        self.load_library_cards(),
-                    ]);
+            Message::SettingsLoaded(request, result)
+                if self.preference_saves.accepts_snapshot(request) =>
+            {
+                match result {
+                    Ok(prefs) => {
+                        let initial_policy = self.preference_saves.needs_initial_policy();
+                        self.apply_settings(prefs);
+                        let policy = if initial_policy {
+                            self.queue_preference(preferences::Change::AiRuntime(
+                                self.preferences.ai,
+                            ))
+                        } else {
+                            Task::none()
+                        };
+                        return Task::batch([policy, self.load_library_cards()]);
+                    }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
-            },
+            }
+            Message::PreferenceSaved(request, result) => {
+                return self.finish_preference_save(request, result);
+            }
             Message::LibraryCardsLoaded(request, Ok(cards))
                 if request == self.library_cards_request =>
             {
@@ -1097,10 +1106,10 @@ impl App {
                 self.dialog = None;
                 self.manager.panel = None;
                 let service = self.service.clone();
-                return Task::perform(
-                    async move { service.settings().await },
-                    Message::SettingsLoaded,
-                );
+                let request = self.preference_saves.request_snapshot();
+                return Task::perform(async move { service.settings().await }, move |result| {
+                    Message::SettingsLoaded(request, result)
+                });
             }
             Message::OpenRecent(path)
                 if self.import.is_none() && !self.switching && !self.manager.busy =>
@@ -1131,6 +1140,10 @@ impl App {
                 return Task::none();
             }
             Message::WindowClose => {
+                if self.preference_saves.pending() {
+                    self.preference_saves.close_after_save = true;
+                    return self.save_next_preference();
+                }
                 if self.interface.saving.is_some()
                     || (self.preferences.language, self.preferences.appearance)
                         != self.interface.saved
@@ -1141,6 +1154,7 @@ impl App {
                 self.drop_import.clear();
                 let playback = self.viewer.playback.take();
                 self.lifecycle.cancel_copy();
+                self.lifecycle.release_recovery();
                 self.stop_viewer();
                 for control in self.ai.downloads.values() {
                     control.stop.store(true, Ordering::Relaxed);
@@ -1252,17 +1266,8 @@ impl App {
                     ..self.preferences.ai
                 };
 
-                let value = self.preferences.ai;
-                let service = self.service.clone();
-                return Task::perform(
-                    async move { service.ai_preferences(value).await },
-                    move |r| Message::AiPolicySaved(value, r),
-                );
+                return self.queue_preference(preferences::Change::Ai(self.preferences.ai));
             }
-            Message::AiPolicySaved(value, result) if self.preferences.ai == value => match result {
-                Ok(prefs) => self.apply_settings(prefs),
-                Err(e) => self.error = Some(e),
-            },
             Message::ShowCreate => {
                 self.name = tr!(language, "我的素材库" => "My Library").into();
                 self.dialog = Some(Dialog::CreateLibrary);
@@ -1443,9 +1448,10 @@ impl App {
                         let remember = if self.launch.capture.is_some() {
                             Task::none()
                         } else {
+                            let settings_request = self.preference_saves.request_snapshot();
                             Task::perform(
                                 async move { recent_service.remember(recent_name, recent_path).await },
-                                Message::SettingsLoaded,
+                                move |result| Message::SettingsLoaded(settings_request, result),
                             )
                         };
                         self.library = Some(library);
@@ -1456,6 +1462,7 @@ impl App {
                         };
                         self.manager = Default::default();
                         self.lifecycle.cancel_copy();
+                        self.lifecycle.release_recovery();
                         self.stop_people_portraits();
                         self.ai.portraits.clear();
                         self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
@@ -1585,31 +1592,23 @@ impl App {
                     self.manager.referenced_import,
                 );
             }
-            Message::ImportPreference(field, value) => match field {
-                0 => self.preferences.import.workers = value.parse().unwrap_or(0),
-                1 => {
-                    self.preferences.import.memory_mib = value
-                        .parse()
-                        .unwrap_or(ImportPreferences::default().memory_mib)
+            Message::ImportPreference(field, value) => {
+                self.preference_saves.import_dirty = true;
+                match field {
+                    0 => self.preference_saves.import_draft.workers = value.parse().unwrap_or(0),
+                    1 => {
+                        self.preference_saves.import_draft.memory_mib = value
+                            .parse()
+                            .unwrap_or(ImportPreferences::default().memory_mib)
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
-            Message::SaveImportPreferences => {
-                let prefs = self.preferences.import;
-                let service = self.service.clone();
-                return Task::perform(
-                    async move { service.import_preferences(prefs).await },
-                    move |result| Message::ImportPreferencesSaved(prefs, result),
-                );
             }
-            Message::ImportPreferencesSaved(value, result) => match result {
-                Ok(prefs) if self.preferences.import == value => {
-                    self.apply_settings(prefs);
-                    self.status = tr!(language, "导入设置已保存，下次导入生效" => "Import settings saved. Changes apply to the next import.").into();
-                }
-                Err(error) => self.error = Some(error),
-                _ => {}
-            },
+            Message::SaveImportPreferences => {
+                return self.queue_preference(preferences::Change::Import(
+                    self.preference_saves.import_draft,
+                ));
+            }
             Message::CancelImport => {
                 let pending = self.drop_import.pending_count();
                 self.drop_import.clear();
@@ -2280,7 +2279,7 @@ impl App {
             Message::ShowLibraries
             | Message::LibraryCardsLoaded(..)
             | Message::OpenRecent(..)
-            | Message::AiPolicySaved(..)
+            | Message::SettingsLoaded(..)
             | Message::LibraryRenamed(..)
             | Message::AssetRenamed(..)
             | Message::MasonryLoaded(..)

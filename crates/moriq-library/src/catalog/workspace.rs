@@ -136,6 +136,11 @@ impl Library {
     pub fn workspace(&self) -> Option<ProjectId> {
         self.workspace
     }
+    /// Freeze an explicit retrieval scope before a read plan leaves the writer.
+    pub fn query_scope(&self) -> QueryScope {
+        self.workspace
+            .map_or(QueryScope::Library, QueryScope::Project)
+    }
     /// 将当前项目范围转换为数据库查询使用的稳定键。
     pub(crate) fn workspace_key(&self) -> String {
         self.workspace.map(|id| id.to_string()).unwrap_or_default()

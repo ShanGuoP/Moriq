@@ -147,6 +147,34 @@ impl Service {
         })
         .await
     }
+    /// Resolve aliases off the UI thread and return the identity actually closed.
+    pub async fn close_library_at(
+        &self,
+        path: PathBuf,
+        allow_close: bool,
+    ) -> Result<Option<LibraryId>> {
+        let cancel = self.job_cancel.clone();
+        let cache = self.media_cache.clone();
+        self.call(move |active| {
+            let matching = active
+                .as_ref()
+                .filter(|library| {
+                    path == library.root()
+                        || path.canonicalize().is_ok_and(|root| root == library.root())
+                })
+                .map(Library::id);
+            if matching.is_some() {
+                if !allow_close {
+                    return Err("当前素材有未保存修改，请先保存后再移除资源库。".into());
+                }
+                cancel.stop(None);
+                cache.clear();
+                *active = None;
+            }
+            Ok(matching)
+        })
+        .await
+    }
     /// 从最近列表移除或按已确认计划删除资源库，保护仍打开的库与外部原片。
     pub async fn remove_library(
         &self,
