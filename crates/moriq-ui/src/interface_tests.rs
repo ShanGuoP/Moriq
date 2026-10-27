@@ -1,6 +1,76 @@
 use super::*;
 
 #[test]
+/// 验证模型页侧栏直接切换项目管理，历史和过期回执不会跳回素材页。
+fn model_sidebar_projects_switch_workspace_and_history_without_opening_assets() {
+    let mut app = crate::tests::app();
+    let first = ProjectId::default();
+    let second = ProjectId::default();
+    let owner = app.library.as_ref().unwrap().info.id;
+    drop(app.update(Message::Navigate(2)));
+    app.model_tab = 1;
+    app.model_search = "Qwen".into();
+    app.model_filter = 1;
+    drop(app.update(app.sidebar_project_message(first)));
+    assert_eq!(app.content_screen(), Some(Screen::Models));
+    assert_eq!(app.service.workspace_project(), Some(first));
+    let old_request = app.projection_request;
+    drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
+        owner,
+        old_request,
+        Ok(Organizer {
+            description: "first project".into(),
+            ..Default::default()
+        }),
+    ))));
+    assert_eq!(app.manager.organizer.description, "first project");
+
+    drop(app.update(app.sidebar_project_message(second)));
+    assert_eq!(app.content_screen(), Some(Screen::Models));
+    assert_eq!(app.query.project, Some(second));
+    assert_eq!(app.service.workspace_project(), Some(second));
+    assert!(app.manager.organizer.description.is_empty());
+    drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
+        owner,
+        old_request,
+        Ok(Organizer {
+            description: "stale first project".into(),
+            ..Default::default()
+        }),
+    ))));
+    assert!(app.manager.organizer.description.is_empty());
+
+    for (message, project) in [(Message::Back, first), (Message::Forward, second)] {
+        drop(app.update(message));
+        assert_eq!(app.content_screen(), Some(Screen::Models));
+        assert_eq!(app.query.project, Some(project));
+        assert_eq!(app.service.workspace_project(), Some(project));
+        assert_eq!(app.model_tab, 1);
+        assert_eq!(app.model_search, "Qwen");
+        assert_eq!(app.model_filter, 1);
+    }
+}
+
+#[test]
+/// 验证首页和素材页侧栏仍然打开项目素材，AI 内容中的显式入口亦保持有效。
+fn project_asset_navigation_still_opens_assets_outside_model_sidebar() {
+    for screen in [Screen::Overview, Screen::Assets, Screen::Models] {
+        let mut app = crate::tests::app();
+        app.screen = screen;
+        let project = ProjectId::default();
+        let message = if screen == Screen::Models {
+            Message::Project(project)
+        } else {
+            app.sidebar_project_message(project)
+        };
+        drop(app.update(message));
+        assert_eq!(app.content_screen(), Some(Screen::Assets));
+        assert_eq!(app.query.project, Some(project));
+        assert_eq!(app.service.workspace_project(), Some(project));
+    }
+}
+
+#[test]
 fn settings_receipts_preserve_new_policy_motion_and_import_draft_and_close_waits_for_ack() {
     let mut app = crate::tests::app();
     app.apply_settings(UserSettings::default());

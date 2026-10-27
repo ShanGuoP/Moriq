@@ -109,6 +109,15 @@ pub enum AiMessage {
     Stored(LibraryId, Result<(), String>),
 }
 impl App {
+    /// 模型页侧栏切换整理空间，其他页面打开项目素材。
+    pub(super) fn sidebar_project_message(&self, project: ProjectId) -> Message {
+        if self.screen == Screen::Models {
+            Message::Ai(AiMessage::Workspace(Some(project)))
+        } else {
+            Message::Project(project)
+        }
+    }
+
     /// 构建模型页面的资源库切换列表，保留当前库身份。
     pub(super) fn model_libraries(&self) -> Vec<(String, PathBuf, bool)> {
         let mut entries = self

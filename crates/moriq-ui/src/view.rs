@@ -996,7 +996,7 @@ impl App {
                         .padding([6, 10])
                         .width(Length::Fill)
                         .style(theme::nav(selected))
-                        .on_press(Message::Project(project.id)),
+                        .on_press(self.sidebar_project_message(project.id)),
                     );
                 }
             }
