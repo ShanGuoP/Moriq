@@ -4,7 +4,9 @@
 
 Moriq Space（中文名：墨屿）是一款本地桌面素材管理工具。你可以把分散的图片和视频收进独立资源库，用项目、标签、评分和智能集合整理，再按需要查找、查看、精修或导出。
 
-**当前版本为 1.0.0，提供 Windows x86_64 运行包，支持简体中文、英文和浅色、暗色主题。** 从 [Releases](https://github.com/ShanGuoP/Moriq/releases/latest) 下载便携包，完整解压后即可使用。本地 AI 与 Synco 联动请先用少量素材试用，具体操作见下文。
+**当前版本为 1.1.0，提供 Windows x86_64 运行包，支持简体中文、英文和浅色、暗色主题。** 从 [Releases](https://github.com/ShanGuoP/Moriq/releases/latest) 下载便携包，完整解压后即可使用。本地 AI 与 Synco 联动请先用少量素材试用，具体操作见下文。
+
+首次打开旧资源库时会自动备份数据库并升级整理结构。升级后请继续使用 1.1.0 或后续兼容版本，旧程序无法打开升级后的资源库；原片不受升级影响。
 
 杉果派 · [项目源码](https://github.com/ShanGuoP/Moriq) · [Apache-2.0 License](LICENSE)
 
