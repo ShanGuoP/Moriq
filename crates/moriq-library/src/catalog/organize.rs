@@ -363,6 +363,8 @@ native::raw_sql()),
                 WHERE a.id=?1)",
 [id.to_string()],
 |r|r.get(0))?,
+            nas:self.db.query_row("SELECT EXISTS(SELECT 1 FROM nas_versions n JOIN asset_versions v ON v.id=n.version_id \
+                WHERE v.asset_id=?1)", [id.to_string()], |r|r.get(0))?,
 
             ..Default::default()
         })
@@ -559,6 +561,19 @@ native::raw_sql()),
         )?;
         self.version_path(&version, true)
     }
+    /// Resolve a location on the writer; callers verify external bytes on a file worker.
+    pub fn asset_location(&self, id: AssetId) -> Result<(PathBuf, Option<String>)> {
+        let version: String = self.db.query_row(
+            "SELECT display_version_id FROM assets WHERE id=?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )?;
+        let reference: Option<String> = self.db.query_row(
+            "SELECT v.sha256 FROM asset_versions v JOIN file_locations f ON f.version_id=v.id WHERE v.id=?1",
+            [&version], |row| row.get(0),
+        ).optional()?;
+        Ok((self.version_path(&version, false)?, reference))
+    }
     /// 解析指定版本的受管或外部路径，并按参数控制外部访问。
     pub(super) fn version_path(&self, version: &str, verify_reference: bool) -> Result<PathBuf> {
         let reference: Option<(String, Vec<u8>)> = self
@@ -574,7 +589,7 @@ native::raw_sql()),
             if !path.is_absolute() {
                 return Err(Error::Invalid("引用路径无效".into()));
             }
-            reject_network_reference(&path)?;
+            nas::reference_path(&self.db, version, &path)?;
             if verify_reference {
                 let expected: String = self.db.query_row(
                     "SELECT sha256 FROM asset_versions WHERE id=?1",

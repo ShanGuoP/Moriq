@@ -452,11 +452,12 @@ impl App {
         {
             pick_list(
                 language,
-                vec!["选择图片文件", "导入文件夹", "引用外部原片"],
+                vec!["选择图片文件", "导入文件夹", "引用外部原片", "NAS 图片"],
                 None::<&str>,
                 |choice| match choice {
                     "导入文件夹" => Message::Manage(ManageMessage::FolderImport),
                     "引用外部原片" => Message::Manage(ManageMessage::ReferenceImport),
+                    "NAS 图片" => Message::Manage(ManageMessage::Nas),
                     _ => Message::Import,
                 },
             )

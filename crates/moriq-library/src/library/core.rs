@@ -256,6 +256,11 @@ impl Library {
                 tx.execute_batch(include_str!("../database/migrations/migration_27.sql"))?;
                 tx.commit()?;
             }
+            if version <= 27 {
+                let tx = db.transaction()?;
+                tx.execute_batch(include_str!("../database/migrations/migration_28.sql"))?;
+                tx.commit()?;
+            }
             Ok(())
         })();
         migrations.map_err(|error| {

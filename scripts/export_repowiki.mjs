@@ -97,6 +97,8 @@ walk(kids.get("") || [], [], 0);
 const index = [
   "# Moriq Space Repo Wiki",
   "",
+  "仓库增补：[NAS 图片访问（1.2.0）](NAS%20图片访问.md)。",
+  "",
   `Qoder Repo Wiki 的 Markdown 导出：${fileCount} 个页面，目录层级与 wiki 节点树一致。`,
   `正文逐节照搬，仅把 \`file://\` 代码引用改写为指向仓库文件的相对链接（共 ${linkCount} 处）。`,
   "含子节点的页面写成该目录下的 `README.md`。",

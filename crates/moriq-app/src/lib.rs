@@ -18,6 +18,7 @@ mod jobs;
 mod launch;
 mod maintenance;
 mod media;
+mod nas;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod recovery_tests;
@@ -30,6 +31,7 @@ pub use moriq_library::Pixels;
 pub use moriq_library::backup::Control as BackupControl;
 pub use moriq_library::library_removal::Plan as LibraryRemovalPlan;
 pub use moriq_library::maintenance::Control as MaintenanceControl;
+pub use moriq_library::nas::NasSource;
 pub use moriq_library::native::IMPORT_EXTENSIONS;
 pub use moriq_library::storage::Control as StorageControl;
 pub use settings::LibraryCard;

@@ -205,11 +205,26 @@ asset.to_string()],
         if self.reference_hash(asset, version)? != expected {
             return Err(Error::Invalid("引用版本已经改变，请重新选择".into()));
         }
+        let nas_source = nas::import_source(&self.db, path)?;
         let (platform, native) = organize::encode_path(path)?;
-        self.db.execute(
+        let tx = self.db.transaction()?;
+        tx.execute(
             "UPDATE file_locations SET platform=?1,native_path=?2 WHERE version_id=?3",
             params![platform, native, version.to_string()],
         )?;
+        if let Some(source_id) = nas_source {
+            tx.execute(
+                "INSERT INTO nas_versions(version_id,source_id) VALUES(?1,?2) \
+                ON CONFLICT(version_id) DO UPDATE SET source_id=excluded.source_id",
+                params![version.to_string(), source_id],
+            )?;
+        } else {
+            tx.execute(
+                "DELETE FROM nas_versions WHERE version_id=?1",
+                [version.to_string()],
+            )?;
+        }
+        tx.commit()?;
         self.snapshot = None;
         Ok(())
     }

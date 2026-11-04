@@ -205,6 +205,7 @@ pub struct AssetDetails {
     pub projects: Vec<ProjectId>,
     pub exif: Vec<(String, String)>,
     pub referenced: bool,
+    pub nas: bool,
     pub versions: Vec<AssetVersion>,
 }
 #[derive(Debug, Clone)]

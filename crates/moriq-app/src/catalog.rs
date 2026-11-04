@@ -522,13 +522,22 @@ impl Service {
     }
     /// 先解析素材路径，再请求系统文件管理器定位该文件。
     pub async fn reveal_asset(&self, library: LibraryId, asset: AssetId) -> Result<()> {
-        let path = self
+        let (path, expected) = self
             .call(move |active| {
                 check(active, library)?
-                    .asset_path(asset)
+                    .asset_location(asset)
                     .map_err(|e| e.to_string())
             })
             .await?;
+        let path = tokio::task::spawn_blocking(move || {
+            if let Some(expected) = expected {
+                moriq_library::validate_reference(&path, &expected).map_err(|e| e.to_string())
+            } else {
+                Ok(path)
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         launch::open(path.into_os_string(), true).await
     }
     /// 读取查询对应尺寸并计算瀑布流布局，供界面有界展示。

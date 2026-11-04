@@ -93,6 +93,11 @@ pub(super) fn clone_asset(
         [],
         |r| r.get(0),
     )?;
+    let nas_schema: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='nas_versions')",
+        [],
+        |r| r.get(0),
+    )?;
     if let Some(existing) = db
         .query_row(
             "SELECT c.asset_id FROM project_copies c WHERE source_asset_id=?1 AND project_id=?2 AND NOT EXISTS(SELECT 1 FROM project_assets p WHERE p.asset_id=c.asset_id AND p.project_id<>?2)",
@@ -174,6 +179,28 @@ pub(super) fn clone_asset(
                 &thumbnail,
                 &safe_path(root, &format!("thumbnails/256/{new}.png"))?,
             )?;
+        }
+        let remote = nas_schema
+            && db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM nas_versions WHERE version_id=?1)",
+                [old],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if remote {
+            copy_rows(
+                db,
+                "nas_versions",
+                "version_id",
+                old,
+                &[("version_id", text(new))],
+            )?;
+            let preview = safe_path(root, &format!("previews/{old}-srgb1-1600.png"))?;
+            if preview.exists() {
+                files.copy(
+                    &preview,
+                    &safe_path(root, &format!("previews/{new}-srgb1-1600.png"))?,
+                )?;
+            }
         }
         for table in [
             "file_locations",

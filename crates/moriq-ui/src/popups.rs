@@ -78,6 +78,13 @@ impl App {
                             true,
                         ),
                         (
+                            Icon::Download,
+                            tr!(language, "下载 NAS 原片到资源库" => "Download NAS originals into library"),
+                            Message::Manage(DownloadNas),
+                            false,
+                            multiple || self.manager.details.nas,
+                        ),
+                        (
                             Icon::Folder,
                             tr!(language, "项目归属…" => "Project membership…"),
                             Message::Manage(AssetProjects),
@@ -208,6 +215,13 @@ impl App {
                     false,
                     true,
                 ),
+                (
+                    Icon::Folder,
+                    tr!(language, "NAS 图片…" => "NAS photos…"),
+                    Message::Manage(Nas),
+                    false,
+                    true,
+                ),
             ]),
             Some(Panel::Menu) => entries.extend([
                 (
@@ -228,6 +242,13 @@ impl App {
                     Icon::Folder,
                     tr!(language, "项目管理…" => "Manage projects…"),
                     Message::Manage(Project),
+                    false,
+                    true,
+                ),
+                (
+                    Icon::Folder,
+                    tr!(language, "NAS 图片…" => "NAS photos…"),
+                    Message::Manage(Nas),
                     false,
                     true,
                 ),

@@ -1625,6 +1625,8 @@ impl App {
                 if report.cancelled {
                     self.drop_import.clear();
                 }
+                let nas_download = self.manager.nas_download;
+                self.manager.nas_download = false;
                 let parallelism = self
                     .import
                     .as_ref()
@@ -1637,17 +1639,24 @@ impl App {
                     .unwrap_or_default();
                 self.import = None;
                 self.manager.referenced_import = false;
-                self.status = trf!(language, "{}导入 {} 张 · 跳过 {} 张重复图片 · 失败 {} 张" => "{}Imported {} · Skipped {} duplicates · Failed {}",
-                    if report.cancelled {
-                        tr!(language, "已停止 · " => "Stopped · ")
-                    } else {
-                        ""
-                    },
-                    report.imported,
-                    report.duplicates,
-                    report.failed
-                );
-                self.status.push_str(&parallelism);
+                self.status = if nas_download {
+                    trf!(language, "已下载 {} 张 NAS 原片 · 失败 {} 张" => "Downloaded {} NAS originals · Failed {}",
+                        report.imported, report.failed)
+                } else {
+                    trf!(language, "{}导入 {} 张 · 跳过 {} 张重复图片 · 失败 {} 张" => "{}Imported {} · Skipped {} duplicates · Failed {}",
+                        if report.cancelled {
+                            tr!(language, "已停止 · " => "Stopped · ")
+                        } else {
+                            ""
+                        },
+                        report.imported,
+                        report.duplicates,
+                        report.failed
+                    )
+                };
+                if !nas_download {
+                    self.status.push_str(&parallelism);
+                }
                 if !report.failures.is_empty() {
                     self.error = Some(report.failures.join("\n"));
                 }
@@ -1661,6 +1670,7 @@ impl App {
                     self.reset_query(),
                     self.refresh_info(),
                     self.refresh_catalog(),
+                    self.refresh_details(),
                     self.start_next_drop(),
                 ]);
             }

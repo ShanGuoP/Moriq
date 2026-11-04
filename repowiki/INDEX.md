@@ -1,5 +1,7 @@
 # Moriq Space Repo Wiki
 
+仓库增补：[NAS 图片访问（1.2.0）](NAS%20图片访问.md)。
+
 ## 目录
 
 - [项目概览](项目概览.md)

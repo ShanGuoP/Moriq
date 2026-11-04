@@ -339,6 +339,11 @@ fn all_pages_and_management_surfaces_build_in_both_languages_and_themes() {
                 count: 0,
                 cover: None,
             }];
+            app.manager.nas_sources = vec![moriq_app::NasSource {
+                id: "fixture".into(),
+                label: r"\\server\photos".into(),
+                path: r"\\server\photos".into(),
+            }];
             for screen in [Screen::Overview, Screen::Assets, Screen::Models] {
                 app.screen = screen;
                 drop(app.view());
@@ -353,6 +358,7 @@ fn all_pages_and_management_surfaces_build_in_both_languages_and_themes() {
                 manage::Panel::People,
                 manage::Panel::Collections,
                 manage::Panel::Maintenance,
+                manage::Panel::Nas,
                 manage::Panel::Menu,
             ] {
                 app.manager.panel = Some(panel);

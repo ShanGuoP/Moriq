@@ -24,11 +24,13 @@ impl Service {
             2048,
             move |active| {
                 check(active, id)?
-                    .version_source(asset, version)
+                    .version_source_plan(asset, version)
                     .map_err(|e| e.to_string())
             },
             move |source| {
                 source
+                    .open()
+                    .map_err(|e| e.to_string())?
                     .regions_cancellable(cancelled)
                     .map(Arc::new)
                     .map_err(|e| e.to_string())
@@ -119,6 +121,28 @@ impl Service {
         asset: AssetId,
         version: Option<AssetVersionId>,
     ) -> Result<moriq_library::media::Preview> {
+        let nas_cache = self
+            .call(move |active| {
+                check(active, library)?
+                    .nas_preview_path(asset, version)
+                    .map_err(|e| e.to_string())
+            })
+            .await?;
+        if let Some(path) = nas_cache {
+            let offline = self
+                .read_plan(
+                    64,
+                    move |active| {
+                        check(active, library)?;
+                        Ok(path)
+                    },
+                    |path| Ok(moriq_library::media::Source::read_cached_preview(&path)),
+                )
+                .await?;
+            if let Some(preview) = offline {
+                return Ok(preview);
+            }
+        }
         let cache = self.media_cache.clone();
         let prepare_cache = cache.clone();
         // A disk derivative needs at most 64 MiB and must not queue behind a
@@ -129,8 +153,8 @@ impl Service {
                 move |active| {
                     let lib = check(active, library)?;
                     let source = match version {
-                        Some(version) => lib.version_source(asset, version),
-                        None => lib.media_source(asset),
+                        Some(version) => lib.version_source_plan(asset, version),
+                        None => lib.media_source_plan(asset),
                     }
                     .map_err(|e| e.to_string())?;
                     let cached = source
@@ -159,7 +183,7 @@ impl Service {
             1024,
             move |active| {
                 check(active, library)?
-                    .version_source(asset, version)
+                    .version_source_plan(asset, version)
                     .map_err(|e| e.to_string())
             },
             move |source| {
@@ -168,7 +192,11 @@ impl Service {
                 if cacheable && let Some(value) = cache.get(key) {
                     return Ok(value);
                 }
-                let value = source.preview().map_err(|e| e.to_string())?;
+                let value = source
+                    .open()
+                    .map_err(|e| e.to_string())?
+                    .preview()
+                    .map_err(|e| e.to_string())?;
                 if cacheable {
                     cache.put(key, value.clone());
                 }
@@ -192,11 +220,13 @@ impl Service {
             2048,
             move |active| {
                 check(active, library)?
-                    .version_source(asset, version)
+                    .version_source_plan(asset, version)
                     .map_err(|e| e.to_string())
             },
             |source| {
                 source
+                    .open()
+                    .map_err(|e| e.to_string())?
                     .preview_edge(0)
                     .map(|p| p.image)
                     .map_err(|e| e.to_string())
@@ -215,10 +245,15 @@ impl Service {
             64,
             move |active| {
                 check(active, library)?
-                    .version_source(asset, version)
+                    .version_source_plan(asset, version)
                     .map_err(|e| e.to_string())
             },
-            |s| s.playback().map_err(|e| e.to_string()),
+            |s| {
+                s.open()
+                    .map_err(|e| e.to_string())?
+                    .playback()
+                    .map_err(|e| e.to_string())
+            },
         )
         .await
     }
@@ -236,18 +271,27 @@ impl Service {
                 let library = check(active, library)?;
                 Ok((
                     library
-                        .version_source(asset, left)
+                        .version_source_plan(asset, left)
                         .map_err(|e| e.to_string())?,
                     library
-                        .version_source(asset, right)
+                        .version_source_plan(asset, right)
                         .map_err(|e| e.to_string())?,
                 ))
             },
             move |(left, right)| {
                 // Sequential decode: one decoder's peak allocation plus two bounded previews.
                 Ok((
-                    left.preview().map_err(|e| e.to_string())?.image,
-                    right.preview().map_err(|e| e.to_string())?.image,
+                    left.open()
+                        .map_err(|e| e.to_string())?
+                        .preview()
+                        .map_err(|e| e.to_string())?
+                        .image,
+                    right
+                        .open()
+                        .map_err(|e| e.to_string())?
+                        .preview()
+                        .map_err(|e| e.to_string())?
+                        .image,
                 ))
             },
         )

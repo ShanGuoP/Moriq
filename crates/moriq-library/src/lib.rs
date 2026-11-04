@@ -13,7 +13,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const SCHEMA: u32 = 27;
+const SCHEMA: u32 = 28;
 mod retrieval;
 pub use moriq_retrieval::QueryScope;
 // Library
@@ -41,6 +41,8 @@ mod catalog_query;
 mod folders;
 #[path = "catalog/location.rs"]
 mod location;
+#[path = "catalog/nas.rs"]
+pub mod nas;
 #[path = "catalog/organize.rs"]
 mod organize;
 #[path = "catalog/overview.rs"]

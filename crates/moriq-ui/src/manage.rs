@@ -12,6 +12,7 @@ pub(super) enum Panel {
     Libraries,
     Menu,
     Import,
+    Nas,
     Filters,
     Organize,
     Collections,
@@ -86,6 +87,9 @@ pub(super) struct Manager {
     pub busy: bool,
     pub maintenance: Option<moriq_app::MaintenanceControl>,
     pub referenced_import: bool,
+    pub nas_path: String,
+    pub nas_sources: Vec<moriq_app::NasSource>,
+    pub nas_download: bool,
     pub import_seen: usize,
     pub import_refreshed: Option<std::time::Instant>,
     pub report: String,
@@ -193,6 +197,14 @@ pub enum ManageMessage {
     DeleteProject,
     FolderImport,
     ReferenceImport,
+    Nas,
+    NasPath(String),
+    NasSourcesLoaded(LibraryId, Result<Vec<moriq_app::NasSource>, String>),
+    NasConnect,
+    NasConnected(LibraryId, Result<moriq_app::NasSource, String>),
+    NasBrowse(String, bool),
+    NasPicked(String, bool, Option<PathBuf>),
+    DownloadNas,
     Export,
     Backup,
     PickedDestination(LibraryId, bool, Option<PathBuf>),
@@ -706,6 +718,110 @@ impl App {
             }
 
             ImportMenu => self.manager.panel = Some(Panel::Import),
+            Nas => {
+                self.manager.panel = Some(Panel::Nas);
+                self.manager.nas_sources.clear();
+                if let Some(library) = &self.library {
+                    let id = library.info.id;
+                    let service = self.service.clone();
+                    return Task::perform(
+                        async move { service.nas_sources(id).await },
+                        move |result| Message::Manage(NasSourcesLoaded(id, result)),
+                    );
+                }
+            }
+            NasPath(value) => self.manager.nas_path = value,
+            NasSourcesLoaded(id, result)
+                if self.library.as_ref().is_some_and(|lib| lib.info.id == id) =>
+            {
+                match result {
+                    Ok(sources) => self.manager.nas_sources = sources,
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            NasConnect if !self.manager.busy && self.library.is_some() => {
+                let id = self
+                    .library
+                    .as_ref()
+                    .map(|lib| lib.info.id)
+                    .unwrap_or_default();
+                let path = PathBuf::from(self.manager.nas_path.trim());
+                let service = self.service.clone();
+                self.manager.busy = true;
+                return Task::perform(
+                    async move { service.connect_nas(id, path).await },
+                    move |result| Message::Manage(NasConnected(id, result)),
+                );
+            }
+            NasConnected(id, result)
+                if self.library.as_ref().is_some_and(|lib| lib.info.id == id) =>
+            {
+                self.manager.busy = false;
+                match result {
+                    Ok(source) => {
+                        if !self
+                            .manager
+                            .nas_sources
+                            .iter()
+                            .any(|saved| saved.id == source.id)
+                        {
+                            self.manager.nas_sources.push(source);
+                        }
+                        self.manager.nas_path.clear();
+                        self.status = tr!(language, "NAS 已连接，请选择要浏览的文件夹" => "NAS connected. Choose a folder to browse.").into();
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            NasBrowse(source_id, referenced) if self.import.is_none() && !self.manager.busy => {
+                if let Some(source) = self
+                    .manager
+                    .nas_sources
+                    .iter()
+                    .find(|source| source.id == source_id)
+                {
+                    let root = source.browse_path();
+                    self.manager.busy = true;
+                    return Task::perform(
+                        async move {
+                            rfd::AsyncFileDialog::new()
+                            .set_title(tr!(language, "选择 NAS 图片文件夹" => "Choose a NAS image folder"))
+                            .set_directory(root)
+                            .pick_folder().await.map(|folder| folder.path().to_path_buf())
+                        },
+                        move |path| Message::Manage(NasPicked(source_id, referenced, path)),
+                    );
+                }
+            }
+            NasPicked(source_id, referenced, Some(path)) => {
+                self.manager.busy = false;
+                return self.start_nas_import(source_id, path, self.query.project, referenced);
+            }
+            NasPicked(_, _, None) => self.manager.busy = false,
+            DownloadNas if self.import.is_none() && self.library.is_some() => {
+                let ids = self.selected_ids();
+                if ids.is_empty() {
+                    return Task::none();
+                }
+                let id = self
+                    .library
+                    .as_ref()
+                    .map(|lib| lib.info.id)
+                    .unwrap_or_default();
+                let control = ImportControl {
+                    total: ids.len(),
+                    ..ImportControl::default()
+                };
+                self.import = Some(control.clone());
+                self.manager.nas_download = true;
+                self.manager.panel = None;
+                self.status = tr!(language, "正在下载 NAS 原片到资源库…" => "Downloading NAS originals into the library…").into();
+                let service = self.service.clone();
+                return Task::perform(
+                    async move { service.download_nas(id, ids, control).await },
+                    Message::Imported,
+                );
+            }
             Synco => {
                 self.manager.panel = Some(Panel::Synco);
                 return self.refresh_organizer();
@@ -1615,6 +1731,7 @@ impl App {
             Some(Panel::Versions) => tr!(language, "素材版本" => "Asset versions"),
             Some(Panel::ViewOptions) => tr!(language, "显示方式" => "Display options"),
             Some(Panel::Import) => tr!(language, "导入素材" => "Assets imported"),
+            Some(Panel::Nas) => tr!(language, "NAS 图片" => "NAS photos"),
             Some(Panel::Filters) => tr!(language, "筛选与排序" => "Filter and sort"),
             Some(Panel::Organize) => tr!(language, "整理选中的素材" => "Organize selected assets"),
             Some(Panel::Tags) => tr!(language, "标签管理" => "Tag management"),
@@ -2274,6 +2391,35 @@ impl App {
                 }
             }
             Some(Panel::Project) => content = content.push(self.project_form()),
+            Some(Panel::Nas) => {
+                content = content.push(muted(tr!(language,
+                    "连接 Windows SMB 共享目录（局域网或 VPN）。使用当前 Windows 登录凭据。远程原片不包含在资源库备份中。"
+                    => "Connect a Windows SMB share over LAN or VPN using your Windows credentials. Remote originals are excluded from library backups.")));
+                content = content.push(
+                    text_input(r"\\server\photos", &self.manager.nas_path)
+                        .on_input(|value| Message::Manage(NasPath(value)))
+                        .padding(10),
+                );
+                content = content.push(action(
+                    tr!(language, "连接共享目录" => "Connect share"),
+                    NasConnect,
+                ));
+                for source in &self.manager.nas_sources {
+                    content = content.push(separator()).push(muted(&source.label)).push(
+                        row![
+                            action(
+                                tr!(language, "远程浏览并登记" => "Browse and reference remotely"),
+                                NasBrowse(source.id.clone(), true)
+                            ),
+                            action(
+                                tr!(language, "下载文件夹到本地" => "Download folder locally"),
+                                NasBrowse(source.id.clone(), false)
+                            ),
+                        ]
+                        .spacing(8),
+                    );
+                }
+            }
             Some(Panel::Maintenance) => {
                 content = content.push(crate::components::action(
                     tr!(language, "清空整库回收站…" => "Empty library trash…"),

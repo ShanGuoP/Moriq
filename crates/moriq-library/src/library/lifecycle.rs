@@ -166,12 +166,12 @@ r.get(1)?))).optional()?;
         {
             return Ok(false);
         }
-        let (platform, native) = organize::encode_path(&candidate.replacement)?;
-        self.db.execute(
-            "UPDATE file_locations SET platform=?2,native_path=?3 WHERE version_id=?1",
-            params![candidate.version, platform, native],
+        self.relocate_reference(
+            candidate.asset,
+            AssetVersionId(parse_id(&candidate.version)?),
+            &candidate.replacement,
+            &candidate.hash,
         )?;
-        self.snapshot = None;
         Ok(true)
     }
 }

@@ -292,14 +292,51 @@ impl App {
         self.manager.busy = false;
         self.manager.panel = None;
         self.manager.referenced_import = referenced;
+        self.manager.nas_download = false;
         self.manager.import_seen = 0;
         self.import = Some(control.clone());
+        self.manager.nas_download = false;
         let service = self.service.clone();
         let id = library.info.id;
         self.screen = Screen::Assets;
         self.status=tr!(self.preferences.language,"正在扫描并导入，原文件保持不变…"=>"Scanning and importing. Original files are preserved…").into();
         Task::perform(
             async move { service.import_sources(id, paths, project, control).await },
+            Message::Imported,
+        )
+    }
+    pub(super) fn start_nas_import(
+        &mut self,
+        source_id: String,
+        path: PathBuf,
+        project: Option<ProjectId>,
+        referenced: bool,
+    ) -> Task<Message> {
+        let Some(library) = &self.library else {
+            return Task::none();
+        };
+        let id = library.info.id;
+        let mut control = ImportControl {
+            referenced,
+            ..ImportControl::with_preferences(self.preferences.import)
+        };
+        control.workers = control.workers.min(2);
+        self.import = Some(control.clone());
+        self.manager.panel = None;
+        self.manager.import_seen = 0;
+        self.screen = Screen::Assets;
+        self.status = if referenced {
+            tr!(self.preferences.language, "正在登记 NAS 图片并生成预览…" => "Registering NAS photos and generating previews…")
+        } else {
+            tr!(self.preferences.language, "正在下载 NAS 图片到资源库…" => "Downloading NAS photos into the library…")
+        }.into();
+        let service = self.service.clone();
+        Task::perform(
+            async move {
+                service
+                    .import_nas_source(id, source_id, path, project, control)
+                    .await
+            },
             Message::Imported,
         )
     }

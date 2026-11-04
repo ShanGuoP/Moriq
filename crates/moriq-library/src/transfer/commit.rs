@@ -17,6 +17,9 @@ impl Library {
         relative_source: Option<&Path>,
     ) -> Result<bool> {
         self.last_import = ImportMetrics::default();
+        if referenced {
+            nas::import_source(&self.db, &source.canonicalize()?)?;
+        }
         let stage_started = std::time::Instant::now();
         let input = File::open(source)?;
         let length = input.metadata()?.len();
@@ -147,6 +150,11 @@ impl Library {
         relative_source: Option<&Path>,
         prepared: ingest::Prepared,
     ) -> Result<bool> {
+        let nas_source = if referenced {
+            nas::import_source(&self.db, source)?
+        } else {
+            None
+        };
         let ingest::Prepared {
             thumbnail_stage: thumb_stage,
             hash,
@@ -272,6 +280,12 @@ impl Library {
                 "INSERT INTO file_locations VALUES(?1,?2,?3)",
                 params![version.to_string(), platform, path],
             )?;
+            if let Some(source_id) = nas_source {
+                transaction.execute(
+                    "INSERT INTO nas_versions(version_id,source_id) VALUES(?1,?2)",
+                    params![version.to_string(), source_id],
+                )?;
+            }
         }
         if let Some(project) = project {
             transaction.execute(

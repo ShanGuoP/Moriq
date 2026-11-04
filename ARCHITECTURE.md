@@ -39,6 +39,14 @@ Referenced import stores the external original's identity and checksum. It does
 not authorize moving or deleting that original. Missing thumbnail caches rebuild
 on a media worker, with decoder admission to the shared memory budget.
 
+Schema 28 records explicitly approved Windows SMB roots and associates NAS
+versions with those roots. Ordinary external references still reject network
+paths. NAS previews are cached by immutable version; an offline source can show
+an existing derivative, while original-resolution reads require the source and
+verify its registered checksum. Interactive media plans leave network opens and
+decoding on workers. Download conversion verifies bytes in private staging, then changes
+the existing version to a managed file without changing asset identity.
+
 Interrupted imports use the same recovery engine in tools and the application.
 The writer freezes journal identities; admitted workers freeze private links,
 probe memory and prepare media; the writer commits only an unchanged journal in

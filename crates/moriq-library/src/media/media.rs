@@ -13,9 +13,58 @@ pub struct Source {
     path: PathBuf,
     identity: file_id::FileId,
     expected: Option<String>,
+    remote: bool,
     registered_hash: String,
     extension: String,
     _lease: Arc<File>,
+}
+pub struct SourcePlan {
+    root: PathBuf,
+    version: AssetVersionId,
+    dimensions: (u32, u32),
+    path: PathBuf,
+    expected: Option<String>,
+    remote: bool,
+    registered_hash: String,
+    extension: String,
+    lease: Arc<File>,
+}
+impl SourcePlan {
+    pub fn version(&self) -> AssetVersionId {
+        self.version
+    }
+    pub fn cacheable(&self) -> bool {
+        self.expected.is_none() || self.remote
+    }
+    pub fn cached_preview(&self) -> Option<Preview> {
+        if !self.cacheable() {
+            return None;
+        }
+        let path = safe_path(
+            &self.root,
+            &format!("previews/{}-srgb1-1600.png", self.version),
+        )
+        .ok()?;
+        Source::read_cached_preview(&path)
+    }
+    /// Opening a NAS file can block on the network; callers run this on a media worker.
+    pub fn open(self) -> Result<Source> {
+        let file = File::open(&self.path)?;
+        let identity = file_id::get_file_id(&self.path)?;
+        Ok(Source {
+            root: self.root,
+            version: self.version,
+            dimensions: self.dimensions,
+            file,
+            path: self.path,
+            identity,
+            expected: self.expected,
+            remote: self.remote,
+            registered_hash: self.registered_hash,
+            extension: self.extension,
+            _lease: self.lease,
+        })
+    }
 }
 impl Source {
     /// 从读取连接冻结指定素材版本的文件来源、身份及必要元数据。
@@ -36,12 +85,13 @@ impl Source {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
+        let mut remote = false;
         let path = if let Some((platform, bytes)) = &reference {
             let path = organize::decode_path(platform, bytes)?;
             if !path.is_absolute() {
                 return Err(Error::Invalid("引用路径无效".into()));
             }
-            organize::reject_network_reference(&path)?;
+            remote = nas::reference_path(db, &version.to_string(), &path)?;
             path
         } else {
             safe_path(root, &relative)?
@@ -56,6 +106,7 @@ impl Source {
             path,
             identity,
             expected: reference.is_some().then_some(hash.clone()),
+            remote,
             registered_hash: hash,
             extension,
             _lease: lease,
@@ -64,7 +115,7 @@ impl Source {
 }
 enum Thumbnail {
     Cached(File),
-    Rebuild(Source),
+    Rebuild(SourcePlan),
 }
 pub struct Thumbnails {
     files: Vec<std::result::Result<Thumbnail, String>>,
@@ -77,7 +128,7 @@ pub struct Preview {
 }
 pub struct Details {
     metadata: AssetDetails,
-    source: std::result::Result<Source, String>,
+    source: std::result::Result<SourcePlan, String>,
 }
 impl Library {
     /// Retrieval inputs use the same explicit scope as their candidates before decoding.
@@ -87,15 +138,25 @@ impl Library {
     }
     /// 为素材当前展示版本建立媒体读取来源。
     pub fn media_source(&self, asset: AssetId) -> Result<Source> {
+        self.media_source_plan(asset)?.open()
+    }
+    pub fn media_source_plan(&self, asset: AssetId) -> Result<SourcePlan> {
         let version: String = self.db.query_row(
             "SELECT display_version_id FROM assets WHERE id=?1",
             [asset.to_string()],
             |r| r.get(0),
         )?;
-        self.version_source(asset, AssetVersionId(parse_id(&version)?))
+        self.version_source_plan(asset, AssetVersionId(parse_id(&version)?))
     }
     /// 校验版本属于指定素材后建立来源，不修改当前展示版本。
     pub fn version_source(&self, asset: AssetId, version: AssetVersionId) -> Result<Source> {
+        self.version_source_plan(asset, version)?.open()
+    }
+    pub fn version_source_plan(
+        &self,
+        asset: AssetId,
+        version: AssetVersionId,
+    ) -> Result<SourcePlan> {
         let (version, hash, extension,width,height): (String, String, String,u32,u32) = self.db.query_row(
             "SELECT id,sha256,format,width,height FROM asset_versions WHERE asset_id=?1 AND id=?2",
             params![asset.to_string(), version.to_string()],
@@ -107,19 +168,21 @@ impl Library {
             |r| r.get::<_, bool>(0),
         )?;
         let path = self.version_path(&version, false)?;
-        let file = File::open(&path)?;
-        let identity = file_id::get_file_id(&path)?;
-        Ok(Source {
+        let remote = if referenced {
+            nas::reference_path(&self.db, &version, &path)?
+        } else {
+            false
+        };
+        Ok(SourcePlan {
             root: self.root.clone(),
             version: AssetVersionId(parse_id(&version)?),
             dimensions: (width, height),
-            file,
             path,
-            identity,
             expected: referenced.then_some(hash.clone()),
+            remote,
             registered_hash: hash,
             extension,
-            _lease: self._lock.clone(),
+            lease: self._lock.clone(),
         })
     }
     /// 冻结有限数量版本的缩略图来源，供媒体线程批量读取。
@@ -143,7 +206,7 @@ impl Library {
                                 |r| r.get(0),
                             )
                             .map_err(|e| e.to_string())?;
-                        self.version_source(
+                        self.version_source_plan(
                             AssetId(parse_id(&asset).map_err(|e| e.to_string())?),
                             *id,
                         )
@@ -224,7 +287,7 @@ impl Library {
         }
         Ok(Details {
             metadata,
-            source: self.media_source(id).map_err(|e| e.to_string()),
+            source: self.media_source_plan(id).map_err(|e| e.to_string()),
         })
     }
 }
@@ -268,7 +331,7 @@ impl Source {
         let extension = self.extension.clone();
         let cacheable = self.cacheable();
         let lease = self._lease.clone();
-        if cacheable
+        if self.expected.is_none()
             && let Ok(path) = crate::video::linked_snapshot(&self.path, &self.root, self.identity)
         {
             return crate::region::Session::open(
@@ -294,7 +357,7 @@ impl Source {
     }
     /// 返回该来源是否允许使用受管预览缓存。
     pub fn cacheable(&self) -> bool {
-        self.expected.is_none()
+        self.expected.is_none() || self.remote
     }
     /// 从冻结文件读取规范化媒体元数据。
     pub fn metadata_record(self) -> Result<serde_json::Value> {
@@ -308,7 +371,7 @@ impl Source {
             return Err(Error::Invalid("所选素材不是视频".into()));
         }
         let lease = self._lease.clone();
-        if self.cacheable()
+        if self.expected.is_none()
             && let Ok(snapshot) =
                 crate::video::linked_snapshot(&self.path, &self.root, self.identity)
         {
@@ -361,6 +424,10 @@ impl Source {
             &format!("previews/{}-srgb1-1600.png", self.version),
         )
         .ok()?;
+        Self::read_cached_preview(&path)
+    }
+    /// Read a registered NAS derivative without opening an offline original.
+    pub fn read_cached_preview(path: &Path) -> Option<Preview> {
         let file = File::open(path).ok()?;
         if file.metadata().ok()?.len() > 32 * 1024 * 1024 {
             return None;
@@ -489,7 +556,9 @@ impl Thumbnails {
                 let result = (|| -> Result<Option<Pixels>> {
                     let file = match file.map_err(Error::Invalid)? {
                         Thumbnail::Cached(file) => file,
-                        Thumbnail::Rebuild(source) => return source.rebuild_thumbnail().map(Some),
+                        Thumbnail::Rebuild(source) => {
+                            return source.open()?.rebuild_thumbnail().map(Some);
+                        }
                     };
                     let mut reader =
                         ImageReader::new(BufReader::new(file)).with_guessed_format()?;
@@ -518,6 +587,13 @@ impl Details {
         }
         let (fields, location) = match self.source {
             Ok(source) => {
+                let source = match source.open() {
+                    Ok(source) => source,
+                    Err(error) => {
+                        self.metadata.exif = vec![("原片状态".into(), error.to_string())];
+                        return self.metadata;
+                    }
+                };
                 let lease = source._lease.clone();
                 let result = source.frozen_file().map(|(file, _frozen)| read_exif(file));
                 drop(lease);

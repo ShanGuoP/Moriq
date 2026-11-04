@@ -35,6 +35,7 @@ pub struct Plan {
     owner: LibraryId,
     root: PathBuf,
     record: Record,
+    network_approved: bool,
     _lease: Arc<File>,
 }
 pub struct Work {
@@ -57,7 +58,7 @@ impl Plan {
         let _scope = cancel::Scope::enter(cancel);
         cancel::check()?;
         let original = organize::decode_path(&self.record.platform, &self.record.source)?;
-        if self.record.referenced {
+        if self.record.referenced && !self.network_approved {
             organize::reject_network_reference(&original)?;
         }
         let staged = safe_path(
@@ -138,11 +139,18 @@ impl Library {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(records
             .into_iter()
-            .map(|record| Plan {
-                owner: self.id(),
-                root: self.root.clone(),
-                record,
-                _lease: self._lock.clone(),
+            .map(|record| {
+                let network_approved = record.referenced
+                    && organize::decode_path(&record.platform, &record.source).is_ok_and(|path| {
+                        nas::is_unc(&path) && nas::import_source(&self.db, &path).is_ok()
+                    });
+                Plan {
+                    owner: self.id(),
+                    root: self.root.clone(),
+                    record,
+                    network_approved,
+                    _lease: self._lock.clone(),
+                }
             })
             .collect())
     }
