@@ -62,36 +62,35 @@ impl App {
         };
         let titlebar = row![
             column![
-                heading(title, 25),
+                text("COLLECTION").size(10).style(text_color(BLUE)),
+                heading(title, 28),
                 muted(trf!(language, "{} 张素材" => "{} assets", number(self.total)))
             ]
-            .spacing(4),
+            .spacing(7),
             Space::new().width(Length::Fill),
-            icon(Icon::Edit, 13.0, MUTED),
+            icon(Icon::Image, 13.0, MUTED),
             slider(160.0..=280.0, self.card_width, Message::Zoom)
                 .width(110)
                 .style(zoom),
             button(icon(Icon::Grid, 16.0, ICON))
                 .padding(8)
-                .style(secondary)
-                .on_press(Message::SetMasonry(true)),
+                .style(theme::nav(!self.list))
+                .on_press(Message::List(false)),
             button(icon(Icon::List, 16.0, ICON))
                 .padding(8)
-                .style(secondary)
+                .style(theme::nav(self.list))
                 .on_press(Message::List(true)),
-            icon_button(Icon::More, Message::Manage(ManageMessage::ViewOptions))
+            icon_button(Icon::More, Message::Manage(ManageMessage::ViewOptions)),
+            action(
+                tr!(language, "详情" => "Inspector"),
+                Message::ToggleInspector
+            )
+            .style(theme::nav(self.inspector_open))
         ]
         .spacing(8)
         .align_y(Alignment::Center);
         let mut filters = Row::new().spacing(8);
-        for label in [
-            "全部类型",
-            "全部时间",
-            "全部标签",
-            "评分",
-            "文件大小",
-            "添加方式",
-        ] {
+        for label in ["全部类型", "全部标签", "评分"] {
             if label == "全部标签" {
                 let mut values = vec![TagChoice::All];
                 values.extend(
@@ -186,39 +185,33 @@ impl App {
         } else {
             self.gallery()
         };
+        filters = filters
+            .push(action(
+                tr!(language, "更多筛选" => "Filters"),
+                Message::Manage(ManageMessage::Filters),
+            ))
+            .push(action(
+                tr!(language, "保存为集合" => "Save collection"),
+                Message::Manage(ManageMessage::Collections),
+            ))
+            .push(action(
+                if self.manager.selection.enabled {
+                    tr!(language, "取消选择" => "Done")
+                } else {
+                    tr!(language, "选择素材" => "Select")
+                },
+                Message::Manage(ManageMessage::ToggleMulti),
+            ));
         let mut center = column![titlebar, filters.wrap()];
-
-        center = center.push(
-            row![
-                action(
-                    if self.manager.selection.enabled {
-                        tr!(language, "退出多选" => "Exit selection")
-                    } else {
-                        tr!(language, "多选" => "Select")
-                    },
-                    Message::Manage(ManageMessage::ToggleMulti)
-                ),
-                action(
-                    &trf!(language, "整理 {} 张" => "Organize {}",
-                        if self.manager.selection.enabled {
-                            self.manager.selection.assets.len()
-                        } else {
-                            usize::from(self.viewer.selected.is_some())
-                        }
-                    ),
-                    Message::Manage(ManageMessage::Organize)
-                ),
-                action(
-                    tr!(language, "筛选与排序" => "Filter and sort"),
-                    Message::Manage(ManageMessage::Filters)
-                ),
-                action(
-                    tr!(language, "保存智能集合" => "Save smart collection"),
-                    Message::Manage(ManageMessage::Collections)
-                ),
-            ]
-            .spacing(8),
-        );
+        if self.manager.selection.enabled {
+            center = center.push(container(row![
+                heading(trf!(language, "已选择 {} 项" => "{} selected", self.manager.selection.assets.len()), 13),
+                Space::new().width(Length::Fill),
+                action(tr!(language, "全选当前页" => "Select visible"), Message::Manage(ManageMessage::SelectVisible)),
+                action(tr!(language, "整理" => "Organize"), Message::Manage(ManageMessage::Organize)),
+                action(tr!(language, "导出" => "Export"), Message::Manage(ManageMessage::ExportMenu)),
+            ].spacing(8).align_y(Alignment::Center)).padding(10).style(pale));
+        }
 
         let center = center
             .push(gallery)
@@ -231,26 +224,17 @@ impl App {
             })
             .height(Length::Fill)
             .width(Length::Fill);
-        let body: Element<'_, Message> = row![
-            center,
-            container(scroll(self.details()).id("details"))
-                .padding([16, 16])
-                .width(self.details_width())
-                .height(Length::Fill)
-                .style(|theme| container::Style {
-                    background: Some(
-                        crate::theme::adaptive(theme, Color::from_rgb8(252, 253, 255)).into()
-                    ),
-                    border: Border {
-                        color: crate::theme::adaptive(theme, LINE),
-                        width: 1.0,
-                        radius: 0.0.into()
-                    },
-                    ..Default::default()
-                })
-        ]
-        .height(Length::Fill)
-        .into();
+        let mut workspace = row![center];
+        if self.inspector_open {
+            workspace = workspace.push(
+                container(scroll(self.details()).id("details"))
+                    .padding([20, 18])
+                    .width(self.details_width())
+                    .height(Length::Fill)
+                    .style(navigation_surface),
+            );
+        }
+        let body: Element<'_, Message> = workspace.height(Length::Fill).into();
         let frozen = self.responsiveness.replacing();
         let body = body.map(move |message| if frozen { Message::Noop } else { message });
         let shield: Element<'_, Message> = if frozen {
@@ -388,73 +372,78 @@ impl App {
                 .as_ref()
                 .is_some_and(|asset| asset.id == tile.asset.id)
         };
-        let favorite_art: Element<'a, Message> = icon(
-            Icon::Heart,
-            16.0,
-            if tile.asset.favorite {
-                Color::from_rgb8(255, 105, 133)
-            } else {
-                Color::WHITE
-            },
-        );
-        let favorite = button(favorite_art)
-            .padding(7)
-            .style(|_, status| button::Style {
-                background: matches!(status, button::Status::Hovered)
-                    .then_some(Color::from_rgba8(25, 40, 60, 0.18).into()),
+        let caption_height = if height >= 110.0 { 54.0 } else { 0.0 };
+        let image_height = (height - caption_height - 4.0).max(20.0);
+        let overlay = row![
+            container(
+                text(if selected { "✓" } else { &tile.asset.format })
+                    .size(11)
+                    .style(text_color(Color::WHITE))
+            )
+            .padding([5, 8])
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba8(25, 35, 49, 0.62).into()),
                 border: Border {
-                    radius: 15.0.into(),
+                    radius: 8.0.into(),
                     ..Default::default()
                 },
                 ..Default::default()
-            })
-            .on_press(Message::Favorite(tile.asset.id, !tile.asset.favorite));
-        let content = stack![
-            photo(tile.handle.as_ref(), Length::Fill, height - 4.0),
-            container(column![
-                row![
-                    Space::new().width(Length::Fill),
-                    crate::motion::asset_feedback(
-                        favorite,
-                        tile.asset.id,
-                        self.preferences.reduced_motion
-                    ),
-                    button(icon(Icon::More, 16.0, Color::WHITE))
-                        .padding(7)
-                        .style(|_, _| button::Style {
-                            background: Some(Color::from_rgba8(20, 30, 40, 0.45).into()),
-                            border: Border {
-                                radius: 7.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                        .on_press(Message::AssetContext(tile.asset.id))
-                ],
-                Space::new().height(Length::Fill),
-                container(icon(
-                    if moriq_app::is_video_format(&tile.asset.format) {
-                        Icon::Video
-                    } else {
-                        Icon::Image
-                    },
-                    14.0,
-                    Color::WHITE,
-                ))
-                .padding(5)
-                .style(move |_| container::Style {
-                    background: Some(Color::from_rgba8(20, 30, 40, 0.45).into()),
+            }),
+            Space::new().width(Length::Fill),
+            button(icon(Icon::More, 16.0, Color::WHITE))
+                .padding(6)
+                .style(|_, _| button::Style {
+                    background: Some(Color::from_rgba8(25, 35, 49, 0.62).into()),
                     border: Border {
-                        radius: 5.0.into(),
+                        radius: 8.0.into(),
                         ..Default::default()
                     },
                     ..Default::default()
                 })
-            ])
-            .padding(4)
-            .height(height - 4.0)
-            .width(Length::Fill)
+                .on_press(Message::AssetContext(tile.asset.id)),
+        ]
+        .align_y(Alignment::Center);
+        let media = stack![
+            photo(tile.handle.as_ref(), Length::Fill, image_height),
+            container(overlay).padding(9).width(Length::Fill),
         ];
+        let mut content = column![media].spacing(0);
+        if caption_height > 0.0 {
+            content = content.push(
+                container(
+                    row![
+                        column![
+                            heading(crate::welcome::compact(&tile.asset.name, 24), 12),
+                            muted(format!(
+                                "{} × {}  ·  {}",
+                                tile.asset.width,
+                                tile.asset.height,
+                                size(tile.asset.bytes)
+                            ))
+                            .size(10),
+                        ]
+                        .spacing(4)
+                        .width(Length::Fill),
+                        crate::motion::asset_feedback(
+                            button(icon(
+                                Icon::Heart,
+                                16.0,
+                                if tile.asset.favorite { BLUE } else { MUTED }
+                            ))
+                            .padding(6)
+                            .style(flat)
+                            .on_press(Message::Favorite(tile.asset.id, !tile.asset.favorite)),
+                            tile.asset.id,
+                            self.preferences.reduced_motion
+                        ),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([8, 10])
+                .height(caption_height),
+            );
+        }
         let hover = self.gallery_feedback.amount(tile.asset.id);
         mouse_area(
             container(content)
@@ -462,7 +451,7 @@ impl App {
                 .height(height)
                 .width(Length::Fill)
                 .style(move |theme| container::Style {
-                    background: Some(Color::TRANSPARENT.into()),
+                    background: Some(adaptive(theme, Color::WHITE).into()),
                     border: Border {
                         color: if selected {
                             crate::theme::adaptive(theme, BLUE)
@@ -472,11 +461,11 @@ impl App {
                                 ..crate::theme::adaptive(theme, CONTROL_LINE)
                             }
                         },
-                        width: if selected { 1.5 } else { hover },
-                        radius: 8.0.into(),
+                        width: if selected { 2.0 } else { 1.0 },
+                        radius: 14.0.into(),
                     },
                     shadow: iced::Shadow {
-                        color: Color::from_rgba8(26, 34, 48, 0.09 * hover),
+                        color: Color::from_rgba8(26, 34, 48, 0.025 + 0.07 * hover),
                         offset: iced::Vector::new(0.0, 2.0 * hover),
                         blur_radius: 8.0 * hover,
                     },
@@ -667,9 +656,9 @@ impl App {
         let mut tabs = Row::new().spacing(8);
         for (tab, label) in [
             tr!(language, "基本信息" => "General"),
-            tr!(language, "EXIF 信息" => "EXIF"),
-            tr!(language, "AI 识别" => "AI recognition"),
-            tr!(language, "相似推荐" => "Similar images"),
+            "EXIF",
+            tr!(language, "AI 识别" => "AI"),
+            tr!(language, "相似推荐" => "Similar"),
         ]
         .iter()
         .enumerate()

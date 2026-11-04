@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn inspector_toggle_reflows_gallery_without_discarding_selection_or_drafts() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Assets;
+    let asset = crate::tests::selected_asset();
+    app.viewer.selected = Some(asset.clone());
+    app.manager.notes = "unsaved notes".into();
+    app.manager.notes_dirty = true;
+    let width = app.gallery_width();
+    drop(app.update(Message::ToggleInspector));
+    assert!(!app.inspector_open);
+    assert!(app.gallery_width() > width);
+    assert_eq!(app.viewer.selected.as_ref().unwrap().id, asset.id);
+    assert_eq!(app.manager.notes, "unsaved notes");
+    assert!(app.manager.notes_dirty);
+    drop(app.update(Message::ToggleInspector));
+    assert!(app.inspector_open);
+    assert_eq!(app.gallery_width(), width);
+}
+
+#[test]
 fn recovery_cancel_retains_busy_until_completion_and_old_receipts_cannot_clear_new_work() {
     let mut app = crate::tests::app();
     let owner = app.library.as_ref().unwrap().info.id;

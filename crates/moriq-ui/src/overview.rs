@@ -3,10 +3,8 @@ use crate::components::grouped_number as number;
 use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
-use iced::widget::{
-    Column, Row, Space, button, column, container, image, row, stack, text, tooltip,
-};
-use iced::{Alignment, Border, Color, ContentFit, Length};
+use iced::widget::{Column, Row, Space, button, column, container, row, text, tooltip};
+use iced::{Alignment, Color, Length};
 impl App {
     /// 构建首页资源库摘要、项目和收藏分类区域。
     pub(super) fn overview(&self) -> Element<'_, Message> {
@@ -20,79 +18,27 @@ impl App {
             .cover
             .as_ref()
             .or_else(|| self.tiles.first().and_then(|t| t.handle.as_ref()));
-        let picture: Element<'_, Message> = if let Some(cover) = cover {
-            image(cover.clone())
-                .width(Length::Fill)
-                .height(265)
-                .content_fit(ContentFit::Cover)
-                .border_radius(9)
-                .into()
-        } else {
-            Space::new().height(265).width(Length::Fill).into()
-        };
-        let title = row![
-            text(format!("{}.moriq", info.name))
-                .size(26)
-                .style(crate::theme::text_color(Color::WHITE))
-                .font(iced::Font {
-                    weight: iced::font::Weight::Semibold,
-                    ..iced::Font::DEFAULT
-                }),
-            button(icon(Icon::Edit, 16.0, Color::WHITE))
-                .padding(3)
-                .style(flat)
-                .on_press(Message::ShowRenameLibrary)
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center);
-        let description = text(if self.manager.organizer.description.is_empty() {
-            tr!(language, "收集、整理与保存你的创作素材。" => "Collect, organize and preserve your creative assets.")
-        } else {
-            &self.manager.organizer.description
-        })
-        .size(14)
-        .line_height(1.7)
-        .style(crate::theme::text_color(Color::from_rgba8(255, 255, 255, 0.9)));
-        let location = row![
-            icon(Icon::Folder, 16.0, Color::WHITE),
-            text(display_path(&library.root))
-                .size(13)
-                .style(crate::theme::text_color(Color::WHITE)),
-            button(icon(Icon::Copy, 14.0, Color::WHITE))
-                .padding(0)
-                .style(flat)
-                .on_press(Message::CopyLibraryPath)
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-        let hero_info = row![
-            container(photo(cover, Length::Fixed(110.0), 110.0))
-                .padding(2)
-                .style(|theme| container::Style {
-                    border: Border {
-                        color: crate::theme::adaptive(theme, Color::WHITE),
-                        width: 2.0,
-                        radius: 9.0.into()
-                    },
-                    ..Default::default()
-                }),
-            container(column![
-                title,
-                Space::new().height(8),
-                description,
-                Space::new().height(18),
-                location
-            ])
-            .padding(iced::Padding {
-                top: 6.0,
-                right: 0.0,
-                bottom: 0.0,
-                left: 0.0
-            })
-            .width(Length::Fill)
-        ]
-        .spacing(22)
-        .align_y(Alignment::Start);
+        let intro = column![
+            text("MORIQ / LIBRARY").size(11).style(text_color(BLUE)),
+            heading(info.name.clone(), 32),
+            muted(if self.manager.organizer.description.is_empty() {
+                tr!(language, "让每一次灵感，都有自己的位置。" => "A place for every creative idea.")
+            } else { &self.manager.organizer.description }).size(14),
+            Space::new().height(12),
+            row![
+                form_action(Icon::Image, tr!(language, "浏览素材" => "Explore assets"), Message::AllAssets, true),
+                form_action(Icon::Edit, tr!(language, "编辑资料" => "Edit library"), Message::ShowRenameLibrary, false),
+                icon_button(Icon::Folder, Message::RevealLibrary),
+            ].spacing(8),
+        ].spacing(12).width(Length::Fill);
+        let cover_card = button(photo(cover, Length::Fixed(180.0), 156.0))
+            .padding(0)
+            .style(flat)
+            .on_press(Message::Manage(ManageMessage::Cover));
+        let mut hero_row = row![intro].spacing(24).align_y(Alignment::Center);
+        if self.viewport.width >= 1000.0 && cover.is_some() {
+            hero_row = hero_row.push(cover_card);
+        }
         let stats = row![
             hero_stat(
                 Icon::Image,
@@ -128,47 +74,11 @@ impl App {
             )
         ]
         .spacing(6);
-        let hero = stack![
-            picture,
-            container(column![hero_info, Space::new().height(Length::Fill), stats].spacing(10))
-                .padding(iced::Padding {
-                    top: 32.0,
-                    right: 20.0,
-                    bottom: 10.0,
-                    left: 20.0
-                })
-                .height(265)
-                .width(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(Color::from_rgba8(20, 49, 79, 0.37).into()),
-                    border: Border {
-                        radius: 9.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-            container(row![
-                Space::new().width(Length::Fill),
-                button(
-                    row![
-                        icon(Icon::Image, 14.0, ICON),
-                        text(tr!(language, "更换封面" => "Change cover")).size(13)
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-                )
-                .padding([9, 16])
-                .style(secondary)
-                .on_press(Message::Manage(ManageMessage::Cover))
-            ])
-            .padding(iced::Padding {
-                top: 14.0,
-                right: 24.0,
-                bottom: 0.0,
-                left: 0.0
-            })
-            .width(Length::Fill)
-        ];
+        let hero = column![
+            container(hero_row).padding([12, 4]).width(Length::Fill),
+            stats,
+        ]
+        .spacing(24);
         let quick = row![
             self.quick_action(
                 Icon::Person,
@@ -194,9 +104,9 @@ impl App {
             self.quick_action(
                 Icon::Folder,
                 BLUE,
-                tr!(language, "打开资源库" => "Open library"),
-                tr!(language, "在文件夹中查看" => "View in folder"),
-                Message::RevealLibrary
+                tr!(language, "连接 NAS" => "Connect NAS"),
+                tr!(language, "访问远程图片来源" => "Access remote photo sources"),
+                Message::Manage(ManageMessage::Nas)
             )
         ]
         .spacing(12);
@@ -213,7 +123,7 @@ impl App {
             let count = project.count;
             projects = projects.push(
                 container(column![
-                    button(photo(image, Length::Fixed(144.0), 256.0))
+                    button(photo(image, Length::Fixed(224.0), 150.0))
                         .padding(0)
                         .style(flat)
                         .on_press(Message::Project(project.id)),
@@ -242,7 +152,7 @@ impl App {
                     )
                     .padding([8, 9])
                 ])
-                .width(144)
+                .width(224)
                 .style(panel),
             );
         }
@@ -267,7 +177,7 @@ impl App {
                 tooltip(
                     button(
                         column![
-                            photo(tile.handle.as_ref(), Length::Fill, 256.0),
+                            photo(tile.handle.as_ref(), Length::Fill, 150.0),
                             container(
                                 text(crate::welcome::compact(&tile.asset.name, 20))
                                     .size(12)
@@ -286,7 +196,7 @@ impl App {
                     .padding(0)
                     .style(secondary)
                     .on_press(Message::Favorites)
-                    .width(144),
+                    .width(224),
                     container(
                         text(&tile.asset.name)
                             .size(12)
@@ -432,7 +342,7 @@ impl App {
                 .width(Length::Fill)
         ];
         if self.viewport.width >= 1480.0 {
-            layout = layout.push(scroll(self.library_details()).width(376));
+            layout = layout.push(scroll(self.library_details()).width(300));
         }
         layout
             .spacing(18)
@@ -456,36 +366,16 @@ impl App {
     ) -> Element<'a, Message> {
         button(
             row![
-                container(
-                    container(icon(kind, 24.0, Color::WHITE))
-                        .padding(8)
-                        .style(move |_| container::Style {
-                            background: Some(color.into()),
-                            border: Border {
-                                radius: 10.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                )
-                .padding(6)
-                .style(move |_| container::Style {
-                    background: Some(Color { a: 0.09, ..color }.into()),
-                    border: Border {
-                        radius: 12.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-                column![heading(title, 13), muted(description)]
-                    .spacing(6)
+                container(icon(kind, 20.0, color)).padding(12).style(pale),
+                column![heading(title, 14), muted(description).size(11)]
+                    .spacing(5)
                     .width(Length::Fill),
-                icon(Icon::Right, 15.0, ICON)
+                icon(Icon::Right, 14.0, MUTED),
             ]
-            .spacing(10)
+            .spacing(12)
             .align_y(Alignment::Center),
         )
-        .padding([11, 12])
+        .padding(16)
         .width(Length::Fill)
         .style(secondary)
         .on_press(message)
@@ -656,42 +546,17 @@ impl App {
 /// 构建首页顶部的单项统计展示。
 fn hero_stat<'a>(kind: Icon, color: Color, value: String, label: &str) -> Element<'a, Message> {
     container(
-        row![
-            container(icon(kind, 23.0, color))
-                .padding(8)
-                .style(|theme| container::Style {
-                    background: Some(crate::theme::adaptive(theme, Color::WHITE).into()),
-                    border: Border {
-                        radius: 8.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-            column![
-                text(value)
-                    .size(18)
-                    .style(crate::theme::text_color(Color::WHITE)),
-                text(label.to_string())
-                    .size(13)
-                    .style(crate::theme::text_color(Color::from_rgba8(
-                        255, 255, 255, 0.78
-                    )))
-            ]
-            .spacing(4)
+        column![
+            row![icon(kind, 15.0, color), muted(label)]
+                .spacing(7)
+                .align_y(Alignment::Center),
+            heading(value, 25),
         ]
-        .spacing(12)
-        .align_y(Alignment::Center),
+        .spacing(8),
     )
-    .padding([14, 14])
+    .padding(18)
     .width(Length::Fill)
-    .style(|_| container::Style {
-        background: Some(Color::from_rgba8(255, 255, 255, 0.18).into()),
-        border: Border {
-            radius: 8.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
+    .style(panel)
     .into()
 }
 /// 构建资源库资料的名称和值展示行。

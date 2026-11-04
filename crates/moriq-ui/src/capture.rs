@@ -389,6 +389,16 @@ impl App {
                 }
                 Some("compare") => return self.compare_message(CompareMessage::Open),
                 Some("help") => return self.manage_message(ManageMessage::Help),
+                Some("nas") => return self.manage_message(ManageMessage::Nas),
+                Some("compact-workspace") => {
+                    return iced::window::oldest()
+                        .and_then(|id| iced::window::resize(id, Size::new(1180.0, 740.0)));
+                }
+                Some("inspector-hidden") => return self.update(Message::ToggleInspector),
+                Some("selection") => {
+                    self.manager.selection.enabled = true;
+                    return self.manage_message(ManageMessage::SelectVisible);
+                }
                 _ => {}
             }
             self.manager.panel = match self.launch.panel.as_deref() {
@@ -396,6 +406,7 @@ impl App {
                     self.dialog = Some(Dialog::Settings);
                     None
                 }
+                Some("nas") => Some(manage::Panel::Nas),
                 Some("export") => Some(manage::Panel::ExportOptions),
                 Some("tags") => Some(manage::Panel::Tags),
                 Some("projects") => Some(manage::Panel::Project),

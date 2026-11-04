@@ -111,7 +111,7 @@ pub fn form_heading<'a>(kind: Icon, title: &str, description: &str) -> Element<'
 /// 把内容包装为统一边距和背景的表单卡片。
 pub fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content)
-        .padding(18)
+        .padding(20)
         .width(Length::Fill)
         .style(theme::form_card_style)
         .into()
@@ -149,7 +149,7 @@ pub fn photo<'a>(
             .width(width)
             .height(height)
             .content_fit(ContentFit::Cover)
-            .border_radius(7)
+            .border_radius(12)
             .into()
     } else {
         container(icon(Icon::Image, 28.0, MUTED))
@@ -213,24 +213,24 @@ pub fn scroll<'a>(
         .direction(scrollable::Direction::Vertical(
             scrollable::Scrollbar::new()
                 .width(16)
-                .scroller_width(14)
+                .scroller_width(5)
                 .spacing(6),
         ))
         .style(theme::scroll_style)
 }
-/// 构建元数据名称和值的展示行。
+/// 将元数据名称与值分行展示，为窄详情栏和较长的 EXIF 内容保留完整宽度。
 pub fn metadata<'a>(kind: Icon, label: &str, value: impl Into<String>) -> Element<'a, Message> {
-    row![
-        icon(kind, 14.0, MUTED),
-        muted(label).width(74),
+    column![
+        row![icon(kind, 14.0, MUTED), muted(label)]
+            .spacing(8)
+            .align_y(Alignment::Center),
         text(value.into())
             .width(Length::Fill)
             .wrapping(text::Wrapping::Glyph)
             .size(12)
-            .style(text_color(ICON))
+            .style(text_color(TEXT))
     ]
-    .spacing(8)
-    .align_y(Alignment::Center)
+    .spacing(5)
     .into()
 }
 /// 将字节数量转换为便于阅读的容量文本。
@@ -276,7 +276,7 @@ pub fn ring<'a>(value: String, caption: &str, filled: f32, diameter: f32) -> Ele
     let circumference = 2.0 * std::f32::consts::PI * 54.0;
     let dash = circumference * filled.clamp(0.0, 1.0);
     let markup = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140"><circle cx="70" cy="70" r="54" fill="none" stroke="#e4eaff" stroke-width="15"/><circle cx="70" cy="70" r="54" fill="none" stroke="#8866ff" stroke-width="15" stroke-dasharray="{} {}" transform="rotate(-90 70 70)"/><circle cx="70" cy="70" r="54" fill="none" stroke="#137bff" stroke-width="15" stroke-dasharray="{dash} {circumference}" transform="rotate(-90 70 70)"/></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140"><circle cx="70" cy="70" r="54" fill="none" stroke="#e6edf5" stroke-width="15"/><circle cx="70" cy="70" r="54" fill="none" stroke="#9db7d3" stroke-width="15" stroke-dasharray="{} {}" transform="rotate(-90 70 70)"/><circle cx="70" cy="70" r="54" fill="none" stroke="#587797" stroke-width="15" stroke-dasharray="{dash} {circumference}" transform="rotate(-90 70 70)"/></svg>"##,
         circumference * 0.89,
         circumference
     );

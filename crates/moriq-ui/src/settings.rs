@@ -276,6 +276,7 @@ impl App {
             .map(|p| display_path(&p))
             .unwrap_or_else(|e| e);
         let content = column![
+            heading(tr!(language, "外观与体验" => "Appearance & experience"), 18),
             preference_card(
                 Icon::Globe,
                 tr!(language, "界面语言" => "Interface language"),
@@ -320,7 +321,9 @@ impl App {
                 tr!(language, "关闭页面、卡片、按钮及预览缩放动效，保留清晰反馈。" => "Disable page, card, button and preview zoom animations while keeping clear feedback."),
                 checkbox(self.preferences.reduced_motion).on_toggle(Message::ReducedMotion)
             ),
+            heading(tr!(language, "性能与导入" => "Performance & import"), 18),
             form_card(self.import_settings()),
+            heading(tr!(language, "存储与连接" => "Storage & connections"), 18),
             form_card(
                 column![
                     form_heading(
@@ -385,7 +388,7 @@ impl App {
         container(
             column![
                 row![
-                    form_icon(Icon::Settings, true),
+                    crate::icons::icon(Icon::Settings, 24.0, BLUE),
                     column![
                         heading(tr!(language, "设置" => "Settings"), 24),
                         muted(tr!(language, "管理应用偏好、性能配置与本地资源" => "Manage preferences, performance and local resources"))

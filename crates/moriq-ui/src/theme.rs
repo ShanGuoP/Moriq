@@ -1,15 +1,15 @@
 use iced::widget::{button, container, scrollable, slider, text_editor, text_input};
 use iced::{Background, Border, Color, Theme};
 use moriq_domain::Appearance;
-pub const BLUE: Color = Color::from_rgb8(36, 105, 230);
-pub const TEXT: Color = Color::from_rgb8(31, 38, 50);
-pub const MUTED: Color = Color::from_rgb8(107, 119, 138);
-pub const ICON: Color = Color::from_rgb8(88, 101, 122);
-pub const LINE: Color = Color::from_rgb8(229, 233, 239);
-pub const BG: Color = Color::from_rgb8(247, 248, 250);
-pub const PALE: Color = Color::from_rgb8(234, 241, 253);
-pub const GREEN: Color = Color::from_rgb8(0, 190, 144);
-pub const PURPLE: Color = Color::from_rgb8(126, 83, 255);
+pub const BLUE: Color = Color::from_rgb8(88, 119, 151);
+pub const TEXT: Color = Color::from_rgb8(39, 48, 59);
+pub const MUTED: Color = Color::from_rgb8(109, 123, 140);
+pub const ICON: Color = Color::from_rgb8(92, 111, 132);
+pub const LINE: Color = Color::from_rgb8(222, 229, 237);
+pub const BG: Color = Color::from_rgb8(243, 246, 250);
+pub const PALE: Color = Color::from_rgb8(230, 237, 245);
+pub const GREEN: Color = Color::from_rgb8(79, 143, 132);
+pub const PURPLE: Color = Color::from_rgb8(128, 136, 172);
 pub const CONTROL_LINE: Color = Color::from_rgb8(216, 222, 232);
 /// 根据持久化外观偏好选择应用主题。
 pub fn application_theme(appearance: Appearance) -> Theme {
@@ -18,9 +18,9 @@ pub fn application_theme(appearance: Appearance) -> Theme {
             Theme::custom(
                 "Moriq Space Dark",
                 iced::theme::Palette {
-                    background: Color::from_rgb8(27, 34, 45),
+                    background: Color::from_rgb8(27, 34, 44),
                     text: Color::from_rgb8(230, 234, 240),
-                    primary: Color::from_rgb8(116, 166, 255),
+                    primary: Color::from_rgb8(157, 183, 211),
                     success: Color::from_rgb8(57, 216, 175),
                     danger: Color::from_rgb8(255, 133, 139),
                     ..iced::theme::Palette::DARK
@@ -33,7 +33,7 @@ pub fn application_theme(appearance: Appearance) -> Theme {
         Theme::custom(
             "Moriq Space",
             iced::theme::Palette {
-                background: Color::WHITE,
+                background: BG,
                 text: TEXT,
                 primary: BLUE,
                 success: GREEN,
@@ -58,13 +58,13 @@ pub fn adaptive(theme: &Theme, color: Color) -> Color {
     } else if color == ICON {
         Color::from_rgb8(186, 197, 214)
     } else if color == LINE {
-        Color::from_rgb8(48, 56, 69)
+        Color::from_rgb8(48, 60, 76)
     } else if color == CONTROL_LINE {
         Color::from_rgb8(65, 76, 93)
     } else if color == BG {
-        Color::from_rgb8(19, 24, 33)
+        Color::from_rgb8(20, 26, 35)
     } else if color == PALE {
-        Color::from_rgb8(29, 49, 82)
+        Color::from_rgb8(39, 53, 72)
     } else if color == BLUE {
         theme.palette().primary
     } else if color == PURPLE {
@@ -128,7 +128,7 @@ pub fn modal(theme: &Theme) -> container::Style {
         border: Border {
             color: adaptive(theme, LINE),
             width: 1.0,
-            radius: 16.0.into(),
+            radius: 22.0.into(),
         },
         shadow: iced::Shadow {
             color: Color::from_rgba8(26, 34, 48, 0.13),
@@ -141,12 +141,11 @@ pub fn modal(theme: &Theme) -> container::Style {
 /// 生成表单卡片的背景、边框和圆角样式。
 pub fn form_card_style(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(adaptive(theme, Color::from_rgb8(251, 252, 253)).into()),
+        background: Some(adaptive(theme, BG).into()),
         text_color: Some(adaptive(theme, TEXT)),
         border: Border {
-            color: adaptive(theme, LINE),
-            width: 1.0,
-            radius: 12.0.into(),
+            radius: 14.0.into(),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -169,7 +168,7 @@ pub fn pale(theme: &Theme) -> container::Style {
         background: Some(adaptive(theme, PALE).into()),
         text_color: Some(adaptive(theme, BLUE)),
         border: Border {
-            radius: 7.0.into(),
+            radius: 10.0.into(),
             ..Default::default()
         },
         ..Default::default()
@@ -182,9 +181,9 @@ pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
             if matches!(status, button::Status::Disabled) {
                 adaptive(theme, Color::from_rgb8(232, 236, 242))
             } else if matches!(status, button::Status::Hovered) {
-                adaptive(theme, Color::from_rgb8(28, 91, 213))
+                adaptive(theme, Color::from_rgb8(73, 103, 135))
             } else if matches!(status, button::Status::Pressed) {
-                adaptive(theme, Color::from_rgb8(25, 77, 183))
+                adaptive(theme, Color::from_rgb8(59, 87, 118))
             } else {
                 BLUE
             }
@@ -196,15 +195,15 @@ pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
             Color::WHITE
         },
         border: Border {
-            radius: 7.0.into(),
+            radius: 10.0.into(),
             ..Default::default()
         },
         shadow: if matches!(status, button::Status::Active | button::Status::Hovered) {
             iced::Shadow {
                 color: Color::from_rgba8(
-                    36,
-                    105,
-                    230,
+                    88,
+                    119,
+                    151,
                     if matches!(status, button::Status::Hovered) {
                         0.18
                     } else {
@@ -229,7 +228,7 @@ pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
             } else if matches!(status, button::Status::Pressed) {
                 adaptive(theme, PALE)
             } else {
-                adaptive(theme, Color::WHITE)
+                adaptive(theme, BG)
             }
             .into(),
         ),
@@ -244,8 +243,8 @@ pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
             } else {
                 adaptive(theme, CONTROL_LINE)
             },
-            width: 1.0,
-            radius: 7.0.into(),
+            width: 0.0,
+            radius: 10.0.into(),
         },
         ..Default::default()
     }
@@ -265,7 +264,7 @@ pub fn destructive(theme: &Theme, status: button::Status) -> button::Style {
         background: Some(background.into()),
         text_color,
         border: Border {
-            radius: 7.0.into(),
+            radius: 10.0.into(),
             ..Default::default()
         },
         ..Default::default()
@@ -277,7 +276,7 @@ pub fn flat(theme: &Theme, status: button::Status) -> button::Style {
         background: match status {
             button::Status::Hovered => Some(adaptive(theme, PALE).into()),
             button::Status::Pressed => {
-                Some(adaptive(theme, Color::from_rgb8(213, 228, 252)).into())
+                Some(adaptive(theme, Color::from_rgb8(214, 225, 238)).into())
             }
             _ => None,
         },
@@ -287,7 +286,7 @@ pub fn flat(theme: &Theme, status: button::Status) -> button::Style {
             adaptive(theme, ICON)
         },
         border: Border {
-            radius: 6.0.into(),
+            radius: 10.0.into(),
             ..Default::default()
         },
         ..Default::default()
@@ -349,7 +348,7 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| button::Style {
         background: Some(
             if matches!(status, button::Status::Pressed) {
-                adaptive(theme, Color::from_rgb8(213, 228, 252))
+                adaptive(theme, Color::from_rgb8(214, 225, 238))
             } else if active {
                 adaptive(theme, PALE)
             } else if matches!(status, button::Status::Hovered) {
@@ -365,7 +364,7 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             adaptive(theme, TEXT)
         },
         border: Border {
-            radius: 7.0.into(),
+            radius: 10.0.into(),
             ..Default::default()
         },
         ..Default::default()
@@ -396,7 +395,7 @@ pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
             adaptive(theme, Color::from_rgb8(251, 252, 254)).into()
         },
         border: Border {
-            radius: 7.0.into(),
+            radius: 10.0.into(),
             width: 1.0,
             color: if matches!(status, text_input::Status::Focused { .. }) {
                 adaptive(theme, BLUE)
@@ -433,7 +432,7 @@ pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::St
     let mut style = scrollable::default(theme, status);
     style.vertical_rail.background = Some(Background::Color(adaptive(
         theme,
-        Color::from_rgba8(146, 157, 175, 0.10),
+        Color::from_rgba8(146, 157, 175, 0.0),
     )));
     style.vertical_rail.scroller.background = Background::Color(
         if matches!(
@@ -442,7 +441,7 @@ pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::St
         ) {
             Color::from_rgba8(118, 131, 151, 0.75)
         } else {
-            Color::from_rgba8(146, 157, 175, 0.65)
+            Color::from_rgba8(146, 157, 175, 0.30)
         },
     );
     style.vertical_rail.scroller.border.radius = 4.0.into();
@@ -479,5 +478,14 @@ pub fn progress(theme: &Theme) -> iced::widget::progress_bar::Style {
             radius: 4.0.into(),
             ..Default::default()
         },
+    }
+}
+
+/// A quiet white navigation surface separated from the working canvas.
+pub fn navigation_surface(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(adaptive(theme, Color::WHITE).into()),
+        text_color: Some(adaptive(theme, TEXT)),
+        ..Default::default()
     }
 }

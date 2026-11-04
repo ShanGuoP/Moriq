@@ -1753,6 +1753,10 @@ impl App {
             Space::new().width(0).into()
         };
         let (kind, description) = match self.manager.panel {
+            Some(Panel::Nas) => (
+                Icon::Database,
+                tr!(language, "在一个工作台中管理本地与远程图片。" => "Keep local and remote photos in one workspace."),
+            ),
             Some(Panel::Libraries) => (
                 Icon::Database,
                 tr!(language,"移除列表记录，或单独确认永久删除。"=>"Forget a list entry or separately confirm permanent deletion."),
@@ -1836,7 +1840,7 @@ impl App {
         };
         let header = row![
             back,
-            form_icon(kind, true),
+            crate::icons::icon(kind, 24.0, BLUE),
             iced::widget::column![heading(title, 22), muted(description)]
                 .spacing(7)
                 .width(Length::Fill),
@@ -1885,9 +1889,27 @@ impl App {
                 ManageMessage::SyncoPoll(_) => !self.manager.synco.running,
                 _ => !self.manager.busy,
             };
+            let prominent = matches!(
+                &event,
+                ManageMessage::ApplyFilter
+                    | ManageMessage::Export
+                    | ManageMessage::SaveCollection
+                    | ManageMessage::SaveNotes
+                    | ManageMessage::SaveLocation
+            );
+            let danger = matches!(
+                &event,
+                ManageMessage::DeleteTag | ManageMessage::Purge | ManageMessage::DeleteProject
+            );
             button(text(label.to_string()).size(13))
                 .padding([8, 12])
-                .style(secondary)
+                .style(if danger {
+                    destructive
+                } else if prominent {
+                    primary
+                } else {
+                    secondary
+                })
                 .on_press_maybe(available.then_some(Message::Manage(event)))
         };
         use ManageMessage::*;
@@ -2301,14 +2323,19 @@ impl App {
             Some(Panel::ExportOptions) => {
                 let options = self.manager.export.options.clone();
                 for (label, values, selected) in export::rows(&options) {
-                    content = content.push(row![
-                        text(crate::i18n::option_label(language, label))
-                            .width(160)
-                            .size(13),
-                        pick_list(language, values, Some(selected), |choice| Message::Manage(
-                            ExportOption(choice)
-                        ))
-                    ]);
+                    content = content.push(
+                        row![
+                            text(crate::i18n::option_label(language, label))
+                                .width(160)
+                                .size(13),
+                            pick_list(language, values, Some(selected), |choice| Message::Manage(
+                                ExportOption(choice)
+                            ))
+                            .width(Length::Fill)
+                        ]
+                        .spacing(16)
+                        .align_y(Alignment::Center),
+                    );
                 }
                 content=content.push(
                     checkbox(options.preserve_exif)
@@ -2391,35 +2418,7 @@ impl App {
                 }
             }
             Some(Panel::Project) => content = content.push(self.project_form()),
-            Some(Panel::Nas) => {
-                content = content.push(muted(tr!(language,
-                    "连接 Windows SMB 共享目录（局域网或 VPN）。使用当前 Windows 登录凭据。远程原片不包含在资源库备份中。"
-                    => "Connect a Windows SMB share over LAN or VPN using your Windows credentials. Remote originals are excluded from library backups.")));
-                content = content.push(
-                    text_input(r"\\server\photos", &self.manager.nas_path)
-                        .on_input(|value| Message::Manage(NasPath(value)))
-                        .padding(10),
-                );
-                content = content.push(action(
-                    tr!(language, "连接共享目录" => "Connect share"),
-                    NasConnect,
-                ));
-                for source in &self.manager.nas_sources {
-                    content = content.push(separator()).push(muted(&source.label)).push(
-                        row![
-                            action(
-                                tr!(language, "远程浏览并登记" => "Browse and reference remotely"),
-                                NasBrowse(source.id.clone(), true)
-                            ),
-                            action(
-                                tr!(language, "下载文件夹到本地" => "Download folder locally"),
-                                NasBrowse(source.id.clone(), false)
-                            ),
-                        ]
-                        .spacing(8),
-                    );
-                }
-            }
+            Some(Panel::Nas) => content = content.push(self.nas_panel()),
             Some(Panel::Maintenance) => {
                 content = content.push(crate::components::action(
                     tr!(language, "清空整库回收站…" => "Empty library trash…"),
@@ -2479,21 +2478,7 @@ impl App {
                 240.0
             })
         .max(80.0);
-        let body_content: Element<'_, Message> = if matches!(
-            self.manager.panel,
-            Some(
-                Panel::People
-                    | Panel::Collections
-                    | Panel::Compare
-                    | Panel::AiCategories
-                    | Panel::Project
-                    | Panel::Libraries
-            )
-        ) {
-            content.into()
-        } else {
-            form_card(content)
-        };
+        let body_content: Element<'_, Message> = content.into();
         let body = container(
             scroll(body_content)
                 .id("management")

@@ -12,6 +12,9 @@ impl App {
     }
     /// 按窗口与当前状态计算详情栏宽度。
     pub(super) fn details_width(&self) -> f32 {
+        if !self.inspector_open {
+            return 0.0;
+        }
         if self.viewport.width < 1280.0 {
             270.0
         } else {

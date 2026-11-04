@@ -361,15 +361,15 @@ impl App {
             (self.viewport.height - estimated.min(height) - 12.0).max(12.0),
         );
         let popup = container(scroll(content).height(iced::Length::Shrink))
-            .padding(6)
+            .padding(10)
             .width(width)
             .max_height((self.viewport.height - y - 12.0).max(120.0))
             .style(|theme| container::Style {
-                background: Some(iced::Color::WHITE.into()),
+                background: Some(adaptive(theme, iced::Color::WHITE).into()),
                 border: iced::Border {
                     color: crate::theme::adaptive(theme, LINE),
                     width: 1.0,
-                    radius: 8.0.into(),
+                    radius: 14.0.into(),
                 },
                 shadow: iced::Shadow {
                     color: iced::Color::from_rgba8(30, 45, 70, 0.14),

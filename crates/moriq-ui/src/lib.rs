@@ -60,6 +60,7 @@ pub(crate) use rules::RuleMessage;
 pub(crate) use storage::StorageMessage;
 mod manage;
 mod models;
+mod nas_view;
 mod navigation;
 pub(crate) use journal::JournalMessage;
 pub(crate) use manage::ManageMessage;
@@ -255,6 +256,7 @@ pub(crate) enum Message {
     ShowProject,
     Notice(String),
     DetailTab(u8),
+    ToggleInspector,
     SetMasonry(bool),
     CopyLibraryPath,
     CopyModelsPath,
@@ -372,6 +374,7 @@ pub(crate) struct App {
     masonry_mode: bool,
     dialog: Option<Dialog>,
     detail_tab: u8,
+    inspector_open: bool,
     model_tab: u8,
     layout_generation: u64,
     editing_tags: bool,
@@ -534,6 +537,7 @@ impl App {
                 masonry_mode: true,
                 dialog: None,
                 detail_tab: 0,
+                inspector_open: true,
                 model_tab: 0,
                 layout_generation: 0,
                 editing_tags: false,
@@ -1362,6 +1366,10 @@ impl App {
                 return self.update(Message::VisualsSaved(id, result));
             }
             Message::DetailTab(tab) => self.detail_tab = tab,
+            Message::ToggleInspector => {
+                self.inspector_open = !self.inspector_open;
+                return Task::batch([self.rebuild_masonry(), self.refresh()]);
+            }
             Message::ModelSearch(query) => self.model_search = query,
             Message::ModelFilter(filter) => self.model_filter = filter,
             Message::SetMasonry(value) => {

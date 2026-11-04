@@ -33,11 +33,11 @@ impl App {
         }
         container(
             column![
-                container(icon(Icon::Logo, 88.0, BLUE))
+                container(icon(Icon::Logo, 64.0, BLUE))
                     .center_x(100)
                     .center_y(100),
                 Space::new().height(12),
-                heading(tr!(language, "每一份灵感，都有归处。" => "A home for every inspiration."), 32),
+                heading(tr!(language, "每一份灵感，都有归处。" => "A home for every inspiration."), 40),
                 muted(tr!(language, "欢迎使用 Moriq Space。创建一个资源库，开始整理你的照片与创意。" => "Welcome to Moriq Space. Create a library to organize your photos and ideas.")),
                 Space::new().height(12),
                 container(
@@ -83,7 +83,7 @@ impl App {
         let can_open =
             !self.switching && self.import.is_none() && !self.manager.busy && !self.libraries.busy;
         let width = library_card_width(self.viewport.width - self.sidebar_width() - 88.0);
-        let cover_height = (width - 20.0) * 0.52;
+        let cover_height = (width - 20.0) * 0.62;
         let mut cards = Row::new().spacing(20);
         for (name, path) in &self.preferences.recent {
             let (kind, accent, tint) = library_accent(name, path);
@@ -325,7 +325,7 @@ impl App {
                     column![
                         row![
                             column![
-                                heading(tr!(language,"我的资源库"=>"My libraries"), 24),
+                                heading(tr!(language,"我的资源库"=>"My libraries"), 32),
                                 muted(tr!(language,"让灵感有序，让创作继续。"=>"Keep inspiration organized. Keep creating.")).size(12)
                             ].spacing(8),
                             Space::new().width(Length::Fill),

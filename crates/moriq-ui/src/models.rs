@@ -188,7 +188,7 @@ impl App {
             left: 20.0,
         })
         .style(panel);
-        let columns = if self.viewport.width >= 1480.0 { 3 } else { 2 };
+        let columns = if self.viewport.width >= 1480.0 { 2 } else { 1 };
         let visible: Vec<_> = self
             .ai
             .models
@@ -309,16 +309,16 @@ impl App {
         scroll(
             column![
                 column![
-                    heading(tr!(language, "AI 智能整理与模型管理" => "AI organization and models"), 26),
+                    heading(tr!(language, "AI 工作室" => "AI studio"), 26),
                     text(tr!(language, "基于 AI 理解你的照片，自动整理、搜索与更多可能。" => "Understand, organize and search your photos with AI."))
                         .size(14)
                         .style(crate::theme::text_color(MUTED))
                 ]
                 .spacing(6),
-                organization,
                 row![model_management, settings]
-                    .spacing(14)
-                    .align_y(Alignment::Start)
+                    .spacing(20)
+                    .align_y(Alignment::Start),
+                organization
             ]
             .spacing(16)
             .padding([20, 24]),
@@ -397,12 +397,12 @@ impl App {
                     }),
                 column![
                     row![
-                        heading(model.spec.name.clone(), 13).width(Length::Fill),
+                        heading(model.spec.name.clone(), 18).width(Length::Fill),
                         badge
                     ]
                     .spacing(5),
                     text(model_description(language, id))
-                        .size(11)
+                        .size(13)
                         .style(crate::theme::text_color(MUTED))
                 ]
                 .spacing(8)
@@ -500,7 +500,7 @@ impl App {
         }
         iced::widget::tooltip(
             container(content)
-                .padding(11)
+                .padding(24)
                 .width(Length::Fill)
                 .style(panel),
             container(

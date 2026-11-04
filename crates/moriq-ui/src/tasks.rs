@@ -344,6 +344,7 @@ impl App {
         let mut count = 0;
         for job in &self.manager.organizer.jobs {
             count += 1;
+            let mut job_view = column![].spacing(12);
             let title = match job.kind {
                 JobKind::Integrity => {
                     tr!(language, "原文件完整性检查" => "Original file integrity check")
@@ -374,26 +375,32 @@ impl App {
                     tr!(language,"Qwen 人脸识别与人物分组"=>"Qwen face recognition and people grouping")
                 }
             };
-            view = view
+            job_view = job_view
                 .push(heading(
                     format!("{title} · {} / {}", job.completed, job.total),
                     15,
                 ))
                 .push(muted(
                     trf!(language, "{} · 优先级 {} · 失败 {}" => "{} · Priority {} · {} failed",
-                        job.state, job.priority, job.failed
+                        match job.state {
+                            JobState::Queued => tr!(language, "等待中" => "Queued"),
+                            JobState::Running => tr!(language, "进行中" => "Running"),
+                            JobState::Paused => tr!(language, "已暂停" => "Paused"),
+                            JobState::Completed => tr!(language, "已完成" => "Completed"),
+                            JobState::Cancelled => tr!(language, "已停止" => "Stopped"),
+                        }, job.priority, job.failed
                     ),
                 ));
             if !job.error.is_empty() {
-                view = view.push(muted(&job.error));
+                job_view = job_view.push(muted(&job.error));
             }
             if job.failed > 0 {
-                view = view.push(action(
+                job_view = job_view.push(action(
                     tr!(language, "查看失败明细（前100项）" => "View failures (first 100)"),
                     Message::Jobs(JobMessage::Failures(job.id.clone())),
                 ));
                 if job.state.is_finished() {
-                    view = view.push(action(
+                    job_view = job_view.push(action(
                         tr!(language, "仅重试失败素材" => "Retry failed assets only"),
                         Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::RetryFailed)),
                     ));
@@ -403,9 +410,9 @@ impl App {
                     && *selected == job.id
                 {
                     for item in items {
-                        view = view.push(muted(format!("{}：{}", item.name, item.message)));
+                        job_view = job_view.push(muted(format!("{}：{}", item.name, item.message)));
                         if let Some(asset) = item.asset {
-                            view = view.push(action(
+                            job_view = job_view.push(action(
                                 tr!(language, "查看此素材" => "View this asset"),
                                 Message::Journal(journal::JournalMessage::OpenAsset(asset)),
                             ));
@@ -413,40 +420,58 @@ impl App {
                     }
                 }
             }
+            if job.total > 0 {
+                job_view = job_view.push(
+                    iced::widget::progress_bar(
+                        0.0..=1.0,
+                        (job.completed as f32 / job.total as f32).min(1.0),
+                    )
+                    .girth(5)
+                    .style(crate::theme::progress),
+                );
+            }
             if job.state.is_active() {
                 let command = if job.state == JobState::Paused {
                     JobCommand::Resume
                 } else {
                     JobCommand::Pause
                 };
-                view = view
-                    .push(crate::components::action(
-                        if job.state == JobState::Paused {
-                            tr!(language, "继续任务" => "Resume task")
-                        } else {
-                            tr!(language, "暂停任务" => "Pause task")
-                        },
-                        Message::Jobs(JobMessage::Control(job.id.clone(), command)),
-                    ))
-                    .push(crate::components::action(
-                        tr!(language, "提高优先级" => "Raise priority"),
-                        Message::Jobs(JobMessage::Control(
-                            job.id.clone(),
-                            JobCommand::Priority((job.priority + 10).min(100)),
-                        )),
-                    ))
-                    .push(crate::components::action(
-                        tr!(language, "完全停止" => "Stop permanently"),
-                        Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::Cancel)),
-                    ));
-                view = view.push(action(
-                    tr!(language, "降低优先级" => "Lower priority"),
-                    Message::Jobs(JobMessage::Control(
-                        job.id.clone(),
-                        JobCommand::Priority((job.priority - 10).max(-100)),
-                    )),
-                ));
+                job_view = job_view.push(
+                    iced::widget::row![
+                        action(
+                            if job.state == JobState::Paused {
+                                tr!(language, "继续任务" => "Resume")
+                            } else {
+                                tr!(language, "暂停任务" => "Pause")
+                            },
+                            Message::Jobs(JobMessage::Control(job.id.clone(), command))
+                        )
+                        .style(crate::theme::primary),
+                        action(
+                            tr!(language, "优先执行" => "Prioritize"),
+                            Message::Jobs(JobMessage::Control(
+                                job.id.clone(),
+                                JobCommand::Priority((job.priority + 10).min(100))
+                            ))
+                        ),
+                        action(
+                            tr!(language, "降低优先级" => "Lower priority"),
+                            Message::Jobs(JobMessage::Control(
+                                job.id.clone(),
+                                JobCommand::Priority((job.priority - 10).max(-100))
+                            ))
+                        ),
+                        action(
+                            tr!(language, "完全停止" => "Stop"),
+                            Message::Jobs(JobMessage::Control(job.id.clone(), JobCommand::Cancel))
+                        )
+                        .style(crate::theme::destructive),
+                    ]
+                    .spacing(8)
+                    .wrap(),
+                );
             }
+            view = view.push(form_card(job_view));
         }
         if let Some(control) = &self.import {
             count += 1;

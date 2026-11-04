@@ -182,11 +182,11 @@ impl App {
         }
         let base = container(row![self.sidebar(), body].height(Length::Fill))
             .style(|theme| container::Style {
-                background: Some(crate::theme::adaptive(theme, Color::WHITE).into()),
+                background: Some(crate::theme::adaptive(theme, BG).into()),
                 text_color: Some(crate::theme::adaptive(theme, TEXT)),
                 border: Border {
                     radius: 0.0.into(),
-                    color: crate::theme::adaptive(theme, Color::WHITE),
+                    color: crate::theme::adaptive(theme, BG),
                     width: 0.0,
                 },
                 ..Default::default()
@@ -400,7 +400,7 @@ impl App {
     fn header(&self) -> Element<'_, Message> {
         let language = self.preferences.language;
         // Fixed chrome slots: page-specific labels never move search or window controls.
-        let search_width = (self.viewport.width - self.sidebar_width() - 668.0).clamp(160.0, 700.0);
+        let search_width = (self.viewport.width - self.sidebar_width() - 588.0).clamp(160.0, 700.0);
         let search = container(
             row![
                 icon(Icon::Search, 17.0, MUTED),
@@ -499,18 +499,6 @@ impl App {
             .align_y(Alignment::Center)
             .push(container(import).width(96).center_y(36));
         for (kind, label, message, active) in [
-            (
-                Icon::Grid,
-                tr!(language, "网格视图" => "Grid view"),
-                Message::List(false),
-                self.screen == Screen::Assets && !self.list,
-            ),
-            (
-                Icon::List,
-                tr!(language, "列表视图" => "List view"),
-                Message::List(true),
-                self.screen == Screen::Assets && self.list,
-            ),
             (
                 Icon::Filter,
                 tr!(language, "筛选素材" => "Filter assets"),
@@ -631,7 +619,7 @@ impl App {
                     back,
                     search,
                     Space::new().width(Length::Fill),
-                    tools.width(376),
+                    tools.width(296),
                     controls.width(104)
                 ]
                 .spacing(8)
@@ -712,9 +700,12 @@ impl App {
         let language = self.preferences.language;
         let logo = container(
             mouse_area(
-                row![icon(Icon::Logo, 29.0, BLUE), heading("Moriq Space", 17)]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
+                row![
+                    icon(Icon::Logo, 29.0, BLUE),
+                    column![heading("Moriq", 20), muted("CREATIVE LIBRARY").size(9)].spacing(2)
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
             )
             .on_press(Message::WindowDrag),
         )
@@ -726,25 +717,49 @@ impl App {
             column![
                 self.nav_row(
                     Icon::Folder,
-                    tr!(language, "资源库" => "Library"),
+                    tr!(language, "我的资源库" => "Libraries"),
                     None,
                     Message::ShowLibraries,
-                    self.screen != Screen::Models
+                    self.library_picker || self.screen == Screen::Overview
                 ),
                 self.nav_row(
-                    Icon::Cube,
-                    tr!(language, "AI 模型" => "AI Models"),
+                    Icon::Image,
+                    tr!(language, "素材工作台" => "Workspace"),
+                    None,
+                    Message::AllAssets,
+                    !self.library_picker && self.screen == Screen::Assets
+                ),
+                self.nav_row(
+                    Icon::Sparkles,
+                    tr!(language, "AI 工作室" => "AI studio"),
                     None,
                     Message::Navigate(2),
                     self.screen == Screen::Models
-                )
+                ),
             ]
-            .spacing(5),
-            Some(usize::from(self.screen == Screen::Models)),
+            .spacing(6),
+            Some(if self.library_picker {
+                0
+            } else {
+                match self.screen {
+                    Screen::Overview => 0,
+                    Screen::Assets => 1,
+                    Screen::Models => 2,
+                }
+            }),
             crate::liquid::Treatment::Selection,
             self.preferences.reduced_motion,
         );
         let mut content = column![navigation];
+        if self.library.is_some() {
+            content = content.push(self.nav_row(
+                Icon::Database,
+                tr!(language, "远程来源 · NAS" => "NAS sources"),
+                None,
+                Message::Manage(ManageMessage::Nas),
+                self.manager.panel == Some(manage::Panel::Nas),
+            ));
+        }
         content = content
             .push(Space::new().height(if self.screen == Screen::Assets { 6 } else { 13 }))
             .push(separator())
@@ -957,38 +972,20 @@ impl App {
                     .take(if self.screen == Screen::Models { 5 } else { 4 })
                 {
                     let thumbnail = self.manager.project_covers.get(&project.id);
-                    let compact = self.screen == Screen::Models;
-                    let thumb_size = if compact { 28.0 } else { 40.0 };
                     let selected = self.query.project == Some(project.id);
-                    let data: Element<'_, Message> = if compact {
-                        row![
-                            text(manage::project_label(&library.info.projects, project.id))
-                                .size(13),
-                            Space::new().width(Length::Fill),
-                            text(number(project.count))
-                                .size(11)
-                                .style(crate::theme::text_color(MUTED))
-                        ]
-                        .align_y(Alignment::Center)
-                        .into()
-                    } else {
-                        column![
-                            text(manage::project_label(&library.info.projects, project.id))
-                                .size(13)
-                                .style(crate::theme::text_color(if selected {
-                                    BLUE
-                                } else {
-                                    TEXT
-                                })),
-                            muted(trf!(language, "{} 张" => "{} photos", number(project.count)))
-                        ]
-                        .spacing(5)
-                        .into()
-                    };
+                    let data: Element<'_, Message> = row![
+                        text(manage::project_label(&library.info.projects, project.id)).size(13),
+                        Space::new().width(Length::Fill),
+                        text(number(project.count))
+                            .size(11)
+                            .style(crate::theme::text_color(MUTED))
+                    ]
+                    .align_y(Alignment::Center)
+                    .into();
                     content = content.push(
                         button(
                             row![
-                                photo(thumbnail, Length::Fixed(thumb_size), thumb_size),
+                                photo(thumbnail, Length::Fixed(28.0), 28.0),
                                 container(data).width(Length::Fill)
                             ]
                             .spacing(10)
@@ -1276,7 +1273,7 @@ impl App {
         )
         .width(self.sidebar_width())
         .height(Length::Fill)
-        .style(sidebar)
+        .style(navigation_surface)
         .into()
     }
 }
