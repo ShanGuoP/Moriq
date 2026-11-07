@@ -83,6 +83,7 @@ impl JobKind {
     pub const fn memory_mib(self) -> u32 {
         match self {
             Self::Analysis(ModelId::Qwen35_4b) => 3072,
+            Self::Analysis(ModelId::Faces) => 256,
             Self::Analysis(_) => 3072,
             Self::QwenClassification | Self::QwenDescription | Self::QwenFaces => 3072,
             Self::Batch | Self::Metadata | Self::Integrity => 128,

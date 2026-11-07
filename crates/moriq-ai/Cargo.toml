@@ -17,5 +17,7 @@ reqwest={workspace=true,features=["blocking"]}
 sysinfo="=0.37.2"
 [build-dependencies]
 cc="1"
+sha2.workspace=true
+serde_json.workspace=true
 [lints]
 workspace=true

@@ -77,6 +77,7 @@ pub struct Asset {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Query {
+    pub face_analyzed: Option<bool>,
     pub legacy_category: String,
     pub medium: String,
     pub themes: Vec<String>,

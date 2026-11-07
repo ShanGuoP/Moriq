@@ -10,11 +10,34 @@ impl Service {
                 .await
                 .map_err(|e| TaskError::Runtime(e.to_string()))??;
         }
+        let cancellation = self.job_cancel.clone();
         self.call_task(move |active| {
-            check_task(active, id)?
-                .enqueue_media_job(kind, 0)
-                .map(|_| ())
-                .map_err(storage_error)
+            let library = check_task(active, id)?;
+            if kind == JobKind::Analysis(ModelId::Faces) {
+                let old = library.background_jobs().map_err(storage_error)?;
+                for job in old
+                    .into_iter()
+                    .filter(|job| job.kind == JobKind::QwenFaces && job.state.is_active())
+                {
+                    library
+                        .control_job(&job.id, JobCommand::Cancel)
+                        .map_err(storage_error)?;
+                    cancellation.stop(Some((id, &job.id)));
+                }
+            }
+            let queued = library.enqueue_media_job(kind, 0).map_err(storage_error)?;
+            if kind == JobKind::Analysis(ModelId::Faces)
+                && library
+                    .background_jobs()
+                    .map_err(storage_error)?
+                    .iter()
+                    .any(|job| job.id == queued && job.state == JobState::Paused)
+            {
+                library
+                    .control_job(&queued, JobCommand::Resume)
+                    .map_err(storage_error)?;
+            }
+            Ok(())
         })
         .await
     }

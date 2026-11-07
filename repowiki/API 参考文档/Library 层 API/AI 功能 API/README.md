@@ -3,6 +3,8 @@
 > Repo Wiki 节点 `ai-api`
 > 导出自 Qoder 知识库快照 `8fbe02f6-57c2-4874-b725-1a8130851fd9`，代码基线 `7a7a8e75e18bd90294e09cd422dd7ed5a04813a0`（分支 main，zh-CN）。
 
+> **当前接口补充（2026-11-07）：** 本页后文保留旧快照。默认人脸模型已改为 CPU，人物删除保留照片及人工未归组检测，查询新增 `Query.face_analyzed`。当前签名和行为见 [人脸识别 API](人脸识别%20API.md)，任务入口与界面约束见 [AI 工作室与人物整理](../../../AI%20工作室与人物整理.md)。
+
 <cite>
 **本文引用的文件**   
 - [qwen_faces.rs](../../../../crates/moriq-library/src/ai/qwen_faces.rs)

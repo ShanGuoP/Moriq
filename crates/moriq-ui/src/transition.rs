@@ -92,6 +92,14 @@ impl App {
                 | Message::List(_)
                 | Message::Back
                 | Message::Forward
+                | Message::StudioTab(_)
+                | Message::Ai(
+                    AiMessage::Group(_)
+                        | AiMessage::Category(_)
+                        | AiMessage::PersonFilter(_)
+                        | AiMessage::Workspace(_)
+                )
+                | Message::Manage(ManageMessage::Builtin(_))
         )
     }
     /// 判断导航消息是否实际改变目的地，避免无效重启动画。
@@ -118,6 +126,24 @@ impl App {
                 self.screen != Screen::Assets || self.query.project != Some(*id)
             }
             Message::List(list) => self.screen != Screen::Assets || self.list != *list,
+            Message::StudioTab(tab) => self.screen != Screen::Models || self.studio_tab != *tab,
+            Message::Ai(AiMessage::PersonFilter(person)) => {
+                self.screen != Screen::Assets || self.query.person.as_ref() != Some(person)
+            }
+            Message::Ai(AiMessage::Category(category)) => {
+                self.screen != Screen::Assets || self.query.category != *category
+            }
+            Message::Ai(AiMessage::Workspace(project)) => {
+                self.screen != Screen::Models || self.query.project != *project
+            }
+            Message::Ai(AiMessage::Group(id)) => self
+                .manager
+                .organizer
+                .ai_groups
+                .iter()
+                .find(|g| g.id == *id)
+                .is_some_and(|g| self.screen != Screen::Assets || self.query != g.query),
+            Message::Manage(ManageMessage::Builtin(_)) => true,
             _ => false,
         }
     }
@@ -133,6 +159,12 @@ impl App {
             return self.drop_message(event);
         }
         if let Message::TransitionFrame(now) = message {
+            if self
+                .selection_motion_until
+                .is_some_and(|until| now >= until)
+            {
+                self.selection_motion_until = None;
+            }
             self.gallery_feedback.sample(now);
             if let Some(entrance) = &mut self.surface_motion {
                 entrance.sampled = now;
@@ -151,6 +183,7 @@ impl App {
             return Task::none();
         }
         if matches!(message, Message::WindowClose) {
+            self.selection_motion_until = None;
             self.transition = None;
             self.surface_motion = None;
         }
@@ -161,6 +194,12 @@ impl App {
         let page_changed = self.library.is_some()
             && Self::is_page_navigation(&message)
             && self.page_changes(&message);
+        let selection_changed = page_changed
+            || match &message {
+                Message::ModelFilter(filter) => self.model_filter != *filter,
+                Message::DetailTab(tab) => self.detail_tab != *tab,
+                _ => false,
+            };
         let animation = self.transition.as_ref().map(|t| (t.alpha(), t.offset()));
         let before = (self.content_screen(), self.model_tab);
         if Self::is_page_navigation(&message) {
@@ -181,6 +220,7 @@ impl App {
         let library = self.library.as_ref().map(|l| l.info.id);
         let task = self.commit_navigation(message);
         if self.preferences.reduced_motion {
+            self.selection_motion_until = None;
             self.transition = None;
             self.surface_motion = None;
         }
@@ -208,6 +248,9 @@ impl App {
             entrance.offset_from = offset;
             self.transition = Some(entrance);
         }
+        if selection_changed && !self.preferences.reduced_motion {
+            self.selection_motion_until = Some(Instant::now() + Duration::from_millis(450));
+        }
         task
     }
 }
@@ -216,6 +259,50 @@ impl App {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// 选中条单独变化也主动调度帧，稳定后停止，普通回执不重新启动过渡。
+    fn selection_changes_have_a_bounded_frame_clock() {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Models;
+        drop(app.update(Message::ModelFilter(0)));
+        let until = app.selection_motion_until.unwrap();
+        assert!(app.transition.is_none());
+        drop(app.update(Message::ModelFilter(0)));
+        assert_eq!(app.selection_motion_until, Some(until));
+        drop(app.update(Message::TransitionFrame(until + Duration::from_millis(1))));
+        assert!(app.selection_motion_until.is_none());
+        drop(app.update(Message::StudioTab(1)));
+        assert!(app.transition.is_some());
+        assert!(app.selection_motion_until.is_some());
+        app.preferences.reduced_motion = true;
+        drop(app.update(Message::ModelFilter(1)));
+        assert!(app.transition.is_none());
+        assert!(app.selection_motion_until.is_none());
+    }
+
+    #[test]
+    /// 人物和项目在同一个主页面内切换时也有过渡，摘要刷新不会重启动画。
+    fn person_and_workspace_navigation_animate_within_the_same_screen() {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Assets;
+        app.query.person = Some("a".into());
+        drop(app.update(Message::Ai(AiMessage::PersonFilter("b".into()))));
+        let started = app.transition.as_ref().unwrap().started;
+        let owner = app.library.as_ref().unwrap().info.id;
+        drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
+            owner,
+            app.projection_request,
+            Ok(Organizer::default()),
+        ))));
+        assert_eq!(app.transition.as_ref().unwrap().started, started);
+        app.screen = Screen::Models;
+        app.transition = None;
+        drop(app.update(Message::Ai(AiMessage::Workspace(
+            Some(ProjectId::default()),
+        ))));
+        assert!(app.transition.is_some());
+    }
     #[test]
     /// 验证全局资源库选择器替换待处理导航，并停止旧动画。
     fn global_picker_replaces_pending_navigation_and_animation_stops() {

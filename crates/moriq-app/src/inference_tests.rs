@@ -95,6 +95,13 @@ struct FakeRunner {
     release: AtomicBool,
     cancelled: AtomicBool,
     mode: u8,
+    leases: Arc<std::sync::atomic::AtomicUsize>,
+}
+struct FakeBatchLease(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for FakeBatchLease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 impl FakeRunner {
     /// 构造当前隔离用例使用的可控替身或测试状态。
@@ -104,10 +111,16 @@ impl FakeRunner {
             release: AtomicBool::new(release),
             cancelled: AtomicBool::new(false),
             mode,
+            leases: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 }
 impl InferenceRunner for FakeRunner {
+    fn batch_lease(&self) -> Option<Box<dyn Send>> {
+        self.leases.fetch_add(1, Ordering::AcqRel);
+        Some(Box::new(FakeBatchLease(self.leases.clone())))
+    }
+
     /// 模拟人脸推理并暴露可控同步点，供调度与取消测试使用。
     fn qwen_faces(
         &self,
@@ -272,6 +285,7 @@ fn qwen_faces_run_through_the_scheduler_and_cancel_without_late_publication() {
                 .unwrap();
             if cancel {
                 wait_entered(&runner).await;
+                assert_eq!(runner.leases.load(Ordering::Acquire), 1);
                 tokio::time::timeout(Duration::from_secs(2), service.rating(owner, asset, 3))
                     .await
                     .unwrap()
@@ -291,6 +305,14 @@ fn qwen_faces_run_through_the_scheduler_and_cancel_without_late_publication() {
                 assert_eq!(wait_completed(&service, owner).await.failed, 0);
                 assert_eq!(service.faces(owner, asset).await.unwrap().len(), 1);
                 assert_eq!(service.organizer(owner).await.unwrap().people.len(), 1);
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while runner.leases.load(Ordering::Acquire) > 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "completed/cancelled batches must release their model lease"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
             service.close().await.unwrap();
         }

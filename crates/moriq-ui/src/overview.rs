@@ -4,7 +4,7 @@ use crate::components::*;
 use crate::icons::{Icon, icon};
 use crate::theme::*;
 use iced::widget::{Column, Row, Space, button, column, container, row, text, tooltip};
-use iced::{Alignment, Color, Length};
+use iced::{Alignment, Length};
 impl App {
     /// 构建首页资源库摘要、项目和收藏分类区域。
     pub(super) fn overview(&self) -> Element<'_, Message> {
@@ -13,103 +13,41 @@ impl App {
             return self.welcome();
         };
         let info = &library.info;
-        let cover = self
-            .manager
-            .cover
-            .as_ref()
-            .or_else(|| self.tiles.first().and_then(|t| t.handle.as_ref()));
-        let intro = column![
-            text("MORIQ / LIBRARY").size(11).style(text_color(BLUE)),
-            heading(info.name.clone(), 32),
-            muted(if self.manager.organizer.description.is_empty() {
-                tr!(language, "让每一次灵感，都有自己的位置。" => "A place for every creative idea.")
-            } else { &self.manager.organizer.description }).size(14),
-            Space::new().height(12),
-            row![
-                form_action(Icon::Image, tr!(language, "浏览素材" => "Explore assets"), Message::AllAssets, true),
-                form_action(Icon::Edit, tr!(language, "编辑资料" => "Edit library"), Message::ShowRenameLibrary, false),
-                icon_button(Icon::Folder, Message::RevealLibrary),
-            ].spacing(8),
-        ].spacing(12).width(Length::Fill);
-        let cover_card = button(photo(cover, Length::Fixed(180.0), 156.0))
-            .padding(0)
-            .style(flat)
-            .on_press(Message::Manage(ManageMessage::Cover));
-        let mut hero_row = row![intro].spacing(24).align_y(Alignment::Center);
-        if self.viewport.width >= 1000.0 && cover.is_some() {
-            hero_row = hero_row.push(cover_card);
-        }
-        let stats = row![
-            hero_stat(
-                Icon::Image,
-                BLUE,
-                number(info.count),
-                tr!(language, "图片素材" => "Image assets")
-            ),
-            hero_stat(
-                Icon::Folder,
-                GREEN,
-                info.projects.len().to_string(),
-                tr!(language, "项目数量" => "Projects")
-            ),
-            hero_stat(
-                Icon::Star,
-                Color::from_rgb8(246, 159, 11),
-                number(info.favorites),
-                tr!(language, "收藏数量" => "Favorites")
-            ),
-            hero_stat(
-                Icon::Database,
-                PURPLE,
-                self.storage
-                    .stats
-                    .as_ref()
-                    .map(|s| size(s.allocated))
-                    .unwrap_or_else(|| size(info.bytes)),
-                if self.storage.stats.is_some() {
-                    tr!(language, "库内占用" => "Library storage")
-                } else {
-                    tr!(language, "素材登记量" => "Registered asset size")
-                }
-            )
-        ]
-        .spacing(6);
-        let hero = column![
-            container(hero_row).padding([12, 4]).width(Length::Fill),
-            stats,
-        ]
-        .spacing(24);
+        let hero = row![
+            column![
+                muted(tr!(language, "资源库" => "LIBRARY")).size(11),
+                heading(info.name.clone(), 28),
+                muted(trf!(language, "{} 张素材  ·  {} 个项目  ·  {}" => "{} assets  ·  {} projects  ·  {}",
+                    number(info.count), info.projects.len(), size(info.bytes))),
+            ].spacing(8).width(Length::Fill),
+            form_action(Icon::Image, tr!(language, "浏览素材" => "Explore assets"), Message::AllAssets, true),
+            action(tr!(language, "资料与活动" => "Details & activity"), Message::ToggleOverviewDetails)
+                .style(liquid_nav(self.overview_details)),
+        ].spacing(12).align_y(Alignment::Center);
         let quick = row![
-            self.quick_action(
-                Icon::Person,
-                BLUE,
-                tr!(language, "导入图片" => "Import images"),
-                tr!(language, "支持文件与整个文件夹" => "Supports files and entire folders"),
-                Message::Manage(ManageMessage::ImportMenu)
-            ),
-            self.quick_action(
+            form_action(
                 Icon::Plus,
-                GREEN,
                 tr!(language, "新建项目" => "New project"),
-                tr!(language, "创建项目管理素材" => "Create a project to organize assets"),
-                Message::ShowProject
+                Message::ShowProject,
+                false
             ),
-            self.quick_action(
-                Icon::Collection,
-                PURPLE,
-                tr!(language, "创建智能集合" => "Create smart collection"),
-                tr!(language, "保存搜索与筛选规则" => "Save search and filter rules"),
+            form_action(
+                Icon::Image,
+                tr!(language, "导入素材" => "Import assets"),
+                Message::Manage(ManageMessage::ImportMenu),
+                false
+            ),
+            action(
+                tr!(language, "智能集合" => "Smart collections"),
                 Message::Manage(ManageMessage::Collections)
             ),
-            self.quick_action(
-                Icon::Folder,
-                BLUE,
-                tr!(language, "连接 NAS" => "Connect NAS"),
-                tr!(language, "访问远程图片来源" => "Access remote photo sources"),
-                Message::Manage(ManageMessage::Nas)
-            )
+            action(
+                tr!(language, "标签" => "Tags"),
+                Message::Manage(ManageMessage::Tags)
+            ),
         ]
-        .spacing(12);
+        .spacing(8)
+        .wrap();
         let mut projects = Row::new().spacing(14);
         let mut recent_projects: Vec<_> = info.projects.iter().collect();
         recent_projects.sort_by(|a, b| {
@@ -230,155 +168,59 @@ impl App {
                     .style(panel)
                     .into()
         };
-        let mut smart = Column::new().spacing(7);
-        for (label, count, builtin) in [
-            (
-                tr!(language, "最近导入" => "Recently imported"),
-                self.manager.organizer.recent_count,
-                Builtin::Recent,
-            ),
-            (
-                tr!(language, "未加标签" => "Untagged"),
-                self.manager.organizer.untagged_count,
-                Builtin::Untagged,
-            ),
-            (
-                tr!(language, "高评分" => "Highly rated"),
-                self.manager.organizer.high_rating_count,
-                Builtin::HighRating,
-            ),
-        ] {
-            smart = smart.push(action(
-                &format!("{label}  {count}"),
-                Message::Manage(ManageMessage::Builtin(builtin)),
-            ));
-        }
-        for collection in self.manager.organizer.collections.iter().take(3) {
-            smart = smart.push(action(
-                &collection.name,
-                Message::Manage(ManageMessage::UseCollection(collection.id.clone())),
-            ));
-        }
-
-        let bottom = row![
-            column![
-                column![
-                    section(
-                        self.preferences.language,
-                        tr!(language, "收藏夹" => "Favorites"),
-                        Message::Favorites
-                    ),
-                    favorites
-                ]
-                .spacing(10),
-                Space::new().height(18),
-                section(
-                    self.preferences.language,
-                    tr!(language, "标签概览" => "Tag overview"),
-                    Message::Manage(ManageMessage::Tags)
+        let mut center = column![
+            hero,
+            separator(),
+            row![
+                heading(tr!(language, "最近项目" => "Recent projects"), 18),
+                Space::new().width(Length::Fill),
+                action(
+                    tr!(language, "全部项目" => "All projects"),
+                    Message::Manage(ManageMessage::Project)
                 )
             ]
-            .width(Length::FillPortion(3)),
-            column![
-                section(
-                    self.preferences.language,
-                    tr!(language, "智能集合" => "Smart collections"),
-                    Message::Manage(ManageMessage::Collections)
-                ),
-                smart
-            ]
-            .spacing(10)
-            .width(Length::FillPortion(2))
-        ]
-        .spacing(36);
-        let mut tags = Row::new().spacing(7);
-
-        for (tag, count) in self.manager.organizer.tags.iter().take(8) {
-            tags = tags.push(
-                button(chip(format!("# {tag} {count}"), BLUE))
-                    .padding(0)
-                    .style(flat)
-                    .on_press(Message::Manage(ManageMessage::Tag(tag.clone()))),
-            );
-        }
-
-        let center = column![
-            hero,
-            Space::new().height(18),
-            column![
-                heading(tr!(language, "快速操作" => "Quick actions"), 17),
-                quick
-            ]
-            .spacing(9),
-            Space::new().height(26),
-            column![
-                section(
-                    self.preferences.language,
-                    tr!(language, "项目 · 最近访问优先" => "Projects · Recently visited first"),
-                    Message::Manage(ManageMessage::Project)
-                ),
-                iced::widget::scrollable(projects)
-                    .direction(iced::widget::scrollable::Direction::Horizontal(
-                        iced::widget::scrollable::Scrollbar::new().spacing(8)
-                    ))
-                    .width(Length::Fill)
-            ]
-            .spacing(10),
-            Space::new().height(18),
-            bottom,
-            Space::new().height(4),
-            tags
-        ]
-        .spacing(0);
-        let mut layout = row![
-            scroll(center)
-                .id("overview")
-                .on_scroll(|v| Message::PageScrolled(
-                    0,
-                    v.absolute_offset().y,
-                    (v.content_bounds().height - v.bounds().height).max(0.0)
-                ))
-                .height(Length::Fill)
-                .width(Length::Fill)
-        ];
-        if self.viewport.width >= 1480.0 {
-            layout = layout.push(scroll(self.library_details()).width(300));
-        }
-        layout
-            .spacing(18)
-            .padding(iced::Padding {
-                top: 20.0,
-                right: 24.0,
-                bottom: 20.0,
-                left: 24.0,
-            })
-            .height(Length::Fill)
-            .into()
-    }
-    /// 构建首页常用操作按钮。
-    fn quick_action<'a>(
-        &self,
-        kind: Icon,
-        color: Color,
-        title: &str,
-        description: &str,
-        message: Message,
-    ) -> Element<'a, Message> {
-        button(
-            row![
-                container(icon(kind, 20.0, color)).padding(12).style(pale),
-                column![heading(title, 14), muted(description).size(11)]
-                    .spacing(5)
-                    .width(Length::Fill),
-                icon(Icon::Right, 14.0, MUTED),
-            ]
-            .spacing(12)
             .align_y(Alignment::Center),
+            iced::widget::scrollable(projects)
+                .direction(iced::widget::scrollable::Direction::Horizontal(
+                    iced::widget::scrollable::Scrollbar::new().spacing(8)
+                ))
+                .width(Length::Fill),
+            quick,
+        ]
+        .spacing(22);
+        if !self.manager.favorites.is_empty() {
+            center = center
+                .push(separator())
+                .push(section(
+                    language,
+                    tr!(language, "收藏" => "Favorites"),
+                    Message::Favorites,
+                ))
+                .push(favorites);
+        } else {
+            center = center.push(action(
+                tr!(language, "查看收藏" => "View favorites"),
+                Message::Favorites,
+            ));
+        }
+        if self.overview_details {
+            center = center.push(separator()).push(self.library_details());
+        }
+        scroll(
+            container(center)
+                .max_width(1200)
+                .padding([28, 32])
+                .width(Length::Fill),
         )
-        .padding(16)
-        .width(Length::Fill)
-        .style(secondary)
-        .on_press(message)
+        .id("overview")
+        .on_scroll(|v| {
+            Message::PageScrolled(
+                0,
+                v.absolute_offset().y,
+                (v.content_bounds().height - v.bounds().height).max(0.0),
+            )
+        })
+        .height(Length::Fill)
         .into()
     }
     /// 构建资源库信息与维护入口区域。
@@ -393,7 +235,9 @@ impl App {
                 row![
                     heading(tr!(language, "资源库信息" => "Library information"), 17),
                     Space::new().width(Length::Fill),
-                    action(tr!(language, "编辑" => "Edit"), Message::ShowRenameLibrary)
+                    action(tr!(language, "编辑" => "Edit"), Message::ShowRenameLibrary),
+                    icon_button(Icon::Folder, Message::RevealLibrary),
+                    icon_button(Icon::Image, Message::Manage(ManageMessage::Cover))
                 ]
                 .align_y(Alignment::Center),
                 info_row(
@@ -542,22 +386,6 @@ impl App {
         .spacing(14)
         .into()
     }
-}
-/// 构建首页顶部的单项统计展示。
-fn hero_stat<'a>(kind: Icon, color: Color, value: String, label: &str) -> Element<'a, Message> {
-    container(
-        column![
-            row![icon(kind, 15.0, color), muted(label)]
-                .spacing(7)
-                .align_y(Alignment::Center),
-            heading(value, 25),
-        ]
-        .spacing(8),
-    )
-    .padding(18)
-    .width(Length::Fill)
-    .style(panel)
-    .into()
 }
 /// 构建资源库资料的名称和值展示行。
 fn info_row<'a>(label: &str, value: String) -> Element<'a, Message> {

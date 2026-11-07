@@ -9,6 +9,9 @@ pub(super) struct TaskState {
     pub request: u64,
     pub ticks: u8,
     pub(super) analysis_progress: std::collections::HashMap<String, (u64, u64, JobState)>,
+    pub(super) analysis_gallery_dirty: Option<Query>,
+    pub(super) analysis_masonry_generation: Option<u64>,
+    pub(super) analysis_masonry: Option<std::sync::Arc<moriq_render::MasonryIndex>>,
     pub(super) failures: Option<(LibraryId, String, Vec<JobFailure>)>,
 }
 
@@ -115,23 +118,55 @@ pub enum JobMessage {
     FailuresLoaded(LibraryId, String, Result<Vec<JobFailure>, String>),
 }
 impl App {
-    /// 刷新后台任务投影；任务执行由应用调度器独立驱动。
-    pub(super) fn job_tick(&mut self) -> Task<Message> {
-        self.jobs.ticks = self.jobs.ticks.wrapping_add(1);
-        if self.jobs.loading || !self.jobs.ticks.is_multiple_of(4) {
+    /// 合并后台分析的图库更新，保留旧布局并等待在途页面读取完成。
+    pub(super) fn refresh_analysis_gallery(&mut self) -> Task<Message> {
+        let Some(query) = self.jobs.analysis_gallery_dirty.as_ref() else {
+            return Task::none();
+        };
+        if query != &self.query || self.screen != Screen::Assets || self.library_picker {
+            self.jobs.analysis_gallery_dirty = None;
             return Task::none();
         }
-        let Some(library) = &self.library else {
+        if self.page_task.is_some()
+            || self.masonry_task.is_some()
+            || self.responsiveness.pending()
+            || self.responsiveness.replacing()
+        {
             return Task::none();
+        }
+        self.jobs.analysis_gallery_dirty = None;
+        if self.masonry_mode && !self.list && self.import.is_none() {
+            let task = self.rebuild_masonry();
+            if self.masonry_task.is_some() {
+                self.jobs.analysis_masonry_generation = Some(self.layout_generation);
+            }
+            task
+        } else {
+            self.refresh()
+        }
+    }
+
+    /// 刷新后台任务投影；任务执行由应用调度器独立驱动。
+    pub(super) fn job_tick(&mut self) -> Task<Message> {
+        let gallery = self.refresh_analysis_gallery();
+        self.jobs.ticks = self.jobs.ticks.wrapping_add(1);
+        if self.jobs.loading || !self.jobs.ticks.is_multiple_of(4) {
+            return gallery;
+        }
+        let Some(library) = &self.library else {
+            return gallery;
         };
         let id = library.info.id;
         self.jobs.loading = true;
         self.jobs.request += 1;
         let request = self.jobs.request;
         let service = self.service.clone();
-        Task::perform(async move { service.background_jobs(id).await }, move |r| {
-            Message::Jobs(JobMessage::Refreshed(id, request, r))
-        })
+        Task::batch([
+            gallery,
+            Task::perform(async move { service.background_jobs(id).await }, move |r| {
+                Message::Jobs(JobMessage::Refreshed(id, request, r))
+            }),
+        ])
     }
     /// 处理任务控制与进度回执，刷新受结果影响的分类和布局。
     pub(super) fn job_message(&mut self, event: JobMessage) -> Task<Message> {
@@ -226,10 +261,23 @@ impl App {
                             .filter(|job| job.kind.model().is_some())
                             .map(|job| (job.id.clone(), (job.completed, job.failed, job.state)))
                             .collect::<std::collections::HashMap<_, _>>();
-                        let changed = progress.iter().any(|(id, value)| {
-                            self.jobs.analysis_progress.get(id) != Some(value)
-                                && (value.0 > 0 || value.2.is_finished())
-                        });
+                        let mut faces_changed = false;
+                        let mut content_changed = false;
+                        for job in jobs.iter().filter(|job| job.kind.model().is_some()) {
+                            let value = (job.completed, job.failed, job.state);
+                            if self.jobs.analysis_progress.get(&job.id) != Some(&value)
+                                && (job.completed > 0 || job.state.is_finished())
+                            {
+                                if matches!(
+                                    job.kind,
+                                    JobKind::Analysis(ModelId::Faces) | JobKind::QwenFaces
+                                ) {
+                                    faces_changed = true;
+                                } else {
+                                    content_changed = true;
+                                }
+                            }
+                        }
                         self.jobs.analysis_progress = progress;
                         self.manager.organizer.jobs = jobs;
                         self.jobs.error = None;
@@ -237,20 +285,27 @@ impl App {
                             .organizer
                             .errors
                             .retain(|(section, _)| *section != OrganizerSection::Jobs);
-                        if changed {
-                            let gallery = if self.screen == Screen::Assets
-                                && (!self.query.category.is_empty() || self.query.person.is_some())
+                        if faces_changed || content_changed {
+                            if self.screen == Screen::Assets
+                                && ((faces_changed
+                                    && (self.query.person.is_some()
+                                        || self.query.face_analyzed.is_some()))
+                                    || (content_changed
+                                        && (!self.query.category.is_empty()
+                                            || !self.query.medium.is_empty()
+                                            || !self.query.themes.is_empty()
+                                            || !self.query.text.is_empty()
+                                            || !self.query.tag.is_empty())))
                             {
-                                self.masonry = None;
-                                Task::batch([self.refresh(), self.rebuild_masonry()])
+                                self.jobs.analysis_gallery_dirty = Some(self.query.clone());
+                            }
+                            let gallery = self.refresh_analysis_gallery();
+                            let catalog = if content_changed {
+                                self.refresh_catalog()
                             } else {
-                                Task::none()
+                                self.refresh_organizer()
                             };
-                            return Task::batch([
-                                self.refresh_catalog(),
-                                self.refresh_details(),
-                                gallery,
-                            ]);
+                            return Task::batch([catalog, self.refresh_details(), gallery]);
                         }
                     }
                     Err(e) => {

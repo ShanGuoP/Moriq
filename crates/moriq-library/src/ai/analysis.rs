@@ -277,10 +277,9 @@ pub(crate) fn suggest_people(
     let mut best: Vec<Option<(String, f32)>> = vec![None; vectors.len()];
     let lease = pool.checkout()?;
     let db = lease.connection()?;
-    let mut stmt = db.prepare("SELECT p.person_id,p.vector FROM person_vectors p WHERE p.revision=?1 AND NOT EXISTS(SELECT 1 FROM \
-                detected_faces f WHERE f.version_id=?2 AND f.person_id=p.person_id)")?;
-
-    let mut rows = stmt.query(params![revision, version])?;
+    let scope = workspace::version_scope(db, version)?;
+    let mut stmt = db.prepare("SELECT p.person_id,p.vector FROM person_vectors p WHERE p.revision=?1 AND coalesce((SELECT workspace FROM workspace_people WHERE person_id=p.person_id),'')=?3 AND NOT EXISTS(SELECT 1 FROM detected_faces f WHERE f.version_id=?2 AND f.person_id=p.person_id)")?;
+    let mut rows = stmt.query(params![revision, version, scope])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let bytes: Vec<u8> = row.get(1)?;
@@ -359,6 +358,7 @@ struct PreviousFace {
     manual: bool,
     bounds: [f32; 4],
     vector: Vec<f32>,
+    compatible: bool,
 }
 /// 计算两个人脸框的重叠程度，用于检测结果去重或匹配。
 fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f32 {
@@ -374,27 +374,34 @@ fn store_faces(
     revision: &str,
     result: &serde_json::Value,
 ) -> Result<()> {
-    let mut stmt=tx.prepare("SELECT id,person_id,manual,box,vector FROM detected_faces WHERE version_id=?1 AND revision=?2")?;
+    let migrating = revision.starts_with("yunet2023mar-sface");
+    let mut stmt=tx.prepare("SELECT f.id,f.person_id,(f.manual OR (?3 AND coalesce((SELECT name FROM people WHERE id=f.person_id),'未命名人物')!='未命名人物')),f.box,f.vector,f.revision FROM detected_faces f WHERE f.version_id=?1 AND (f.revision=?2 OR ?3)")?;
     let rows = stmt
-        .query_map(params![version, revision], |r| {
+        .query_map(params![version, revision, migrating], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, bool>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, Vec<u8>>(4)?,
+                r.get::<_, String>(5)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let old = rows
         .into_iter()
-        .map(|(id, person, manual, bounds, bytes)| {
+        .map(|(id, person, manual, bounds, bytes, old_revision)| {
             Ok(PreviousFace {
                 id,
                 person,
                 manual,
                 bounds: serde_json::from_str(&bounds).map_err(|e| Error::Invalid(e.to_string()))?,
-                vector: decode_vector(&bytes)?,
+                vector: if migrating && old_revision != revision {
+                    Vec::new()
+                } else {
+                    decode_vector(&bytes)?
+                },
+                compatible: old_revision == revision,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -404,10 +411,15 @@ fn store_faces(
         .filter_map(|f| f.person.clone())
         .collect::<std::collections::HashSet<_>>();
     tx.execute(
-        "DELETE FROM detected_faces WHERE version_id=?1 AND revision=?2 AND manual=0",
-        params![version, revision],
+        "DELETE FROM detected_faces WHERE version_id=?1 AND (revision=?2 OR ?3) AND manual=0 AND (?3=0 OR NOT EXISTS(SELECT 1 FROM people WHERE id=detected_faces.person_id AND name!='未命名人物'))",
+        params![version, revision, migrating],
     )?;
-    let mut ordinal:i64=tx.query_row("SELECT coalesce(max(ordinal),-1)+1 FROM detected_faces WHERE version_id=?1 AND revision=?2",params![version,revision],|r|r.get(0))?;
+    // Reserve ordinals across revisions before moving preserved faces into this revision.
+    let mut ordinal: i64 = tx.query_row(
+        "SELECT coalesce(max(ordinal),-1)+1 FROM detected_faces WHERE version_id=?1",
+        [version],
+        |r| r.get(0),
+    )?;
     let mut matched = std::collections::HashSet::new();
     let mut assigned = old
         .iter()
@@ -432,17 +444,33 @@ fn store_faces(
             .filter_map(|f| {
                 let iou = overlap(&bounds, &f.bounds);
                 let score = cosine(&embedding, &f.vector);
-                (iou >= 0.4 && score >= 0.65).then_some((f, iou + score))
+                (iou >= 0.4 && (score >= 0.65 || (migrating && !f.compatible)))
+                    .then_some((f, iou + score.max(0.0)))
             })
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(f, _)| f);
         if let Some(previous) = previous {
             matched.insert(previous.id.clone());
             if previous.manual {
+                if migrating {
+                    tx.execute(
+                        "UPDATE detected_faces SET revision=?2,vector=?3,box=?4,ordinal=?5 WHERE id=?1",
+                        params![
+                            previous.id,
+                            revision,
+                            vector_bytes(&embedding),
+                            serde_json::to_string(&bounds)
+                                .map_err(|e| Error::Invalid(e.to_string()))?,
+                            ordinal,
+                        ],
+                    )?;
+                    ordinal += 1;
+                }
                 continue;
             }
         }
         let candidate = previous
+            .filter(|f| f.compatible)
             .and_then(|f| f.person.as_deref())
             .or_else(|| face["suggested_person"].as_str());
         let person = if let Some(id) = candidate.filter(|id| !assigned.contains(*id)) {
@@ -542,6 +570,20 @@ _>>().map_err(Error::from)
         {
             return Err(Error::Invalid("人物记录已不存在".into()));
         }
+        Ok(())
+    }
+    /// 删除人物分组并保留原片及人工取消归组的人脸检测。
+    pub fn delete_person(&mut self, id: &str) -> Result<()> {
+        self.require_workspace_object("people", id)?;
+        let tx = self.db.transaction()?;
+        // Keep manual, unassigned detections so queued/repeated analysis cannot recreate this group.
+        tx.execute(
+            "UPDATE detected_faces SET person_id=NULL,manual=1 WHERE person_id=?1",
+            [id],
+        )?;
+        tx.execute("DELETE FROM people WHERE id=?1", [id])?;
+        tx.commit()?;
+        self.snapshot = None;
         Ok(())
     }
     /// 合并人物分组及人脸关联，并更新人物代表向量。
@@ -844,5 +886,259 @@ mod tests {
                 .total,
             1
         );
+    }
+    #[test]
+    fn cpu_reanalysis_replaces_automatic_qwen_faces_but_keeps_named_person() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("portrait.png");
+        image::RgbImage::from_pixel(128, 128, image::Rgb([10, 20, 30]))
+            .save(&input)
+            .unwrap();
+        let mut lib = Library::create(dir.path(), "CPU migration").unwrap();
+        lib.import(&input, None).unwrap();
+        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
+        let version = asset.version_id.to_string();
+        crate::qwen_faces::store(
+            &lib.db,
+            &version,
+            "qwen-test",
+            &serde_json::json!({"faces":[
+                {"box":[0.1,0.1,0.4,0.5],"person":null}, {"box":[0.7,0.7,0.1,0.1],"person":null}
+            ]}),
+        )
+        .unwrap();
+        let first = lib.faces(asset.id).unwrap().remove(0);
+        let person = first.person.unwrap();
+        lib.rename_person(&person, "Named person").unwrap();
+        store(
+            &lib.db,
+            &version,
+            "faces",
+            "yunet2023mar-sface2021dec-cpu-v1",
+            &serde_json::json!({"faces":[
+                {"box":[0.1,0.1,0.4,0.5],"vector":[1.0,0.0]}
+            ]}),
+        )
+        .unwrap();
+        let faces = lib.faces(asset.id).unwrap();
+        assert_eq!(faces.len(), 1);
+        assert_eq!(faces[0].person.as_deref(), Some(person.as_str()));
+        assert_eq!(faces[0].name, "Named person");
+        assert_eq!(lib.people().unwrap().len(), 1);
+        let count: i64 = lib
+            .db
+            .query_row(
+                "SELECT count(*) FROM person_vectors WHERE person_id=?1 AND revision LIKE 'yunet%'",
+                [&person],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    /// 验证多人迁移在任意检测顺序下保留人工归属，并可再次分析。
+    fn cpu_group_migration_allocates_unique_ordinals_for_preserved_and_new_faces() {
+        for reversed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let input = dir.path().join("group.png");
+            image::RgbImage::from_pixel(128, 128, image::Rgb([10, 20, 30]))
+                .save(&input)
+                .unwrap();
+            let mut lib = Library::create(dir.path(), "group migration").unwrap();
+            lib.import(&input, None).unwrap();
+            let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
+            let version = asset.version_id.to_string();
+            crate::qwen_faces::store(
+                &lib.db,
+                &version,
+                "qwen-test",
+                &serde_json::json!({"faces":[
+                    {"box":[0.1,0.1,0.3,0.4],"person":null},
+                    {"box":[0.6,0.1,0.3,0.4],"person":null}
+                ]}),
+            )
+            .unwrap();
+            let named = lib.faces(asset.id).unwrap().remove(0);
+            let person = named.person.unwrap();
+            lib.rename_person(&person, "Alice").unwrap();
+            let mut faces = vec![
+                serde_json::json!({"box":[0.1,0.1,0.3,0.4],"vector":[1.0,0.0]}),
+                serde_json::json!({"box":[0.6,0.1,0.3,0.4],"vector":[0.0,1.0]}),
+            ];
+            if reversed {
+                faces.reverse();
+            }
+            // Exercise the actual job commit so a constraint failure would pause the batch.
+            for _ in 0..2 {
+                let job = lib
+                    .enqueue_media_job(JobKind::Analysis(ModelId::Faces), 0)
+                    .unwrap();
+                let work = lib.claim_job_step().unwrap().unwrap();
+                let crate::jobs::Execution::Inference(request) = work.execute(std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                )) else {
+                    panic!("expected face inference");
+                };
+                let outcome = request.complete(Ok(InferenceResult {
+                    model: ModelId::Faces,
+                    revision: "yunet2023mar-sface2021dec-cpu-v1".into(),
+                    data: serde_json::json!({"faces":faces}),
+                }));
+                lib.finish_job_step(outcome).unwrap();
+                assert!(lib.claim_job_step().unwrap().is_none());
+                assert!(
+                    lib.background_jobs().unwrap().iter().any(|j| {
+                        j.id == job && j.state == JobState::Completed && j.failed == 0
+                    })
+                );
+                let stored = lib.faces(asset.id).unwrap();
+                assert_eq!(stored.len(), 2);
+                assert!(stored.iter().any(|f| {
+                    f.id == named.id
+                        && f.person.as_deref() == Some(person.as_str())
+                        && f.name == "Alice"
+                }));
+                assert_eq!(lib.people().unwrap().len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    /// 删除分组不删除照片，已领取的任务和重跑不会恢复被人工取消的归组。
+    fn deleting_a_person_preserves_photos_and_survives_inflight_reanalysis() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("portrait.png");
+        image::RgbImage::from_pixel(128, 128, image::Rgb([12, 23, 34]))
+            .save(&input)
+            .unwrap();
+        let mut lib = Library::create(dir.path(), "delete person").unwrap();
+        lib.import(&input, None).unwrap();
+        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
+        let revision = "yunet2023mar-sface2021dec-cpu-v1";
+        let result = serde_json::json!({"faces":[{"box":[0.1,0.1,0.4,0.5],"vector":[1.,0.]}]});
+        store(
+            &lib.db,
+            &asset.version_id.to_string(),
+            "faces",
+            revision,
+            &result,
+        )
+        .unwrap();
+        let person = lib.faces(asset.id).unwrap().remove(0).person.unwrap();
+        lib.enqueue_media_job(JobKind::Analysis(ModelId::Faces), 0)
+            .unwrap();
+        let work = lib.claim_job_step().unwrap().unwrap();
+        lib.delete_person(&person).unwrap();
+        let crate::jobs::Execution::Inference(request) = work.execute(std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )) else {
+            panic!("inference")
+        };
+        let outcome = request.complete(Ok(InferenceResult {
+            model: ModelId::Faces,
+            revision: revision.into(),
+            data: result,
+        }));
+        lib.finish_job_step(outcome).unwrap();
+        assert!(lib.people().unwrap().is_empty());
+        assert_eq!(lib.page(&Query::default(), 0, 10).unwrap().total, 1);
+        assert!(lib.faces(asset.id).unwrap()[0].person.is_none());
+        assert!(input.is_file());
+        let other = lib.create_project("other").unwrap();
+        lib.db
+            .execute(
+                "INSERT INTO people VALUES('foreign','Foreign','test',0)",
+                [],
+            )
+            .unwrap();
+        workspace::own_person(&lib.db, "foreign", &other.to_string()).unwrap();
+        assert!(lib.delete_person("foreign").is_err());
+    }
+
+    #[test]
+    /// 人脸分析状态独立于内容分类，空人脸成功结果也计入已完成，卡片和查询一致。
+    fn completed_face_analysis_is_not_presented_as_unorganized() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lib = Library::create(dir.path(), "analysis status").unwrap();
+        for n in 0..3u8 {
+            let input = dir.path().join(format!("{n}.png"));
+            image::RgbImage::from_pixel(32, 32, image::Rgb([n, 23, 34]))
+                .save(&input)
+                .unwrap();
+            lib.import(&input, None).unwrap();
+        }
+        let assets = lib.page(&Query::default(), 0, 10).unwrap().assets;
+        for (i, asset) in assets.iter().take(2).enumerate() {
+            store(
+                &lib.db,
+                &asset.version_id.to_string(),
+                "faces",
+                "yunet2023mar-sface2021dec-cpu-v1",
+                &if i == 0 {
+                    serde_json::json!({"faces":[{"box":[0.1,0.1,0.4,0.5],"vector":[1.,0.]}]})
+                } else {
+                    serde_json::json!({"faces":[]})
+                },
+            )
+            .unwrap();
+        }
+        let groups = lib.ai_groups().unwrap();
+        let done = groups.iter().find(|g| g.id == "_faces_analyzed").unwrap();
+        let pending = groups.iter().find(|g| g.id == "_unclassified").unwrap();
+        assert_eq!(done.count, 2);
+        assert_eq!(pending.count, 1);
+        assert_eq!(lib.page(&done.query, 0, 10).unwrap().total, done.count);
+        assert_eq!(
+            lib.page(&pending.query, 0, 10).unwrap().total,
+            pending.count
+        );
+        let classified: i64 = lib
+            .db
+            .query_row(
+                "SELECT count(*) FROM ai_effective_content WHERE medium<>''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(classified, 0);
+        lib.edit(&[assets[0].id], &Edit::Trash(true)).unwrap();
+        assert_eq!(lib.page(&done.query, 0, 10).unwrap().total, 1);
+    }
+
+    #[test]
+    fn face_suggestions_ignore_people_in_another_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("portrait.png");
+        image::RgbImage::from_pixel(128, 128, image::Rgb([20, 30, 40]))
+            .save(&input)
+            .unwrap();
+        let mut lib = Library::create(dir.path(), "face scope").unwrap();
+        let other = lib.create_project("other").unwrap();
+        lib.import(&input, None).unwrap();
+        let asset = lib.page(&Query::default(), 0, 1).unwrap().assets.remove(0);
+        lib.db
+            .execute(
+                "INSERT INTO people VALUES('foreign-person','Other','test',1)",
+                [],
+            )
+            .unwrap();
+        workspace::own_person(&lib.db, "foreign-person", &other.to_string()).unwrap();
+        lib.db
+            .execute(
+                "INSERT INTO person_vectors VALUES('foreign-person','test',?1,1)",
+                [vector_bytes(&[1.0, 0.0])],
+            )
+            .unwrap();
+        let mut result =
+            serde_json::json!({"faces":[{"box":[0.1,0.1,0.4,0.5],"vector":[1.0,0.0]}]});
+        suggest_people(
+            &lib.readers,
+            &asset.version_id.to_string(),
+            "test",
+            &mut result,
+        )
+        .unwrap();
+        assert!(result["faces"][0]["suggested_person"].is_null());
     }
 }

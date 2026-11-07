@@ -1,9 +1,10 @@
-# 准备运行组件、执行质量检查并生成便携包；公开发布模式还要求干净源码与来源清单。
+﻿# 准备运行组件、执行质量检查并生成便携包；公开发布模式还要求干净源码与来源清单。
 param(
     [ValidateSet('Release','Debug')][string]$Configuration='Release',
     [switch]$Offline,
     [switch]$SkipChecks,
-    [switch]$PublicRelease
+    [switch]$PublicRelease,
+    [ValidatePattern('^[a-zA-Z0-9-]*$')][string]$PackageSuffix=''
 )
 $ErrorActionPreference='Stop'
 $projectRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -20,6 +21,7 @@ if($PublicRelease){
 # 按固定版本准备媒体和 AI 组件，后续打包与校验使用同一份清单。
 & (Join-Path $PSScriptRoot 'prepare-codecs.ps1') -Offline:$Offline
 & (Join-Path $PSScriptRoot 'prepare-ai-runtime.ps1') -Offline:$Offline
+& (Join-Path $PSScriptRoot 'prepare-face-runtime.ps1') -Offline:$Offline
 # 在项目根目录生成构建身份，并在退出时恢复环境和工作位置。
 Push-Location -LiteralPath $projectRoot
 try {
@@ -38,10 +40,14 @@ try {
         if($LASTEXITCODE -ne 0){throw 'Source style validation failed'}
         $validation+=@{Command='python scripts/check-source-style.py';Passed=$true}
 
+        & (Join-Path $PSScriptRoot 'test-verified-download.ps1')
+        $validation+=@{Command='scripts/test-verified-download.ps1';Passed=$true}
+
         foreach($checkArgs in @(
             @('fmt','--all','--','--check'),
             @('clippy','--workspace','--all-targets','--all-features','--locked','--','-D','warnings'),
-            @('test','--workspace','--all-targets','--all-features','--locked')
+            @('test','--workspace','--all-targets','--all-features','--locked'),
+            @('test','-p','moriq-ai','cpu_faces::tests::bundled_cpu_runtime_obeys_residency_and_batch_lifetime','--locked','--','--ignored','--exact')
         )){
             & cargo @checkArgs
             if($LASTEXITCODE -ne 0){throw ('Validation failed: cargo '+($checkArgs -join ' '))}
@@ -60,9 +66,10 @@ try {
     $stagingRoot=Join-Path $packageRoot ([Guid]::NewGuid().ToString('N'))
     $version=[string]$buildInfo.version
     if($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'){throw 'Invalid package version'}
-    $archiveName="Moriq-Space-Windows-v$version.zip"
+    $label=if($PackageSuffix){"-$PackageSuffix"}else{''}
+    $archiveName="Moriq-Space-Windows-v$version$label.zip"
     $archive=Join-Path $packageRoot $archiveName
-    $pending=Join-Path $packageRoot "Moriq-Space-Windows-v$version.pending.zip"
+    $pending=Join-Path $packageRoot "Moriq-Space-Windows-v$version$label.pending.zip"
     New-Item -ItemType Directory -Path $stagingRoot | Out-Null
     try {
         Copy-Item -LiteralPath $binary -Destination (Join-Path $stagingRoot 'Moriq Space.exe')

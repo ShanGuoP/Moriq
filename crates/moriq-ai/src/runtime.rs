@@ -1,15 +1,22 @@
-//! Compatibility boundary for historical model IDs; execution is Qwen-only.
+//! Dispatches native Qwen and bundled YuNet/SFace inference.
 use crate::Result;
 use serde_json::Value;
 use std::process::Command;
 
 /// 把模型加载偏好交给受控运行器，统一常驻与按需释放策略。
 pub fn set_keep_loaded(value: bool) -> Result<()> {
-    crate::llama::set_keep_loaded(value)
+    crate::llama::set_keep_loaded(value)?;
+    if crate::llama::on_demand_idle() {
+        // A busy worker applies the policy when its inference lease is released.
+        let _ = crate::cpu_faces::unload();
+    }
+    Ok(())
 }
 /// 释放模型运行器持有的进程和相关资源。
 pub fn unload() -> Result<()> {
-    crate::llama::unload()
+    let faces = crate::cpu_faces::unload();
+    let qwen = crate::llama::unload();
+    faces.and(qwen)
 }
 /// 使用默认取消标志执行指定已登记模型的推理。
 pub fn infer(id: &str, request: Value) -> Result<Value> {
@@ -21,6 +28,10 @@ pub fn infer_controlled(
     request: Value,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Value> {
+    if id == "faces" {
+        let image = request["image"].as_str().ok_or("人脸任务缺少图片输入")?;
+        return crate::cpu_faces::infer(std::path::Path::new(image), cancel);
+    }
     if id != "qwen35-4b" {
         return Err("此模型已移除，请使用 Qwen3.5-4B 重新分析".into());
     }
@@ -75,7 +86,7 @@ mod tests {
     #[test]
     /// 验证已退役模型不会启动任何推理运行器。
     fn retired_models_never_start_a_runtime() {
-        for model in ["chinese-clip", "florence", "faces"] {
+        for model in ["chinese-clip", "florence"] {
             assert!(super::infer(model, serde_json::json!({})).is_err());
         }
     }

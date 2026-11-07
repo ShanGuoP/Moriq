@@ -137,6 +137,15 @@ impl Service {
         })
         .await
     }
+    /// 删除当前项目人物分组，保留照片及人工取消归组记录。
+    pub async fn delete_person(&self, id: LibraryId, person: String) -> Result<()> {
+        self.call(move |active| {
+            check(active, id)?
+                .delete_person(&person)
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
     /// 校验资源库后合并人物分组及人脸关联。
     pub async fn merge_people(&self, id: LibraryId, source: String, target: String) -> Result<()> {
         self.call(move |active| {

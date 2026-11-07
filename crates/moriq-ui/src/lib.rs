@@ -2,6 +2,7 @@
 #[macro_use]
 mod i18n;
 mod ai;
+mod analysis_options;
 mod batch;
 mod categories;
 mod export;
@@ -62,6 +63,7 @@ mod manage;
 mod models;
 mod nas_view;
 mod navigation;
+mod people_actions;
 pub(crate) use journal::JournalMessage;
 pub(crate) use manage::ManageMessage;
 mod liquid;
@@ -97,6 +99,9 @@ enum Dialog {
     RenameLibrary,
     RenameAsset,
     Settings,
+    OrganizeFaces,
+    EditPerson,
+    AnalysisOptions,
 }
 
 #[cfg(test)]
@@ -155,6 +160,7 @@ pub(crate) enum Message {
     PickedParent(Option<PathBuf>),
     PickedLibrary(Option<PathBuf>),
     Opened(Result<Opened, String>),
+    StartupOpened(Result<Opened, String>),
     Navigate(u8),
     Back,
     Forward,
@@ -280,6 +286,8 @@ pub(crate) enum Message {
     FocusSearch,
     ModelSearch(String),
     ModelFilter(u8),
+    StudioTab(u8),
+    ToggleOverviewDetails,
 }
 #[derive(Clone, Default)]
 pub struct LaunchOptions {
@@ -376,12 +384,15 @@ pub(crate) struct App {
     detail_tab: u8,
     inspector_open: bool,
     model_tab: u8,
+    selection_motion_until: Option<std::time::Instant>,
     layout_generation: u64,
     editing_tags: bool,
     on_demand_models: bool,
     retain_indexes: bool,
     model_search: String,
     model_filter: u8,
+    studio_tab: u8,
+    overview_details: bool,
 }
 
 /// 根据平台构造原生窗口标题栏及边框配置。
@@ -452,7 +463,10 @@ impl App {
             .clone()
             .map(|path| {
                 let service = service.clone();
-                Task::perform(async move { service.open(path).await }, Message::Opened)
+                Task::perform(
+                    async move { service.open(path).await },
+                    Message::StartupOpened,
+                )
             })
             .unwrap_or_else(Task::none);
         (
@@ -539,12 +553,15 @@ impl App {
                 detail_tab: 0,
                 inspector_open: true,
                 model_tab: 0,
+                selection_motion_until: None,
                 layout_generation: 0,
                 editing_tags: false,
                 on_demand_models: true,
                 retain_indexes: true,
                 model_search: String::new(),
                 model_filter: 2,
+                studio_tab: 0,
+                overview_details: false,
             },
             Task::batch([
                 open,
@@ -626,6 +643,13 @@ impl App {
         let generation = self.generation;
         let range = if self.responsiveness.replacing() {
             self.grid().visible(self.total as usize, 0.0)
+        } else if let Some(layout) = self.jobs.analysis_masonry.as_ref().filter(|layout| {
+            layout
+                .page_range(self.scroll_y, self.grid().viewport_height)
+                .len()
+                <= 128
+        }) {
+            layout.page_range(self.scroll_y, self.grid().viewport_height)
         } else {
             self.visible_range()
         };
@@ -709,6 +733,7 @@ impl App {
             if self.transition.is_some()
                 || self.surface_motion.is_some()
                 || self.gallery_feedback.active()
+                || self.selection_motion_until.is_some()
             {
                 iced::time::every(Duration::from_millis(16)).map(Message::TransitionFrame)
             } else {
@@ -860,6 +885,7 @@ impl App {
     /// 处理应用业务消息与异步回执，维护页面、资源库和素材请求的状态归属。
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         let language = self.preferences.language;
+        let startup_open = matches!(&message, Message::StartupOpened(_));
         match message {
             Message::TagFilter(choice) => {
                 let tag = match choice {
@@ -1276,7 +1302,10 @@ impl App {
                 self.name = tr!(language, "我的素材库" => "My Library").into();
                 self.dialog = Some(Dialog::CreateLibrary);
             }
-            Message::HideCreate => self.dialog = None,
+            Message::HideCreate => {
+                self.dialog = None;
+                self.ai.face_confirmation = None;
+            }
             Message::ShowProject => {
                 self.manager.panel = None;
                 self.dialog = Some(Dialog::CreateProject);
@@ -1370,8 +1399,18 @@ impl App {
                 self.inspector_open = !self.inspector_open;
                 return Task::batch([self.rebuild_masonry(), self.refresh()]);
             }
-            Message::ModelSearch(query) => self.model_search = query,
+            Message::ModelSearch(query) => {
+                self.model_search = query;
+                self.studio_tab = 1;
+            }
             Message::ModelFilter(filter) => self.model_filter = filter,
+            Message::StudioTab(tab) => {
+                self.studio_tab = tab;
+                if tab == 0 {
+                    return self.refresh_people_portraits();
+                }
+            }
+            Message::ToggleOverviewDetails => self.overview_details = !self.overview_details,
             Message::SetMasonry(value) => {
                 self.manager.panel = None;
                 self.masonry_mode = value;
@@ -1382,7 +1421,11 @@ impl App {
                 self.masonry_task = None;
                 match result {
                     Ok(layout) => {
-                        self.masonry = Some(layout);
+                        if self.jobs.analysis_masonry_generation.take() == Some(generation) {
+                            self.jobs.analysis_masonry = Some(layout);
+                        } else {
+                            self.masonry = Some(layout);
+                        }
                         return self.refresh();
                     }
                     Err(error) => {
@@ -1438,8 +1481,9 @@ impl App {
                 });
             }
             Message::PickedParent(None) | Message::PickedLibrary(None) => self.switching = false,
-            Message::Opened(result) => {
+            Message::Opened(result) | Message::StartupOpened(result) => {
                 self.switching = false;
+                self.invalidate_navigation_restore();
                 match result {
                     Ok(library) => {
                         self.library_picker = false;
@@ -1463,10 +1507,14 @@ impl App {
                             )
                         };
                         self.library = Some(library);
-                        self.screen = match self.launch.screen {
-                            1 => Screen::Assets,
-                            2 => Screen::Models,
-                            _ => Screen::Overview,
+                        self.screen = if startup_open {
+                            match self.launch.screen {
+                                1 => Screen::Assets,
+                                2 => Screen::Models,
+                                _ => Screen::Overview,
+                            }
+                        } else {
+                            Screen::Overview
                         };
                         self.manager = Default::default();
                         self.lifecycle.cancel_copy();
@@ -1520,7 +1568,12 @@ impl App {
                     } else {
                         self.ai_message(AiMessage::Refresh)
                     };
-                    return Task::batch([self.load_volume(), self.restore_page(), models]);
+                    return Task::batch([
+                        self.load_volume(),
+                        self.restore_page(),
+                        models,
+                        self.refresh_people_portraits(),
+                    ]);
                 }
                 self.viewer.preview_expanded = false;
                 return self.restore_page();
@@ -1814,6 +1867,9 @@ impl App {
                 self.loading = false;
                 match result {
                     Ok(page) => {
+                        if let Some(layout) = self.jobs.analysis_masonry.take() {
+                            self.masonry = Some(layout);
+                        }
                         let search_committed = self.responsiveness.commit_search();
                         if search_committed {
                             if self.viewer.selected.as_ref().is_some_and(|selected| {
@@ -1926,9 +1982,13 @@ impl App {
                         ]);
                     }
                     Err(error) if self.responsiveness.replacing() => {
+                        self.jobs.analysis_masonry = None;
                         self.responsiveness.search_error = Some(error);
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        self.jobs.analysis_masonry = None;
+                        self.error = Some(error);
+                    }
                 }
             }
             Message::Scrolled(y) => {

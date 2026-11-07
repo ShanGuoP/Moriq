@@ -42,6 +42,9 @@ impl Library {
             native::raw_sql(),
             video::sql_formats()
         );
+        let media_condition = format!(
+            "{media_condition} AND (?28 IS NULL OR EXISTS(SELECT 1 FROM ai_results face_result WHERE face_result.version_id=v.id AND face_result.model_id IN('faces','qwen35-4b/faces'))=?28)"
+        );
         let media_condition = if query.project_exact {
             media_condition.replace("pa.project_id IN(WITH RECURSIVE descendants(id) AS(SELECT ?3 UNION ALL SELECT p.id FROM projects p JOIN descendants d ON p.parent_id=d.id) SELECT id FROM descendants)", "pa.project_id=?3")
         } else {
@@ -80,7 +83,8 @@ impl Library {
             query.folder.as_deref().unwrap_or(""),
             query.medium,
             serde_json::to_string(&query.themes).map_err(|e| Error::Invalid(e.to_string()))?,
-            query.legacy_category
+            query.legacy_category,
+            query.face_analyzed
         ]
         .iter()
         .map(|p| {

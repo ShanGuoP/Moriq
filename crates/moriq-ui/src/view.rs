@@ -203,6 +203,9 @@ impl App {
                 }
                 Dialog::RenameAsset => tr!(language, "重命名素材" => "Asset renamed"),
                 Dialog::Settings => tr!(language, "设置" => "Settings"),
+                Dialog::OrganizeFaces => tr!(language, "人脸分组" => "Group faces"),
+                Dialog::EditPerson => tr!(language, "人物操作" => "Person actions"),
+                Dialog::AnalysisOptions => tr!(language,"选择分析内容"=>"Choose analysis"),
             };
             let commit = match dialog {
                 Dialog::CreateLibrary => Message::Create,
@@ -210,6 +213,9 @@ impl App {
                 Dialog::RenameLibrary => Message::SaveRenameLibrary,
                 Dialog::RenameAsset => Message::SaveRenameAsset,
                 Dialog::Settings => Message::Noop,
+                Dialog::OrganizeFaces => Message::Ai(AiMessage::StartFaceOrganization),
+                Dialog::EditPerson => Message::Ai(AiMessage::SavePersonEdit),
+                Dialog::AnalysisOptions => Message::Ai(AiMessage::StartSelectedAnalysis),
             };
             let description = match dialog {
                 Dialog::CreateLibrary => {
@@ -224,7 +230,10 @@ impl App {
                 Dialog::RenameAsset => {
                     tr!(language, "修改素材的显示名称，保留原片与所有版本。" => "Change the display name of this asset while preserving its original and all versions.")
                 }
-                Dialog::Settings => "",
+                Dialog::Settings
+                | Dialog::OrganizeFaces
+                | Dialog::EditPerson
+                | Dialog::AnalysisOptions => "",
             };
             let entry = text_input(
                 if project {
@@ -309,7 +318,13 @@ impl App {
             .padding(28)
             .width((self.viewport.width - 40.0).clamp(260.0, 580.0))
             .style(crate::theme::modal);
-            let modal: Element<'_, Message> = if dialog == Dialog::Settings {
+            let modal: Element<'_, Message> = if dialog == Dialog::AnalysisOptions {
+                self.analysis_options()
+            } else if dialog == Dialog::EditPerson {
+                self.person_editor()
+            } else if dialog == Dialog::OrganizeFaces {
+                self.face_organization_prompt()
+            } else if dialog == Dialog::Settings {
                 self.settings_form()
             } else {
                 modal.into()
@@ -684,6 +699,8 @@ impl App {
             .width(Length::Fill)
             .padding([6, 12])
             .style(theme::liquid_nav(active));
+        let control =
+            crate::motion::feedback(control, !unavailable, self.preferences.reduced_motion);
         if let Some(reason) = reason {
             iced::widget::tooltip(
                 control,
@@ -692,7 +709,7 @@ impl App {
             )
             .into()
         } else {
-            control.into()
+            control
         }
     }
     /// 构建资源库、项目和分类导航区域。

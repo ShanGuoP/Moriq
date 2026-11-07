@@ -413,7 +413,7 @@ params![kind.as_str(),self.workspace_key()],
                 params![id, serde_json::json!({"ai_profile":profile}).to_string()],
             )?;
         }
-        let formats = if kind == JobKind::QwenFaces {
+        let formats = if matches!(kind, JobKind::QwenFaces | JobKind::Analysis(ModelId::Faces)) {
             format!(
                 "v.format NOT IN({}) AND a.display_version_id=v.id",
                 video::sql_formats()

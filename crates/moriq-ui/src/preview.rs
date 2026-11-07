@@ -75,6 +75,8 @@ impl App {
         {
             return Task::none();
         }
+        self.jobs.analysis_masonry_generation = None;
+        self.jobs.analysis_masonry = None;
         if let Some(handle) = self.masonry_task.take() {
             handle.abort();
         }

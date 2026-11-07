@@ -43,6 +43,163 @@ impl App {
     /// 推进显式开启的截图验收步骤，满足条件后保存证据。
     pub(super) fn capture_tick(&mut self) -> Task<Message> {
         self.capture_ticks = self.capture_ticks.saturating_add(1);
+        if self.capture_ticks >= 10
+            && matches!(
+                self.launch.panel.as_deref(),
+                Some("category-single" | "category-four" | "category-compact")
+            )
+        {
+            // Diagnostic projections only; no fixture or user library is modified.
+            let count = if self.launch.panel.as_deref() == Some("category-four") {
+                4
+            } else {
+                1
+            };
+            self.manager.organizer.ai_groups = (0..count)
+                .map(|index| AiGroup {
+                    id: format!("layout-{index}"),
+                    label: format!("分类 {}", index + 1),
+                    query: Query::default(),
+                    count: 20,
+                    cover: None,
+                })
+                .collect();
+            if let Some(cover) = self.manager.cover.clone() {
+                for group in &self.manager.organizer.ai_groups {
+                    self.manager
+                        .category_covers
+                        .insert(group.id.clone(), cover.clone());
+                }
+            }
+        }
+        if self.capture_ticks >= 10 && self.launch.panel.as_deref() == Some("people-inline") {
+            self.manager.organizer.people = (0..3)
+                .map(|index| Person {
+                    id: format!("preview-person-{index}"),
+                    name: format!("人物 {}", index + 1),
+                    count: 12 + index,
+                })
+                .collect();
+            if let Some(cover) = self.manager.cover.clone() {
+                for person in &self.manager.organizer.people {
+                    self.ai.portraits.insert(person.id.clone(), cover.clone());
+                }
+            }
+        }
+        if self.capture_ticks >= 10
+            && matches!(
+                self.launch.panel.as_deref(),
+                Some(
+                    "studio-settings-active"
+                        | "studio-settings-compact"
+                        | "studio-settings-compact-bottom"
+                )
+            )
+        {
+            // In-memory layout evidence only; never queue inference or write fixture jobs.
+            for model in &mut self.ai.models {
+                model.installed = true;
+            }
+            self.manager.organizer.jobs = vec![BackgroundJob {
+                id: "studio-layout-preview".into(),
+                kind: JobKind::Analysis(ModelId::Faces),
+                state: JobState::Running,
+                priority: 0,
+                completed: 22,
+                total: 446,
+                failed: 0,
+                error: String::new(),
+            }];
+        }
+        if self.capture_ticks == 2 {
+            match self.launch.panel.as_deref() {
+                Some(
+                    "person-actions"
+                    | "person-actions-inside"
+                    | "person-rename"
+                    | "person-delete"
+                    | "analysis-options",
+                ) => {
+                    self.screen = Screen::Models;
+                    self.studio_tab = 0;
+                    if self.library.is_none() {
+                        self.capture_ticks = 1;
+                        return Task::none();
+                    }
+                    let project = self
+                        .library
+                        .as_ref()
+                        .and_then(|l| l.info.projects.first().map(|p| p.id));
+                    if self.query.project != project {
+                        self.capture_ticks = 1;
+                        return self.ai_message(AiMessage::Workspace(project));
+                    }
+                    if self.manager.organizer.people.is_empty() || !self.ai.loaded {
+                        self.capture_ticks = 1;
+                        return self.refresh_organizer();
+                    }
+                    for person in &self.manager.organizer.people {
+                        if let Some(cover) = self.manager.cover.clone() {
+                            self.ai.portraits.insert(person.id.clone(), cover);
+                        }
+                    }
+                    return match self.launch.panel.as_deref() {
+                        Some("person-actions-inside") => self.ai_message(AiMessage::People),
+                        Some("person-rename") => self.ai_message(AiMessage::EditPerson(
+                            self.manager.organizer.people[0].id.clone(),
+                            crate::people_actions::Action::Rename,
+                        )),
+                        Some("person-delete") => self.ai_message(AiMessage::EditPerson(
+                            self.manager.organizer.people[0].id.clone(),
+                            crate::people_actions::Action::Delete,
+                        )),
+                        Some("analysis-options") => {
+                            for model in &mut self.ai.models {
+                                model.installed = true;
+                            }
+                            self.query.project = self
+                                .library
+                                .as_ref()
+                                .and_then(|l| l.info.projects.first().map(|p| p.id));
+                            self.ai_message(AiMessage::ChooseAnalysis)
+                        }
+                        _ => Task::none(),
+                    };
+                }
+                Some("category-compact") => {
+                    return iced::window::oldest()
+                        .and_then(|id| iced::window::resize(id, Size::new(1180.0, 740.0)));
+                }
+                Some("studio-settings") => return self.update(Message::StudioTab(1)),
+                Some(
+                    "studio-settings-active"
+                    | "studio-settings-compact"
+                    | "studio-settings-compact-bottom",
+                ) => {
+                    let tab = self.update(Message::StudioTab(1));
+                    if self
+                        .launch
+                        .panel
+                        .as_deref()
+                        .is_some_and(|panel| panel.starts_with("studio-settings-compact"))
+                    {
+                        return Task::batch([
+                            tab,
+                            iced::window::oldest()
+                                .and_then(|id| iced::window::resize(id, Size::new(1180.0, 740.0))),
+                        ]);
+                    }
+                    return tab;
+                }
+                Some("face-prompt") => {
+                    self.dialog = Some(Dialog::OrganizeFaces);
+                    return Task::none();
+                }
+                Some("overview-details") => return self.update(Message::ToggleOverviewDetails),
+                _ => {}
+            }
+        }
+
         if self.launch.panel.as_deref() == Some("interaction-continuity") {
             match self.capture_ticks {
                 3 => {
@@ -262,6 +419,7 @@ impl App {
                     Some(("overview", 100000.0))
                 }
                 Some("settings-bottom") => Some(("management", 100000.0)),
+                Some("studio-settings-compact-bottom") => Some(("models", 100000.0)),
                 Some("details-ai") => Some(("details", 220.0)),
                 Some("details-ai-tags") => Some(("details", 620.0)),
                 Some("details-bottom") => Some(("details", 100000.0)),

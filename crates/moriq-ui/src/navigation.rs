@@ -39,6 +39,7 @@ pub(super) struct Location {
     model_tab: u8,
     model_search: String,
     model_filter: u8,
+    studio_tab: u8,
     notes: String,
     notes_dirty: bool,
 }
@@ -96,6 +97,7 @@ impl Location {
             model_tab: 0,
             model_search: String::new(),
             model_filter: 2,
+            studio_tab: 0,
             notes: String::new(),
             notes_dirty: false,
         }
@@ -110,6 +112,7 @@ impl Location {
             && self.model_tab == other.model_tab
             && self.model_search == other.model_search
             && self.model_filter == other.model_filter
+            && self.studio_tab == other.studio_tab
             && self.surface == other.surface
     }
 }
@@ -138,6 +141,11 @@ impl History {
     }
 }
 impl App {
+    /// 打开资源库时作废旧页面恢复，防止同库重开也接收迟到结果。
+    pub(super) fn invalidate_navigation_restore(&mut self) {
+        self.navigation_request = self.navigation_request.wrapping_add(1);
+        self.history.restoring = false;
+    }
     /// 撤销取消搜索产生的临时历史，避免重复返回同一目标。
     pub(super) fn discard_cancelled_search_history(&mut self) {
         if self.history.searching {
@@ -235,6 +243,7 @@ impl App {
             model_tab: self.model_tab,
             model_search: self.model_search.clone(),
             model_filter: self.model_filter,
+            studio_tab: self.studio_tab,
             notes: self.manager.notes.clone(),
             notes_dirty: self.manager.notes_dirty,
         }
@@ -267,7 +276,7 @@ impl App {
             }
             self.responsiveness.cancel();
         }
-        let models_switch = matches!(&message, Message::Ai(AiMessage::LibraryOpened(_)));
+        let startup_open = matches!(&message, Message::StartupOpened(_));
         let navigating = matches!(
             message,
             Message::Navigate(_)
@@ -283,6 +292,7 @@ impl App {
                 )
                 | Message::ModelSearch(_)
                 | Message::ModelFilter(_)
+                | Message::StudioTab(_)
                 | Message::List(_)
                 | Message::SetMasonry(_)
                 | Message::TagFilter(TagChoice::All | TagChoice::Tag(_))
@@ -349,7 +359,7 @@ impl App {
             self.history.searching = searching;
         }
         let navigation = if library != self.library.as_ref().map(|l| l.info.id)
-            && !models_switch
+            && startup_open
             && self.launch.capture.is_none()
             && self.launch.screen == 0
         {
@@ -427,6 +437,7 @@ impl App {
         self.model_tab = destination.model_tab;
         self.model_search = destination.model_search;
         self.model_filter = destination.model_filter;
+        self.studio_tab = destination.studio_tab;
         self.total = destination.total;
         self.dialog = None;
         self.manager.panel = None;
@@ -479,4 +490,62 @@ impl App {
         }
         Task::none()
     }
+}
+
+#[cfg(test)]
+#[test]
+#[allow(clippy::unwrap_used)]
+fn explicit_library_open_does_not_restore_ai_or_reuse_launch_screen() {
+    for same_library in [false, true] {
+        let mut app = crate::tests::app();
+        app.screen = Screen::Models;
+        app.launch.screen = 2;
+        let saved = app.navigation_snapshot();
+        app.history.restoring = true;
+        let old_request = app.navigation_request;
+        drop(app.update(Message::ShowLibraries));
+        let mut next = app.library.clone().unwrap();
+        if !same_library {
+            next.info.id = LibraryId::default();
+        }
+        let owner = next.info.id;
+        drop(app.update(Message::Opened(Ok(next))));
+        assert_eq!(app.screen, Screen::Overview);
+        assert!(!app.library_picker);
+        assert!(!app.history.restoring);
+        drop(app.update(Message::NavigationLoaded(
+            owner,
+            old_request,
+            Ok(Some(saved)),
+        )));
+        assert_eq!(app.screen, Screen::Overview);
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[allow(clippy::unwrap_used)]
+fn startup_restore_cannot_override_a_later_library_click() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Models;
+    let saved = app.navigation_snapshot();
+    app.library = None;
+    let mut opened = crate::tests::app().library.unwrap();
+    opened.info.id = LibraryId::default();
+    let owner = opened.info.id;
+    drop(app.update(Message::StartupOpened(Ok(opened))));
+    assert!(app.history.restoring);
+    let request = app.navigation_request;
+    drop(app.update(Message::NavigationLoaded(
+        owner,
+        request,
+        Ok(Some(saved.clone())),
+    )));
+    assert_eq!(app.screen, Screen::Models);
+    // Reproduce another pending startup restore, then a deliberate library click.
+    app.history.restoring = true;
+    drop(app.update(Message::ShowLibraries));
+    drop(app.update(Message::NavigationLoaded(owner, request, Ok(Some(saved)))));
+    assert!(app.library_picker);
+    assert_eq!(app.screen, Screen::Overview);
 }

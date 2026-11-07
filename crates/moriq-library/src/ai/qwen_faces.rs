@@ -21,29 +21,80 @@ pub(crate) fn references(
         .query_map([scope], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?
         .collect::<std::result::Result<Vec<_>,_>>()?;
     drop(lease);
-    let mut items = Vec::new();
-    for (person, asset, version, bounds) in rows {
-        if cancel.load(Ordering::Acquire) {
-            return Err(Error::Invalid("AI 任务已停止".into()));
+    // Two bounded workers prepare disjoint files; identity matching and DB publication stay ordered.
+    let workers = rows.len().min(2);
+    let stopped = AtomicBool::new(false);
+    let mut prepared = std::thread::scope(|threads| {
+        let mut handles = Vec::new();
+        for worker in 0..workers {
+            let rows = &rows;
+            let directory = directory.path();
+            let stopped = &stopped;
+            handles.push(
+                threads.spawn(move || -> Result<Vec<(usize, String, PathBuf)>> {
+                    let result = (|| {
+                        let mut items = Vec::new();
+                        for index in (worker..rows.len()).step_by(workers) {
+                            if cancel.load(Ordering::Acquire) || stopped.load(Ordering::Acquire) {
+                                return Err(Error::Invalid("AI 任务已停止".into()));
+                            }
+                            let (person, asset, version, bounds) = &rows[index];
+                            let source = pool.media_source(
+                                AssetId(parse_id(asset)?),
+                                AssetVersionId(parse_id(version)?),
+                            )?;
+                            let preview = source.preview_edge(1024)?.image;
+                            let bounds = serde_json::from_str(bounds)
+                                .map_err(|e| Error::Invalid(e.to_string()))?;
+                            let crop = portraits::crop_at(&preview, bounds, 256)?;
+                            if cancel.load(Ordering::Acquire) || stopped.load(Ordering::Acquire) {
+                                return Err(Error::Invalid("AI 任务已停止".into()));
+                            }
+                            let path = directory.join(format!("{index}.png"));
+                            image::save_buffer_with_format(
+                                &path,
+                                &crop.rgba,
+                                crop.width,
+                                crop.height,
+                                image::ColorType::Rgba8,
+                                ImageFormat::Png,
+                            )?;
+                            items.push((index, person.clone(), path));
+                        }
+                        Ok(items)
+                    })();
+                    if result.is_err() {
+                        stopped.store(true, Ordering::Release);
+                    }
+                    result
+                }),
+            );
         }
-        let source = pool.media_source(
-            AssetId(parse_id(&asset)?),
-            AssetVersionId(parse_id(&version)?),
-        )?;
-        let preview = source.preview_edge(1024)?.image;
-        let bounds = serde_json::from_str(&bounds).map_err(|e| Error::Invalid(e.to_string()))?;
-        let crop = portraits::crop_at(&preview, bounds, 256)?;
-        let path = directory.path().join(format!("{}.png", items.len()));
-        image::save_buffer_with_format(
-            &path,
-            &crop.rgba,
-            crop.width,
-            crop.height,
-            image::ColorType::Rgba8,
-            ImageFormat::Png,
-        )?;
-        items.push((person, path));
-    }
+        let mut items = Vec::new();
+        let mut error = None;
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(prepared)) => items.extend(prepared),
+                Ok(Err(e)) => {
+                    error = Some(e);
+                    stopped.store(true, Ordering::Release);
+                }
+                Err(_) => {
+                    error = Some(Error::Invalid("人脸参考预处理线程异常退出".into()));
+                    stopped.store(true, Ordering::Release);
+                }
+            }
+        }
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok(items)
+    })?;
+    prepared.sort_by_key(|item| item.0);
+    let items = prepared
+        .into_iter()
+        .map(|(_, person, path)| (person, path))
+        .collect();
     Ok(References {
         _directory: directory,
         items,
@@ -161,10 +212,10 @@ pub(crate) fn store(
         let id = previous
             .map(|f| f.0.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        db.execute("INSERT INTO detected_faces(id,version_id,revision,ordinal,box,vector,person_id) VALUES(?1,?2,?3,?4,?5,x'',?6)",params![id,version,format!("qwen-faces-v1:{revision}"),ordinal,serde_json::to_string(&bounds).map_err(|e|Error::Invalid(e.to_string()))?,person])?;
+        db.execute("INSERT INTO detected_faces(id,version_id,revision,ordinal,box,vector,person_id) VALUES(?1,?2,?3,?4,?5,x'',?6)",params![id,version,format!("qwen-faces-v2:{revision}"),ordinal,serde_json::to_string(&bounds).map_err(|e|Error::Invalid(e.to_string()))?,person])?;
         ordinal += 1;
     }
-    db.execute("INSERT INTO ai_results VALUES(?1,'qwen35-4b/faces',?2,'portrait-compare-v1',?3,?4) ON CONFLICT(version_id,model_id,revision,preprocessing) DO UPDATE SET data=excluded.data,created_at=excluded.created_at",params![version,revision,result.to_string(),now_ms()?])?;
+    db.execute("INSERT INTO ai_results VALUES(?1,'qwen35-4b/faces',?2,'quality-batch4-v2',?3,?4) ON CONFLICT(version_id,model_id,revision,preprocessing) DO UPDATE SET data=excluded.data,created_at=excluded.created_at",params![version,revision,result.to_string(),now_ms()?])?;
     db.execute("DELETE FROM person_vectors WHERE person_id IN(SELECT person_id FROM detected_faces WHERE version_id=?1 AND length(vector)=0)",[version])?;
     db.execute("DELETE FROM people WHERE name='未命名人物' AND NOT EXISTS(SELECT 1 FROM detected_faces WHERE person_id=people.id)",[])?;
     Ok(())
@@ -279,5 +330,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lib.faces(a.id).unwrap().len(), 2);
+    }
+    #[test]
+    fn parallel_reference_preparation_preserves_order_paths_and_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lib = Library::create(dir.path(), "parallel references").unwrap();
+        for i in 0..5u8 {
+            let path = dir.path().join(format!("{i}.png"));
+            image::RgbImage::from_pixel(128, 128, image::Rgb([i * 40, 80, 140]))
+                .save(&path)
+                .unwrap();
+            lib.import(&path, None).unwrap();
+        }
+        let assets = lib.page(&Query::default(), 0, 10).unwrap().assets;
+        for asset in &assets {
+            store(
+                &lib.db,
+                &asset.version_id.to_string(),
+                "test",
+                &serde_json::json!({"faces":[{"box":[0.1,0.1,0.5,0.5],"person":null}]}),
+            )
+            .unwrap();
+        }
+        let result = references(&lib.readers, "", &AtomicBool::new(false)).unwrap();
+        assert_eq!(result.items.len(), 5);
+        let ids: Vec<_> = result.items.iter().map(|item| item.0.clone()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+        for (index, (_, path)) in result.items.iter().enumerate() {
+            assert_eq!(
+                path.file_stem().unwrap().to_str().unwrap(),
+                index.to_string()
+            );
+            assert_eq!(image::image_dimensions(path).unwrap(), (256, 256));
+        }
+        assert!(references(&lib.readers, "", &AtomicBool::new(true)).is_err());
     }
 }

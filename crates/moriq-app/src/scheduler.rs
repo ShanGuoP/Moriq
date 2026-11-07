@@ -54,6 +54,7 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
         .name("moriq-job-scheduler".into())
         .spawn(move || {
             let mut failures = 0u32;
+            let mut batch_lease: Option<Box<dyn Send>> = None;
             loop {
                 let Some(queue) = queue.upgrade() else { break };
                 let service = Service {
@@ -73,6 +74,34 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
                         .call(|active| Ok(active.as_ref().map(Library::id)))
                         .await
                         .map_err(|e| (None, TaskError::Storage(e)))?;
+                    let runnable = if let Some(id) = owner {
+                        service
+                            .background_jobs(id)
+                            .await
+                            .map_err(|e| (Some(id), TaskError::Storage(e)))?
+                            .iter()
+                            .any(|job| {
+                                matches!(
+                                    job.kind.model(),
+                                    Some(ModelId::Qwen35_4b | ModelId::Faces)
+                                ) && matches!(job.state, JobState::Queued | JobState::Running)
+                            })
+                    } else {
+                        false
+                    };
+                    if runnable {
+                        if batch_lease.is_none() {
+                            batch_lease = inference.batch_lease();
+                        }
+                    } else {
+                        batch_lease = None;
+                    }
+                    // A job can arrive between the snapshot and claim; cover that first step too.
+                    let _step_lease = if batch_lease.is_none() && owner.is_some() {
+                        inference.batch_lease()
+                    } else {
+                        None
+                    };
                     if let Some(id) = owner {
                         service
                             .drive_job_step(id)
@@ -81,6 +110,9 @@ pub(super) fn start(service: &Service) -> std::io::Result<()> {
                     }
                     Ok::<_, (Option<LibraryId>, TaskError)>(())
                 });
+                if result.is_err() {
+                    batch_lease = None;
+                }
                 let delay = if matches!(
                     result,
                     Err((_, TaskError::Cancelled | TaskError::StaleLibrary))

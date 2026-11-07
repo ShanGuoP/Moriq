@@ -8,7 +8,7 @@ use std::{
     process::{Child, Stdio},
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -57,6 +57,28 @@ impl Server {
 
 static SERVER: OnceLock<Mutex<Option<Server>>> = OnceLock::new();
 static KEEP_LOADED: AtomicBool = AtomicBool::new(false);
+static ACTIVE_BATCHES: AtomicUsize = AtomicUsize::new(0);
+
+/// 在一批后台任务期间复用模型，最后一个租约释放时恢复按需卸载。
+pub struct BatchLease;
+pub fn batch_lease() -> BatchLease {
+    ACTIVE_BATCHES.fetch_add(1, Ordering::AcqRel);
+    BatchLease
+}
+impl Drop for BatchLease {
+    fn drop(&mut self) {
+        if ACTIVE_BATCHES.fetch_sub(1, Ordering::AcqRel) == 1
+            && !KEEP_LOADED.load(Ordering::Acquire)
+        {
+            let _ = crate::runtime::unload();
+        }
+    }
+}
+
+/// 供所有本地运行器判断批次结束后的按需释放策略。
+pub(crate) fn on_demand_idle() -> bool {
+    !KEEP_LOADED.load(Ordering::Acquire) && ACTIVE_BATCHES.load(Ordering::Acquire) == 0
+}
 
 struct ServerLease<'a> {
     value: std::sync::MutexGuard<'a, Option<Server>>,
@@ -79,7 +101,7 @@ impl Drop for ServerLease<'_> {
     /// 按常驻策略释放模型服务，覆盖正常结束及所有提前返回路径。
     fn drop(&mut self) {
         // Cover every early return, including malformed model replies and policy changes during inference.
-        if !self.keep.load(Ordering::Acquire) {
+        if !self.keep.load(Ordering::Acquire) && ACTIVE_BATCHES.load(Ordering::Acquire) == 0 {
             *self.value = None;
         }
     }
@@ -88,7 +110,10 @@ impl Drop for ServerLease<'_> {
 /// 更新模型常驻策略；关闭常驻时尝试释放空闲运行器。
 pub fn set_keep_loaded(value: bool) -> Result<()> {
     KEEP_LOADED.store(value, Ordering::Release);
-    if !value && let Ok(mut server) = SERVER.get_or_init(|| Mutex::new(None)).try_lock() {
+    if !value
+        && ACTIVE_BATCHES.load(Ordering::Acquire) == 0
+        && let Ok(mut server) = SERVER.get_or_init(|| Mutex::new(None)).try_lock()
+    {
         *server = None;
     }
     Ok(())
@@ -538,7 +563,7 @@ pub fn infer_with_profile(
         *server = None;
         return Err("AI 任务已停止".into());
     }
-    if !KEEP_LOADED.load(Ordering::Acquire) {
+    if !KEEP_LOADED.load(Ordering::Acquire) && ACTIVE_BATCHES.load(Ordering::Acquire) == 0 {
         *server = None;
     }
     Ok(result)

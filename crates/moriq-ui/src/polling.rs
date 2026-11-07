@@ -7,7 +7,7 @@ impl App {
         if self.drop_import.has_ready() && self.import.is_none() && self.can_start_drop() {
             return self.start_next_drop();
         }
-        if self.manager.panel != Some(manage::Panel::People) {
+        if !self.people_portraits_visible() {
             self.stop_people_portraits();
         } else if self.ai.portrait_cancel.load(Ordering::Acquire) {
             return self.refresh_people_portraits();

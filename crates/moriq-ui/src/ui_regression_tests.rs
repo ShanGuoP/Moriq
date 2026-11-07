@@ -1,6 +1,159 @@
 use super::*;
 
 #[test]
+/// 进度摘要和普通 Tick 不得取消整理页的头像；新人物在当前批次后补充。
+fn people_portraits_survive_progress_and_normal_updates() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Models;
+    let owner = app.library.as_ref().unwrap().info.id;
+    let people = vec![
+        Person {
+            id: "a".into(),
+            name: "Alice".into(),
+            count: 3,
+        },
+        Person {
+            id: "b".into(),
+            name: "Bob".into(),
+            count: 2,
+        },
+    ];
+    app.manager.organizer.people = people.clone();
+    drop(app.refresh_people_portraits());
+    let request = app.ai.portrait_request;
+    let cancel = app.ai.portrait_cancel.clone();
+    for _ in 0..3 {
+        drop(app.update(Message::Manage(ManageMessage::OrganizerLoaded(
+            owner,
+            app.projection_request,
+            Ok(Organizer {
+                people: people.clone(),
+                ..Default::default()
+            }),
+        ))));
+        drop(app.update(Message::Tick));
+        assert_eq!(app.ai.portrait_request, request);
+        assert!(!cancel.load(Ordering::Acquire));
+    }
+    app.manager.organizer.people.push(Person {
+        id: "c".into(),
+        name: "C".into(),
+        count: 1,
+    });
+    let pixels = moriq_app::Pixels {
+        width: 1,
+        height: 1,
+        rgba: vec![20, 40, 60, 255].into(),
+    };
+    drop(app.update(Message::Ai(AiMessage::PortraitLoaded(
+        owner,
+        request,
+        "a".into(),
+        Ok(Some(pixels.clone())),
+    ))));
+    assert!(app.ai.portraits.contains_key("a"));
+    drop(app.update(Message::Ai(AiMessage::PortraitLoaded(
+        owner,
+        request,
+        "b".into(),
+        Ok(None),
+    ))));
+    assert!(app.ai.portraits.contains_key("a"));
+    assert_eq!(
+        app.ai.portrait_pending.iter().cloned().collect::<Vec<_>>(),
+        vec!["c"]
+    );
+    assert!(app.ai.portrait_request > request);
+    drop(app.update(Message::Ai(AiMessage::PortraitLoaded(
+        owner,
+        app.ai.portrait_request,
+        "c".into(),
+        Ok(Some(pixels)),
+    ))));
+    assert!(app.ai.portrait_task.is_none());
+    assert!(app.ai.portrait_pending.is_empty());
+    drop(app.update(Message::AllAssets));
+    assert!(app.ai.portrait_cancel.load(Ordering::Acquire));
+}
+
+#[test]
+/// 后台分析保留旧布局与图像，布局和新页面在同一回执中提交。
+fn analysis_gallery_commits_layout_and_tiles_together_without_emptying_the_view() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Assets;
+    app.query.person = Some("person".into());
+    app.scroll_y = 120.0;
+    let (columns, width) = app.gallery_geometry();
+    let old = std::sync::Arc::new(moriq_render::MasonryIndex::new(
+        &[(800, 600); 40],
+        columns,
+        width,
+        10.0,
+    ));
+    app.masonry = Some(old.clone());
+    let asset = crate::tests::selected_asset();
+    app.tiles = vec![Tile {
+        asset: asset.clone(),
+        handle: Some(image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255])),
+    }];
+    let handle = app.tiles[0].handle.as_ref().unwrap().id();
+    let owner = app.library.as_ref().unwrap().info.id;
+    let mut job = BackgroundJob {
+        id: "face".into(),
+        kind: JobKind::Analysis(ModelId::Faces),
+        state: JobState::Running,
+        priority: 0,
+        completed: 1,
+        total: 100,
+        failed: 0,
+        error: String::new(),
+    };
+    drop(app.job_message(tasks::JobMessage::Refreshed(
+        owner,
+        app.jobs.request,
+        Ok(vec![job.clone()]),
+    )));
+    let generation = app.layout_generation;
+    assert!(std::sync::Arc::ptr_eq(app.masonry.as_ref().unwrap(), &old));
+    assert!(app.page_task.is_none());
+    let new = std::sync::Arc::new(moriq_render::MasonryIndex::new(
+        &[(800, 600); 41],
+        columns,
+        width,
+        10.0,
+    ));
+    drop(app.update(Message::MasonryLoaded(generation, Ok(new.clone()))));
+    assert!(std::sync::Arc::ptr_eq(app.masonry.as_ref().unwrap(), &old));
+    assert!(app.page_task.is_some());
+    job.completed = 2;
+    drop(app.job_message(tasks::JobMessage::Refreshed(
+        owner,
+        app.jobs.request,
+        Ok(vec![job]),
+    )));
+    assert_eq!(app.layout_generation, generation);
+    assert!(app.jobs.analysis_gallery_dirty.is_some());
+    drop(app.update(Message::PageLoaded(
+        app.generation,
+        Ok(LoadedPage {
+            total: 41,
+            offset: 0,
+            tiles: vec![moriq_app::Tile {
+                asset,
+                thumbnail: None,
+            }],
+            warnings: 0,
+        }),
+    )));
+    assert!(std::sync::Arc::ptr_eq(app.masonry.as_ref().unwrap(), &new));
+    assert_eq!(app.tiles[0].handle.as_ref().unwrap().id(), handle);
+    assert_eq!(app.scroll_y, 120.0);
+    app.query.person = Some("different".into());
+    drop(app.refresh_analysis_gallery());
+    assert!(app.jobs.analysis_gallery_dirty.is_none());
+}
+
+#[test]
 fn inspector_toggle_reflows_gallery_without_discarding_selection_or_drafts() {
     let mut app = crate::tests::app();
     app.screen = Screen::Assets;

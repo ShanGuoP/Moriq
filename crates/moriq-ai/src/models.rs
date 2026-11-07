@@ -59,7 +59,7 @@ pub fn hardware() -> Hardware {
         logical_cpus: std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(2),
-        provider: "Vulkan · llama.cpp · Qwen3.5-4B".into(),
+        provider: "CPU · YuNet/SFace | Qwen · Vulkan".into(),
     }
 }
 /// 解析内置模型清单，返回固定版本的模型及下载文件信息。
@@ -128,6 +128,15 @@ pub fn inventory() -> Result<Vec<ModelInfo>> {
     registry()?
         .into_iter()
         .map(|model| {
+            if model.id == "faces" {
+                let bytes = crate::cpu_faces::model_bytes();
+                return Ok(ModelInfo {
+                    spec: model,
+                    installed: crate::cpu_faces::available(),
+                    resumable: false,
+                    bytes,
+                });
+            }
             let root = model_folder(&model)?;
             let current = root.join("current.json");
             let active = fs::read(&current)
@@ -153,6 +162,9 @@ pub fn inventory() -> Result<Vec<ModelInfo>> {
 }
 /// 取得通过安装校验的模型目录，缺失或损坏时返回错误。
 pub fn installed_path(id: &str) -> Result<PathBuf> {
+    if id == "faces" {
+        return crate::cpu_faces::ready();
+    }
     let model = spec(id)?;
     let root = model_folder(&model)?;
     let current: ModelSpec = serde_json::from_slice(
@@ -262,6 +274,9 @@ fn download_url(url: &str, use_mirror: bool) -> String {
 }
 /// 按选定来源下载模型，支持暂停、续传、重试和发布前完整校验。
 pub fn install_with_mirror(id: &str, control: &DownloadControl, use_mirror: bool) -> Result<()> {
+    if id == "faces" {
+        return crate::cpu_faces::ready().map(|_| ());
+    }
     let model = spec(id)?;
     let root = model_folder(&model)?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -479,6 +494,10 @@ fn download_error(path: &str, use_mirror: bool, error: &impl std::fmt::Display) 
 }
 /// 在获得排他访问后移除指定模型安装，拒绝删除仍在使用的权重。
 pub fn uninstall(id: &str) -> Result<()> {
+    if id == "faces" {
+        return Err("CPU 人脸组件随程序内置，无需卸载".into());
+    }
+
     let model = spec(id)?;
     crate::unload()?;
     let root = model_folder(&model)?;
@@ -596,8 +615,8 @@ mod source_tests {
     /// 验证镜像地址保留清单固定的修订与文件路径。
     fn mirror_keeps_every_pinned_revision_and_artifact_path() {
         let models = registry().unwrap_or_default();
-        assert_eq!(models.len(), 1);
-        for retired in ["chinese-clip", "florence", "faces"] {
+        assert_eq!(models.len(), 2);
+        for retired in ["chinese-clip", "florence"] {
             assert!(spec(retired).is_err());
         }
         let qwen = models

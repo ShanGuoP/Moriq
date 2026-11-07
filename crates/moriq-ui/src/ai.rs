@@ -2,11 +2,12 @@ use super::*;
 use crate::components::*;
 use iced::futures::{StreamExt, stream};
 use iced::widget::{column, text_editor, text_input};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub(super) struct AiState {
     pub categories: crate::categories::State,
+    pub face_confirmation: Option<(LibraryId, Option<ProjectId>)>,
     pub loaded: bool,
     pub loading: bool,
     pub models: Vec<moriq_app::ModelInfo>,
@@ -29,6 +30,11 @@ pub(super) struct AiState {
     pub portrait_request: u64,
     pub portrait_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub portrait_task: Option<iced::task::Handle>,
+    pub portrait_pending: HashSet<String>,
+    pub portrait_attempted: HashSet<String>,
+    pub person_edit: Option<crate::people_actions::Editor>,
+    pub person_edit_request: u64,
+    pub analysis_selection: Option<crate::analysis_options::Selection>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersonChoice {
@@ -69,6 +75,11 @@ pub enum AiMessage {
     SwitchLibrary(PathBuf),
     LibraryOpened(Result<Opened, String>),
     Organize,
+    ChooseAnalysis,
+    SelectAnalysis(u8, bool),
+    StartSelectedAnalysis,
+    OrganizeFaces,
+    StartFaceOrganization,
     Refresh,
     Loaded(Result<(Vec<moriq_app::ModelInfo>, moriq_app::Hardware), String>),
     Install(String),
@@ -100,6 +111,10 @@ pub enum AiMessage {
     Merge,
     Assign(String, Option<String>),
     PersonFilter(String),
+    EditPerson(String, crate::people_actions::Action),
+    EditPersonName(String),
+    SavePersonEdit,
+    PersonEdited(LibraryId, Option<ProjectId>, u64, Result<(), String>),
     PortraitLoaded(
         LibraryId,
         u64,
@@ -157,6 +172,13 @@ impl App {
                 .as_ref()
                 .is_some_and(|a| self.ai.category_version == Some(a.version_id));
         match event {
+            AiMessage::ChooseAnalysis
+            | AiMessage::SelectAnalysis(..)
+            | AiMessage::StartSelectedAnalysis => return self.analysis_options_message(event),
+            AiMessage::EditPerson(..)
+            | AiMessage::EditPersonName(..)
+            | AiMessage::SavePersonEdit
+            | AiMessage::PersonEdited(..) => return self.person_edit_message(event),
             AiMessage::Workspace(project) => {
                 self.query = Query {
                     project,
@@ -274,6 +296,7 @@ impl App {
                     && request == self.ai.portrait_request
                     && !self.ai.portrait_cancel.load(Ordering::Acquire) =>
             {
+                self.ai.portrait_pending.remove(&person);
                 if let Ok(Some(pixels)) = result {
                     self.ai.portraits.insert(
                         person,
@@ -281,6 +304,10 @@ impl App {
                     );
                 } else {
                     self.ai.portraits.remove(&person);
+                }
+                if self.ai.portrait_pending.is_empty() {
+                    self.ai.portrait_task = None;
+                    return self.start_people_portraits();
                 }
             }
             AiMessage::SwitchLibrary(path)
@@ -311,6 +338,62 @@ impl App {
                 }
                 return task;
             }
+            AiMessage::OrganizeFaces | AiMessage::StartFaceOrganization => {
+                let starting = matches!(event, AiMessage::StartFaceOrganization);
+                if starting
+                    && (self.dialog != Some(Dialog::OrganizeFaces)
+                        || self.ai.face_confirmation
+                            != self
+                                .library
+                                .as_ref()
+                                .map(|l| (l.info.id, self.query.project)))
+                {
+                    return Task::none();
+                }
+                if self.library.is_none() || self.switching {
+                    return Task::none();
+                }
+                if !self
+                    .ai
+                    .models
+                    .iter()
+                    .any(|m| m.spec.id == "faces" && m.installed)
+                {
+                    self.studio_tab = 1;
+                    self.screen = Screen::Models;
+                    self.manager.panel = None;
+                    self.status =
+                        tr!(language, "CPU 人脸组件不可用，请重新解压完整程序" => "CPU face runtime unavailable. Extract the complete application again.")
+                            .into();
+                    return Task::none();
+                }
+                if self.query.project.is_none()
+                    && self
+                        .library
+                        .as_ref()
+                        .is_some_and(|l| !l.info.projects.is_empty())
+                {
+                    self.studio_tab = 0;
+                    self.screen = Screen::Models;
+                    self.manager.panel = None;
+                    self.status = tr!(language, "请先选择要按人脸整理的项目" => "Select a project to organize by face").into();
+                    return Task::none();
+                }
+                if !starting {
+                    self.ai.face_confirmation = self
+                        .library
+                        .as_ref()
+                        .map(|l| (l.info.id, self.query.project));
+                    self.dialog = Some(Dialog::OrganizeFaces);
+                    return Task::none();
+                }
+                self.dialog = None;
+                self.ai.face_confirmation = None;
+                self.manager.panel = None;
+                self.status = tr!(language, "正在启动人脸整理，可在后台任务中查看进度。" => "Starting face organization. Check Background tasks for progress.").into();
+                return self
+                    .job_message(tasks::JobMessage::Queue(JobKind::Analysis(ModelId::Faces)));
+            }
             AiMessage::Organize => {
                 if self.query.project.is_none()
                     && self
@@ -333,17 +416,7 @@ impl App {
                     if model.spec.id == "qwen35-4b" {
                         let classification = service.clone();
                         let description = service.clone();
-                        let faces = service.clone();
                         return Some(Task::batch([
-                            Task::perform(
-                                async move {
-                                    faces
-                                        .queue_media_job(owner, JobKind::QwenFaces)
-                                        .await
-                                        .map_err(|e| e.to_string())
-                                },
-                                move |r| Message::Jobs(tasks::JobMessage::Stored(owner, r)),
-                            ),
                             Task::perform(
                                 async move {
                                     classification
@@ -520,6 +593,9 @@ impl App {
             AiMessage::Stored(owner, result)
                 if self.library.as_ref().is_some_and(|l| l.info.id == owner) =>
             {
+                if result.is_ok() {
+                    self.ai.portraits.clear();
+                }
                 if let Err(e) = result {
                     self.error = Some(e)
                 }
@@ -571,17 +647,14 @@ impl App {
     }
     /// 为当前人物列表启动有界头像读取，并绑定请求身份。
     pub(super) fn refresh_people_portraits(&mut self) -> Task<Message> {
-        self.stop_people_portraits();
-        if self.manager.panel != Some(manage::Panel::People) {
+        if !self.people_portraits_visible() {
+            self.stop_people_portraits();
             return Task::none();
         }
-        let Some(owner) = self.library.as_ref().map(|l| l.info.id) else {
+        if self.library.is_none() {
+            self.stop_people_portraits();
             return Task::none();
-        };
-        self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
-        let request = self.ai.portrait_request;
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.ai.portrait_cancel = cancel.clone();
+        }
         self.ai.portraits.retain(|id, _| {
             self.manager
                 .organizer
@@ -589,14 +662,42 @@ impl App {
                 .iter()
                 .any(|p| p.id == *id && p.count > 0)
         });
+        if self.ai.portrait_task.is_some() {
+            return Task::none();
+        }
+        self.ai.portrait_attempted.clear();
+        self.start_people_portraits()
+    }
+
+    /// 补充尚未尝试的头像；摘要刷新保留在途批次，失败项留待下一次刷新重试。
+    fn start_people_portraits(&mut self) -> Task<Message> {
+        let panel_open = self.manager.panel == Some(manage::Panel::People);
+        if !self.people_portraits_visible() {
+            return Task::none();
+        }
+        let Some(owner) = self.library.as_ref().map(|l| l.info.id) else {
+            return Task::none();
+        };
         let people = self
             .manager
             .organizer
             .people
             .iter()
             .filter(|p| p.count > 0)
+            .take(if panel_open { 128 } else { 24 })
+            .filter(|p| !self.ai.portraits.contains_key(&p.id))
+            .filter(|p| !self.ai.portrait_attempted.contains(&p.id))
             .map(|p| p.id.clone())
             .collect::<Vec<_>>();
+        if people.is_empty() {
+            return Task::none();
+        }
+        self.ai.portrait_pending = people.iter().cloned().collect();
+        self.ai.portrait_attempted.extend(people.iter().cloned());
+        self.ai.portrait_request = self.ai.portrait_request.wrapping_add(1);
+        let request = self.ai.portrait_request;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.ai.portrait_cancel = cancel.clone();
         let service = self.service.clone();
         let (task, handle) = Task::run(
             stream::iter(people)
@@ -621,14 +722,61 @@ impl App {
         self.ai.portrait_task = Some(handle.abort_on_drop());
         task
     }
+    /// 人物管理或智能整理页面仍可见时继续接收头像。
+    pub(super) fn people_portraits_visible(&self) -> bool {
+        !self.library_picker
+            && (self.manager.panel == Some(manage::Panel::People)
+                || (self.screen == Screen::Models && self.studio_tab == 0))
+    }
     /// 取消人物头像读取并使旧回执失效。
     pub(super) fn stop_people_portraits(&mut self) {
         self.ai.portrait_cancel.store(true, Ordering::Release);
+        self.ai.portrait_pending.clear();
+        self.ai.portrait_attempted.clear();
         if let Some(task) = self.ai.portrait_task.take() {
             // Drop pending read plans as well as rejecting late images. Otherwise
             // waiting for decoder memory could retain the previous library lease.
             task.abort();
         }
+    }
+    /// 在启动人脸整理前说明处理范围与结果更新规则。
+    pub(super) fn face_organization_prompt(&self) -> Element<'_, Message> {
+        use crate::{icons::Icon, theme::*};
+        use iced::widget::{Space, container, row};
+        use iced::{Alignment, Length};
+        let language = self.preferences.language;
+        let project = self.library.as_ref().and_then(|l| {
+            l.info
+                .projects
+                .iter()
+                .find(|p| Some(p.id) == self.query.project)
+        });
+        let scope = project
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| tr!(language, "全部素材" => "All assets").into());
+        let count = project
+            .map(|p| p.count)
+            .or_else(|| self.library.as_ref().map(|l| l.info.count))
+            .unwrap_or(0);
+        container(column![
+            row![form_icon(Icon::Person, true),
+                column![heading(tr!(language, "开始人脸整理？" => "Start face organization?"), 22),
+                    muted(tr!(language, "使用 YuNet + SFace 在本机 CPU 识别清晰人脸，并按人物归组。" => "Use YuNet + SFace locally on CPU to detect clear faces and group photos by person."))].spacing(6).width(Length::Fill),
+                icon_button(Icon::Close, Message::HideCreate)
+            ].spacing(14).align_y(Alignment::Center),
+            separator(),
+            container(column![
+                muted(tr!(language, "整理范围" => "Scope")),
+                heading(scope,16),
+                muted(trf!(language,"{} 张素材"=>"{} assets",crate::components::grouped_number(count)))
+            ].spacing(8)).padding(16).width(Length::Fill).style(pale),
+            muted(tr!(language, "将过滤过小和模糊的人脸，更新自动分组；已手动命名、合并或纠正的结果会保留。" => "Small and blurred faces are filtered. Automatic groups are updated while manual names, merges and corrections are preserved.")),
+            muted(tr!(language, "任务将在后台运行，可随时查看进度、暂停或停止。" => "Runs in the background. You can view progress, pause or stop at any time.")),
+            row![action(tr!(language, "取消" => "Cancel"), Message::HideCreate),
+                Space::new().width(Length::Fill),
+                form_action(Icon::Play, tr!(language, "开始整理" => "Start organizing"), Message::Ai(AiMessage::StartFaceOrganization), true)
+            ].spacing(12).align_y(Alignment::Center),
+        ].spacing(20)).padding(28).width((self.viewport.width - 40.0).clamp(260.0, 560.0)).style(crate::theme::modal).into()
     }
     /// 构建人物分组管理面板及其操作入口。
     pub(super) fn people_panel(&self) -> Element<'_, Message> {
@@ -653,7 +801,7 @@ impl App {
                 .ai
                 .models
                 .iter()
-                .any(|m| m.spec.id == "qwen35-4b" && m.installed);
+                .any(|m| m.spec.id == "faces" && m.installed);
         let can_merge = self
             .ai
             .person
@@ -718,8 +866,8 @@ impl App {
                 heading(tr!(language, "已识别的人物" => "Recognized people"), 15),
                 chip(self.manager.organizer.people.len().to_string(), ICON),
                 Space::new().width(Length::Fill),
-                action(tr!(language,"Qwen 识别与分组"=>"Recognize with Qwen"), Message::Jobs(tasks::JobMessage::Queue(JobKind::QwenFaces)))
-                    .on_press_maybe(can_recognize.then_some(Message::Jobs(tasks::JobMessage::Queue(JobKind::QwenFaces))))
+                action(tr!(language,"人脸分组"=>"Group faces"), Message::Ai(AiMessage::OrganizeFaces))
+                    .on_press_maybe(can_recognize.then_some(Message::Ai(AiMessage::OrganizeFaces)))
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -727,61 +875,11 @@ impl App {
         .spacing(18);
         if self.manager.organizer.people.is_empty() {
             view = view.push(muted(
-                tr!(language, "暂无人物分组。安装 Qwen 后点击“Qwen 识别与分组”，识别完成后可命名、合并或纠正。" => "No people groups yet. Install Qwen and choose Recognize with Qwen, then name, merge or correct the results."),
+                tr!(language, "暂无人物分组。点击“人脸分组”，使用内置 CPU 模型识别后可命名、合并或纠正。" => "No people groups yet. Choose Group faces to use the bundled CPU models, then name, merge or correct results."),
             ));
         }
         for person in &self.manager.organizer.people {
-            let thumbnail: Element<'_, Message> =
-                if let Some(handle) = self.ai.portraits.get(&person.id) {
-                    photo(Some(handle), iced::Length::Fixed(58.), 58.)
-                } else {
-                    iced::widget::container(crate::icons::icon(
-                        crate::icons::Icon::Person,
-                        22.,
-                        crate::theme::MUTED,
-                    ))
-                    .center_x(58)
-                    .center_y(58)
-                    .style(crate::theme::pale)
-                    .into()
-                };
-            view = view.push(
-                iced::widget::button(
-                    iced::widget::row![
-                        thumbnail,
-                        column![
-                            heading(
-                                if person.name.is_empty() || person.name == "未命名人物" {
-                                    trf!(language, "未命名人物 · {}" => "Unnamed person · {}", &person.id[..person.id.len().min(8)])
-                                } else {
-                                    person.name.clone()
-                                },
-                                15
-                            ),
-                            row![
-                                icon(Icon::Image, 14.0, MUTED),
-                                muted(trf!(language, "{} 张" => "{} photos", person.count))
-                            ]
-                            .spacing(8)
-                        ]
-                        .spacing(8)
-                        .width(Length::Fill),
-                        icon(Icon::Right, 18.0, ICON)
-                    ]
-                    .spacing(12)
-                    .align_y(iced::Alignment::Center),
-                )
-                .padding([8, 10])
-                .width(iced::Length::Fill)
-                .style(
-                    if self.ai.person.as_ref().is_some_and(|p| p.id == person.id) {
-                        selected_row
-                    } else {
-                        secondary
-                    },
-                )
-                .on_press(Message::Ai(AiMessage::PersonFilter(person.id.clone()))),
-            );
+            view = view.push(self.person_card(person, true));
         }
         view.into()
     }

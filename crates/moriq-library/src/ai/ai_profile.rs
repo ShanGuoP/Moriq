@@ -152,7 +152,8 @@ impl Library {
              ), live AS MATERIALIZED (
                 SELECT a.id,a.display_version_id,a.imported_at,
                     coalesce(o.medium,json_extract(r.data,'$.medium'),'') medium,
-                    coalesce(o.themes,json_extract(r.data,'$.themes'),'[]') themes
+                    coalesce(o.themes,json_extract(r.data,'$.themes'),'[]') themes,
+                    EXISTS(SELECT 1 FROM ai_results face_result WHERE face_result.version_id=a.display_version_id AND face_result.model_id IN('faces','qwen35-4b/faces')) face_analyzed
                 FROM assets a LEFT JOIN ai_overrides o ON o.version_id=a.display_version_id
                 LEFT JOIN ai_effective_results p
                     ON p.version_id=a.display_version_id AND p.task='qwen_classification'
@@ -168,7 +169,8 @@ impl Library {
                     WHERE c.manual=1 OR l.medium=''
                 UNION ALL SELECT '_unclassified',l.id,l.display_version_id,l.imported_at
                     FROM live l LEFT JOIN asset_classification c ON c.asset_id=l.id
-                    WHERE (l.medium='' AND c.category IS NULL) OR c.category='未分类'
+                    WHERE ((l.medium='' AND c.category IS NULL) OR c.category='未分类') AND NOT l.face_analyzed
+                UNION ALL SELECT '_faces_analyzed',l.id,l.display_version_id,l.imported_at FROM live l WHERE l.face_analyzed
              ), ranked AS (
                 SELECT key,display_version_id,count(*) OVER(PARTITION BY key) n,
                     row_number() OVER(PARTITION BY key ORDER BY imported_at DESC,id DESC) rank FROM entries
@@ -240,9 +242,23 @@ impl Library {
             "_unclassified".into(),
             AiGroup {
                 id: "_unclassified".into(),
-                label: "未分类".into(),
+                label: "待整理".into(),
                 query: Query {
                     category: "未分类".into(),
+                    face_analyzed: Some(false),
+                    ..Default::default()
+                },
+                count: 0,
+                cover: None,
+            },
+        ));
+        groups.push((
+            "_faces_analyzed".into(),
+            AiGroup {
+                id: "_faces_analyzed".into(),
+                label: "已完成人脸分析".into(),
+                query: Query {
+                    face_analyzed: Some(true),
                     ..Default::default()
                 },
                 count: 0,

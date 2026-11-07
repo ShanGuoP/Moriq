@@ -20,5 +20,14 @@
     ],
     "license": "Apache-2.0",
     "name": "Qwen3.5-4B"
+  },
+  {
+    "id": "faces",
+    "name": "YuNet + SFace · CPU",
+    "revision": "yunet2023mar-sface2021dec-cpu-v1",
+    "license": "MIT / Apache-2.0",
+    "source": "https://github.com/opencv/opencv_zoo",
+    "minimum_memory_mib": 256,
+    "files": []
   }
 ]

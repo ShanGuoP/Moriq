@@ -213,7 +213,7 @@ impl Service {
         // Wait for the owned inference process before allowing the desktop to exit.
         tokio::task::spawn_blocking(|| {
             for _ in 0..200 {
-                if moriq_ai::unload_llama().is_ok() {
+                if moriq_ai::unload().is_ok() {
                     return Ok(());
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));

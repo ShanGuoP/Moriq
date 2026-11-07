@@ -6,6 +6,11 @@ use moriq_library::{
 };
 
 pub trait InferenceRunner: Send + Sync {
+    /// 为后台批次保留模型；注入的执行器默认不需要进程租约。
+    fn batch_lease(&self) -> Option<Box<dyn Send>> {
+        None
+    }
+
     /// 约定可取消的人脸推理接口；未配置执行器时返回不可用错误。
     fn qwen_faces(
         &self,
@@ -38,6 +43,10 @@ pub trait InferenceRunner: Send + Sync {
 
 pub struct LocalInference;
 impl InferenceRunner for LocalInference {
+    fn batch_lease(&self) -> Option<Box<dyn Send>> {
+        Some(Box::new(moriq_ai::batch_lease()))
+    }
+
     /// 确认模型可用后执行本地人脸推理，并在返回前再次检查取消。
     fn qwen_faces(
         &self,
@@ -92,6 +101,15 @@ impl InferenceRunner for LocalInference {
     }
     /// 验证指定模型已完整安装，统一转换运行时错误。
     fn ready(&self, model: ModelId) -> TaskResult<()> {
+        if model == ModelId::Faces {
+            return if moriq_ai::cpu_faces::available() {
+                Ok(())
+            } else {
+                Err(TaskError::Runtime(
+                    "CPU 人脸运行组件缺失，请重新解压完整程序".into(),
+                ))
+            };
+        }
         moriq_ai::installed_path(model.as_str())
             .map(|_| ())
             .map_err(TaskError::Runtime)

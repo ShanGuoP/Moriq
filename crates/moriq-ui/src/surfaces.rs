@@ -280,7 +280,7 @@ impl App {
         dismiss: bool,
     ) -> Task<Message> {
         let after = self.surface();
-        if after.panel != Some(manage::Panel::People) {
+        if !self.people_portraits_visible() {
             self.stop_people_portraits();
         }
         if after.panel.is_some() || after.dialog.is_some() {

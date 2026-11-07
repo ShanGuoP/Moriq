@@ -69,6 +69,9 @@ impl State {
 impl App {
     /// 推进分页和布局世代，取消旧读取并清空待上传结果。
     pub(super) fn invalidate_catalog_loads(&mut self) {
+        self.jobs.analysis_gallery_dirty = None;
+        self.jobs.analysis_masonry_generation = None;
+        self.jobs.analysis_masonry = None;
         self.generation = self.generation.wrapping_add(1);
         self.layout_generation = self.layout_generation.wrapping_add(1);
         if let Some(task) = self.page_task.take() {

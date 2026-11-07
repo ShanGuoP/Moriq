@@ -405,3 +405,87 @@ fn all_pages_and_management_surfaces_build_in_both_languages_and_themes() {
         }
     }
 }
+
+#[test]
+fn studio_sections_restore_with_history_and_preserve_workspace() {
+    let mut app = crate::tests::app();
+    drop(app.update(Message::Navigate(2)));
+    let project = ProjectId::default();
+    drop(app.update(app.sidebar_project_message(project)));
+    drop(app.update(Message::StudioTab(1)));
+    drop(app.update(Message::Back));
+    assert_eq!(app.studio_tab, 0);
+    assert_eq!(app.query.project, Some(project));
+    drop(app.update(Message::Forward));
+    assert_eq!(app.studio_tab, 1);
+    assert_eq!(app.query.project, Some(project));
+    for width in [900.0, 1180.0, 1660.0] {
+        app.viewport.width = width;
+        drop(app.models());
+        app.overview_details = true;
+        drop(app.overview());
+    }
+}
+
+#[test]
+fn face_organization_checks_model_and_workspace_before_queuing() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Models;
+    assert_eq!(app.update(Message::Ai(AiMessage::OrganizeFaces)).units(), 0);
+    assert_eq!(app.studio_tab, 1);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    app.ai.models = runtime.block_on(app.service.models()).unwrap().0;
+    for model in &mut app.ai.models {
+        model.installed = model.spec.id == "faces";
+    }
+    let project = ProjectId::default();
+    app.library.as_mut().unwrap().info.projects.push(Project {
+        id: project,
+        parent: None,
+        name: "Portraits".into(),
+        count: 2,
+        visited_at: 0,
+    });
+    assert_eq!(app.update(Message::Ai(AiMessage::OrganizeFaces)).units(), 0);
+    assert_eq!(app.studio_tab, 0);
+    assert!(app.manager.panel.is_none());
+    app.query.project = Some(project);
+    assert_eq!(app.ai_message(AiMessage::OrganizeFaces).units(), 0);
+    assert_eq!(app.dialog, Some(Dialog::OrganizeFaces));
+    assert!(app.manager.panel.is_none());
+    drop(app.shell());
+    drop(app.update(Message::HideCreate));
+    assert_eq!(app.ai_message(AiMessage::StartFaceOrganization).units(), 0);
+    assert!(app.dialog.is_none());
+    drop(app.ai_message(AiMessage::OrganizeFaces));
+    app.query.project = None;
+    assert_eq!(app.ai_message(AiMessage::StartFaceOrganization).units(), 0);
+    app.query.project = Some(project);
+    assert!(app.ai_message(AiMessage::StartFaceOrganization).units() > 0);
+    assert!(app.dialog.is_none());
+    assert!(app.manager.panel.is_none());
+    assert_eq!(app.query.project, Some(project));
+    assert_eq!(app.ai_message(AiMessage::StartFaceOrganization).units(), 0);
+    app.switching = true;
+    assert_eq!(app.update(Message::Ai(AiMessage::OrganizeFaces)).units(), 0);
+}
+
+#[test]
+fn people_are_visible_on_organize_page_and_filter_the_current_project() {
+    let mut app = crate::tests::app();
+    app.screen = Screen::Models;
+    app.manager.organizer.people.push(Person {
+        id: "person-a".into(),
+        name: "Person A".into(),
+        count: 3,
+    });
+    app.studio_tab = 0;
+    assert!(app.refresh_people_portraits().units() > 0);
+    drop(app.models());
+    let project = ProjectId::default();
+    app.query.project = Some(project);
+    drop(app.update(Message::Ai(AiMessage::PersonFilter("person-a".into()))));
+    assert_eq!(app.screen, Screen::Assets);
+    assert_eq!(app.query.project, Some(project));
+    assert_eq!(app.query.person.as_deref(), Some("person-a"));
+}

@@ -239,7 +239,17 @@ impl Widget<Message, Theme, Renderer> for Liquid<'_> {
             .content
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits);
-        layout::Node::with_children(child.size(), vec![child])
+        let node = layout::Node::with_children(child.size(), vec![child]);
+        // A rebuilt view can be drawn before another input event arrives.
+        // Retarget during layout as well, so the first frame uses the new selection.
+        tree.state.downcast_mut::<State>().retarget(
+            self.selected,
+            self.target(Layout::new(&node)),
+            node.size(),
+            self.reduced_motion,
+            Instant::now(),
+        );
+        node
     }
     /// 绘制形变指示和子内容，沿用当前裁剪范围。
     fn draw(

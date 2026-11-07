@@ -511,6 +511,13 @@ impl App {
     }
     /// 把分类分组类型转换为当前语言的标题。
     pub(super) fn group_label(&self, group: &AiGroup) -> String {
+        let language = self.preferences.language;
+        if group.id == "_faces_analyzed" {
+            return tr!(language,"已完成人脸分析"=>"Face analysis completed").into();
+        }
+        if group.id == "_unclassified" && group.label == "待整理" {
+            return tr!(language,"待整理"=>"Awaiting organization").into();
+        }
         let builtin = AI_MEDIA
             .iter()
             .chain(AI_THEMES)
